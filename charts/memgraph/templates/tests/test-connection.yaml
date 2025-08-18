@@ -1,0 +1,21 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: "{{ include "memgraph.fullname" . }}-test"
+  labels:
+    {{- include "memgraph.labels" . | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+spec:
+  template:
+    spec:
+      containers:
+      - name: memgraph-test
+        image: memgraph/memgraph:3.0.0
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            echo "Running test connection to Memgraph";
+            echo "RETURN 0;" | mgconsole --username memgraph --password memgraph --host {{ include "memgraph.fullname" . }} --port 7687;
+      restartPolicy: Never
+  backoffLimit: 4

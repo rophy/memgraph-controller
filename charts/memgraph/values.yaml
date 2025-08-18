@@ -11,7 +11,7 @@ useImagePullSecrets: false
 imagePullSecrets:
 - name: regcred
 
-replicaCount: 1
+replicaCount: 3
 
 ## Node Affinity Preferred
 # By setting theses parameters the PREFERRED deployment will be done first on the match LABELS with key and value then on other nodes.
@@ -28,11 +28,6 @@ nodeSelector: {}
 tolerations: []
 
 service:
-  ## ClusterIP, NodePort, LoadBalancer
-  # ClusterIP keep the service inside the cluster makes it secure
-  # NodePort would create a external port change port: between 30000-32767 accessible to all the nodes and Public IPs if not in a VPC
-  # LoadBalancer is compabile with Cloud Providers on port: 80 without SSL redirected to the 7687
-  type: ClusterIP
 
   # Bolt Port
   enableBolt: true
@@ -104,6 +99,7 @@ memgraphConfig:
 # the pod. For further information, check the `resources` section in this file about setting pod memory and cpu limits.
 - "--data-directory=/var/lib/memgraph/mg_data"
 - "--also-log-to-stderr=true"
+- "--replication-restore-state-on-startup=true"
 
 # The explicit user and group setup is required because at the init container
 # time, there is not yet a user created. This seems fine because under both

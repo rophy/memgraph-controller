@@ -11,7 +11,8 @@ metadata:
     {{- toYaml . | nindent 4 }}
   {{- end }}
 spec:
-  type: {{ .Values.service.type }}
+  clusterIP: None
+  type: ClusterIP
   ports:
     {{- if .Values.service.boltPort }}
     - port: {{ .Values.service.boltPort }}
@@ -33,3 +34,4 @@ spec:
     {{- end }}
   selector:
     {{- include "memgraph.selectorLabels" . | nindent 4 }}
+

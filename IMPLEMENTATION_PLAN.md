@@ -12,7 +12,7 @@ A Kubernetes controller that manages Memgraph cluster replication by inspecting 
 **Tests**: 
 - Unit test for Kubernetes client initialization
 - Integration test connecting to cluster (if available)
-**Status**: Not Started
+**Status**: Complete
 
 ### Tasks:
 - Initialize Go module (`go mod init memgraph-controller`)

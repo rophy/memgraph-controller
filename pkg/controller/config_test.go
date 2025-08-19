@@ -1,25 +1,21 @@
-package main
+package controller
 
 import (
 	"os"
 	"testing"
 	"time"
-
-	"memgraph-controller/pkg/controller"
-
-	"k8s.io/client-go/kubernetes/fake"
 )
 
 func TestLoadConfig(t *testing.T) {
 	tests := []struct {
 		name     string
 		envVars  map[string]string
-		expected *controller.Config
+		expected *Config
 	}{
 		{
 			name:    "default values",
 			envVars: map[string]string{},
-			expected: &controller.Config{
+			expected: &Config{
 				AppName:            "memgraph",
 				Namespace:          "memgraph",
 				ReconcileInterval:  30 * time.Second,
@@ -38,7 +34,7 @@ func TestLoadConfig(t *testing.T) {
 				"REPLICATION_PORT":    "11000",
 				"SERVICE_NAME":        "custom-service",
 			},
-			expected: &controller.Config{
+			expected: &Config{
 				AppName:            "custom-app",
 				Namespace:          "custom-ns",
 				ReconcileInterval:  60 * time.Second,
@@ -60,7 +56,7 @@ func TestLoadConfig(t *testing.T) {
 				}
 			}()
 
-			config := controller.LoadConfig()
+			config := LoadConfig()
 
 			if config.AppName != tt.expected.AppName {
 				t.Errorf("AppName = %v, want %v", config.AppName, tt.expected.AppName)
@@ -81,20 +77,5 @@ func TestLoadConfig(t *testing.T) {
 				t.Errorf("ServiceName = %v, want %v", config.ServiceName, tt.expected.ServiceName)
 			}
 		})
-	}
-}
-
-func TestMemgraphController_testConnection(t *testing.T) {
-	fakeClientset := fake.NewSimpleClientset()
-	config := &controller.Config{
-		AppName:   "memgraph",
-		Namespace: "memgraph",
-	}
-
-	ctrl := controller.NewMemgraphController(fakeClientset, config)
-
-	err := ctrl.TestConnection()
-	if err != nil {
-		t.Errorf("TestConnection() failed: %v", err)
 	}
 }

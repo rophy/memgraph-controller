@@ -23,7 +23,7 @@ func NewPodDiscovery(clientset kubernetes.Interface, config *Config) *PodDiscove
 
 func (pd *PodDiscovery) DiscoverPods(ctx context.Context) (*ClusterState, error) {
 	pods, err := pd.clientset.CoreV1().Pods(pd.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=" + pd.config.AppName,
+		LabelSelector: "app.kubernetes.io/name=" + pd.config.AppName,
 	})
 	if err != nil {
 		return nil, err

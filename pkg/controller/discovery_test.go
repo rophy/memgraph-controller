@@ -19,7 +19,7 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 			Name:      "memgraph-0",
 			Namespace: "memgraph",
 			Labels: map[string]string{
-				"app":  "memgraph",
+				"app.kubernetes.io/name": "memgraph",
 				"role": "master",
 			},
 			CreationTimestamp: metav1.NewTime(now.Add(-10 * time.Minute)),
@@ -36,7 +36,7 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 			Name:      "memgraph-1",
 			Namespace: "memgraph",
 			Labels: map[string]string{
-				"app":  "memgraph",
+				"app.kubernetes.io/name": "memgraph",
 				"role": "replica",
 			},
 			CreationTimestamp: metav1.NewTime(now.Add(-8 * time.Minute)),
@@ -54,7 +54,7 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 			Name:      "memgraph-2",
 			Namespace: "memgraph",
 			Labels: map[string]string{
-				"app": "memgraph",
+				"app.kubernetes.io/name": "memgraph",
 			},
 		},
 		Status: v1.PodStatus{

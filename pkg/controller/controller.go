@@ -197,7 +197,7 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 		return nil
 	}
 	
-	log.Printf("Reconciliation cycle completed successfully. Current cluster state:")
+	log.Printf("Current cluster state discovered:")
 	log.Printf("  - Total pods: %d", len(clusterState.Pods))
 	log.Printf("  - Current master: %s", clusterState.CurrentMaster)
 	
@@ -206,6 +206,157 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 		log.Printf("  - Pod %s: State=%s, K8sRole=%s, MemgraphRole=%s, Replicas=%d", 
 			podName, podInfo.State, podInfo.KubernetesRole, podInfo.MemgraphRole, len(podInfo.Replicas))
 	}
+
+	// Configure replication if needed
+	if err := c.ConfigureReplication(ctx, clusterState); err != nil {
+		return fmt.Errorf("failed to configure replication: %w", err)
+	}
 	
+	log.Println("Reconciliation cycle completed successfully")
+	return nil
+}
+
+// ConfigureReplication configures master/replica relationships in the cluster
+func (c *MemgraphController) ConfigureReplication(ctx context.Context, clusterState *ClusterState) error {
+	if len(clusterState.Pods) == 0 {
+		log.Println("No pods to configure replication for")
+		return nil
+	}
+
+	log.Println("Starting replication configuration...")
+	currentMaster := clusterState.CurrentMaster
+	
+	if currentMaster == "" {
+		return fmt.Errorf("no master pod selected for replication configuration")
+	}
+
+	log.Printf("Configuring replication with master: %s", currentMaster)
+
+	// Phase 1: Configure pod roles (MAIN/REPLICA)
+	var configErrors []error
+	
+	for podName, podInfo := range clusterState.Pods {
+		if !podInfo.NeedsReplicationConfiguration(currentMaster) {
+			log.Printf("Pod %s already in correct replication state", podName)
+			continue
+		}
+
+		if podInfo.ShouldBecomeMaster(currentMaster) {
+			log.Printf("Promoting pod %s to MASTER role", podName)
+			if err := c.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, podInfo.BoltAddress); err != nil {
+				log.Printf("Failed to promote pod %s to MASTER: %v", podName, err)
+				configErrors = append(configErrors, fmt.Errorf("promote %s to MASTER: %w", podName, err))
+				continue
+			}
+			log.Printf("Successfully promoted pod %s to MASTER", podName)
+		}
+
+		if podInfo.ShouldBecomeReplica(currentMaster) {
+			log.Printf("Demoting pod %s to REPLICA role", podName)
+			if err := c.memgraphClient.SetReplicationRoleToReplicaWithRetry(ctx, podInfo.BoltAddress); err != nil {
+				log.Printf("Failed to demote pod %s to REPLICA: %v", podName, err)
+				configErrors = append(configErrors, fmt.Errorf("demote %s to REPLICA: %w", podName, err))
+				continue
+			}
+			log.Printf("Successfully demoted pod %s to REPLICA", podName)
+		}
+	}
+
+	// Phase 2: Register replicas with master
+	masterPod, exists := clusterState.Pods[currentMaster]
+	if !exists {
+		return fmt.Errorf("master pod %s not found in cluster state", currentMaster)
+	}
+
+	log.Printf("Registering replicas with master %s", currentMaster)
+	
+	for podName, podInfo := range clusterState.Pods {
+		// Skip the master pod itself
+		if podName == currentMaster {
+			continue
+		}
+
+		// Only register pods that should be replicas
+		if !podInfo.ShouldBecomeReplica(currentMaster) {
+			continue
+		}
+
+		replicaName := podInfo.GetReplicaName()
+		replicaAddress := podInfo.GetReplicationAddress(c.config.ServiceName)
+		
+		log.Printf("Registering replica %s (pod %s) at %s with master %s", 
+			replicaName, podName, replicaAddress, currentMaster)
+
+		if err := c.memgraphClient.RegisterReplicaWithRetry(ctx, masterPod.BoltAddress, replicaName, replicaAddress); err != nil {
+			log.Printf("Failed to register replica %s with master: %v", replicaName, err)
+			configErrors = append(configErrors, fmt.Errorf("register replica %s: %w", replicaName, err))
+			continue
+		}
+
+		log.Printf("Successfully registered replica %s with master %s (ASYNC mode)", replicaName, currentMaster)
+	}
+
+	// Phase 3: Handle any existing replicas that should be removed
+	if err := c.cleanupObsoleteReplicas(ctx, clusterState); err != nil {
+		log.Printf("Warning: failed to cleanup obsolete replicas: %v", err)
+		configErrors = append(configErrors, fmt.Errorf("cleanup obsolete replicas: %w", err))
+	}
+
+	if len(configErrors) > 0 {
+		log.Printf("Replication configuration completed with %d errors:", len(configErrors))
+		for _, err := range configErrors {
+			log.Printf("  - %v", err)
+		}
+		return fmt.Errorf("replication configuration had %d errors (see logs for details)", len(configErrors))
+	}
+
+	log.Printf("Replication configuration completed successfully for %d pods", len(clusterState.Pods))
+	return nil
+}
+
+// cleanupObsoleteReplicas removes replica registrations that are no longer needed
+func (c *MemgraphController) cleanupObsoleteReplicas(ctx context.Context, clusterState *ClusterState) error {
+	currentMaster := clusterState.CurrentMaster
+	if currentMaster == "" {
+		return nil
+	}
+
+	masterPod, exists := clusterState.Pods[currentMaster]
+	if !exists {
+		return fmt.Errorf("master pod %s not found", currentMaster)
+	}
+
+	// Get current replicas from the master
+	replicasResp, err := c.memgraphClient.QueryReplicasWithRetry(ctx, masterPod.BoltAddress)
+	if err != nil {
+		return fmt.Errorf("failed to query current replicas from master: %w", err)
+	}
+
+	// Build set of expected replica names
+	expectedReplicas := make(map[string]bool)
+	for podName, podInfo := range clusterState.Pods {
+		if podName != currentMaster && podInfo.ShouldBecomeReplica(currentMaster) {
+			expectedReplicas[podInfo.GetReplicaName()] = true
+		}
+	}
+
+	// Remove any replicas that shouldn't exist
+	var cleanupErrors []error
+	for _, replica := range replicasResp.Replicas {
+		if !expectedReplicas[replica.Name] {
+			log.Printf("Dropping obsolete replica %s from master %s", replica.Name, currentMaster)
+			if err := c.memgraphClient.DropReplicaWithRetry(ctx, masterPod.BoltAddress, replica.Name); err != nil {
+				log.Printf("Failed to drop obsolete replica %s: %v", replica.Name, err)
+				cleanupErrors = append(cleanupErrors, fmt.Errorf("drop replica %s: %w", replica.Name, err))
+			} else {
+				log.Printf("Successfully dropped obsolete replica %s", replica.Name)
+			}
+		}
+	}
+
+	if len(cleanupErrors) > 0 {
+		return fmt.Errorf("cleanup had %d errors: %v", len(cleanupErrors), cleanupErrors)
+	}
+
 	return nil
 }

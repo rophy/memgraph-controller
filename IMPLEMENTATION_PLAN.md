@@ -80,15 +80,25 @@ A Kubernetes controller that manages Memgraph cluster replication by inspecting 
 - Test replica demotion and registration
 - Test conflict resolution (multiple masters)
 - Test failure scenarios (unreachable pods)
-**Status**: Not Started
+**Status**: Complete
 
 ### Tasks:
 - Implement `SET REPLICATION ROLE TO MAIN` execution
 - Implement `SET REPLICATION ROLE TO REPLICA WITH PORT 10000` execution
-- Implement `REGISTER REPLICA <replica-name> SYNC TO <pod-name>.<service-name>:10000` execution
+- Implement `REGISTER REPLICA <replica-name> ASYNC TO <pod-name>.<service-name>:10000` execution
   - `<replica-name>` = pod name with dashes converted to underscores (e.g. `memgraph-1` → `memgraph_1`)
+  - **ASYNC Mode**: Use asynchronous replication for better performance and availability
 - Add replica deregistration (`DROP REPLICA <replica-name>`)
 - Implement conflict resolution for multiple masters
+
+### Replication Mode Configuration:
+- **Mode**: ASYNC (Asynchronous replication)
+- **Rationale**: 
+  - Better performance - master doesn't wait for replica acknowledgment
+  - Higher availability - master continues operating if replicas are temporarily unavailable
+  - Suitable for most use cases where eventual consistency is acceptable
+  - Reduced latency for write operations
+- **Trade-offs**: Potential data loss in master failure scenarios (eventual consistency vs strong consistency)
 
 ## Stage 5: Pod Label Management
 **Goal**: Update Kubernetes pod labels to reflect current replication roles

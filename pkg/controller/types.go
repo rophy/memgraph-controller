@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -198,4 +199,35 @@ func buildInconsistencyDescription(pi *PodInfo) string {
 		return fmt.Sprintf("Unknown inconsistency: k8s_role=%s, memgraph_role=%s, replicas=%d", 
 			pi.KubernetesRole, pi.MemgraphRole, len(pi.Replicas))
 	}
+}
+
+// GetReplicaName converts pod name to replica name (dashes to underscores)
+func (pi *PodInfo) GetReplicaName() string {
+	return strings.ReplaceAll(pi.Name, "-", "_")
+}
+
+// GetReplicationAddress returns the replication address for this pod
+func (pi *PodInfo) GetReplicationAddress(serviceName string) string {
+	return fmt.Sprintf("%s.%s:10000", pi.Name, serviceName)
+}
+
+// ShouldBecomeMaster determines if this pod should be promoted to master
+func (pi *PodInfo) ShouldBecomeMaster(currentMasterName string) bool {
+	// Pod should become master if:
+	// 1. It's currently selected as the master pod (by timestamp)
+	// 2. AND it's not already in MASTER state
+	return pi.Name == currentMasterName && pi.State != MASTER
+}
+
+// ShouldBecomeReplica determines if this pod should be demoted to replica
+func (pi *PodInfo) ShouldBecomeReplica(currentMasterName string) bool {
+	// Pod should become replica if:
+	// 1. It's NOT the selected master pod
+	// 2. AND it's not already in REPLICA state
+	return pi.Name != currentMasterName && pi.State != REPLICA
+}
+
+// NeedsReplicationConfiguration determines if this pod needs replication changes
+func (pi *PodInfo) NeedsReplicationConfiguration(currentMasterName string) bool {
+	return pi.ShouldBecomeMaster(currentMasterName) || pi.ShouldBecomeReplica(currentMasterName)
 }

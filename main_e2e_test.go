@@ -7,60 +7,56 @@ import (
 	"testing"
 	"time"
 
+	"memgraph-controller/pkg/controller"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
 func TestE2E_KubernetesConnection(t *testing.T) {
-	config, err := getKubernetesConfig()
+	k8sConfig, err := controller.GetKubernetesConfig()
 	if err != nil {
 		t.Skipf("Skipping e2e test: could not get Kubernetes config: %v", err)
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
 		t.Fatalf("Failed to create Kubernetes client: %v", err)
 	}
 
-	controller := &MemgraphController{
-		clientset: clientset,
-		config: &Config{
-			AppName:   "memgraph",
-			Namespace: "memgraph",
-		},
-	}
+	ctrl := controller.NewMemgraphController(clientset, &controller.Config{
+		AppName:   "memgraph",
+		Namespace: "memgraph",
+	})
 
-	err = controller.testConnection()
+	err = ctrl.TestConnection()
 	if err != nil {
 		t.Errorf("Failed to connect to Kubernetes cluster: %v", err)
 	}
 }
 
 func TestE2E_PodDiscovery(t *testing.T) {
-	config, err := getKubernetesConfig()
+	k8sConfig, err := controller.GetKubernetesConfig()
 	if err != nil {
 		t.Skipf("Skipping e2e test: could not get Kubernetes config: %v", err)
 	}
 
-	clientset, err := kubernetes.NewForConfig(config)
+	clientset, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
 		t.Fatalf("Failed to create Kubernetes client: %v", err)
 	}
 
-	controller := &MemgraphController{
-		clientset: clientset,
-		config: &Config{
-			AppName:   "memgraph",
-			Namespace: "memgraph",
-		},
+	ctrlConfig := &controller.Config{
+		AppName:   "memgraph",
+		Namespace: "memgraph",
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	pods, err := controller.clientset.CoreV1().Pods(controller.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app=" + controller.config.AppName,
+	pods, err := clientset.CoreV1().Pods(ctrlConfig.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app=" + ctrlConfig.AppName,
 	})
 	if err != nil {
 		t.Errorf("Failed to list pods: %v", err)
@@ -68,7 +64,7 @@ func TestE2E_PodDiscovery(t *testing.T) {
 	}
 
 	t.Logf("Found %d pods with app=%s in namespace %s",
-		len(pods.Items), controller.config.AppName, controller.config.Namespace)
+		len(pods.Items), ctrlConfig.AppName, ctrlConfig.Namespace)
 
 	for _, pod := range pods.Items {
 		t.Logf("Pod: %s, Phase: %s, Ready: %v",

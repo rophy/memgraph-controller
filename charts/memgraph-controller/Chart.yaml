@@ -1,0 +1,18 @@
+apiVersion: v2
+name: memgraph-controller
+type: application
+version: 0.1.0
+appVersion: "latest"
+description: Memgraph Kubernetes Controller for managing cluster replication
+keywords:
+- memgraph
+- controller
+- kubernetes
+- replication
+- database
+home: https://github.com/rophy/memgraph-controller
+sources:
+- https://github.com/rophy/memgraph-controller
+maintainers:
+- name: rophy
+  email: rophy@example.com

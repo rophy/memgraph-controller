@@ -1,0 +1,49 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+
+metadata:
+  name: memgraph-cluster
+
+# Build configuration for the controller
+build:
+  artifacts:
+  - image: memgraph-controller
+    context: .
+    docker:
+      dockerfile: Dockerfile
+
+# Deploy configuration
+deploy:
+  helm:
+    releases:
+    # Deploy Memgraph cluster first
+    - name: memgraph
+      chartPath: charts/memgraph
+      namespace: memgraph
+      createNamespace: true
+      wait: true
+      
+    # Deploy controller after Memgraph is ready
+    - name: memgraph-controller
+      chartPath: charts/memgraph-controller
+      namespace: memgraph
+      createNamespace: false
+      setValues:
+        image.repository: memgraph-controller
+        image.tag: latest
+        image.pullPolicy: IfNotPresent
+        env.APP_NAME: memgraph
+        env.NAMESPACE: memgraph
+        env.RECONCILE_INTERVAL: 30s
+        env.BOLT_PORT: "7687"
+        env.SERVICE_NAME: memgraph
+        replicas: 1
+      wait: true
+
+# Port forwarding for development
+portForward:
+- resourceType: service
+  resourceName: memgraph
+  namespace: memgraph
+  port: 7687
+  localPort: 7687

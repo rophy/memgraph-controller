@@ -28,41 +28,29 @@ func (mc *MemgraphClient) QueryReplicationRoleWithRetry(ctx context.Context, bol
 			}
 		}()
 
-		sessionResult, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (interface{}, error) {
-			txResult, err := tx.Run(ctx, "SHOW REPLICATION ROLE", nil)
-			if err != nil {
-				return nil, err
-			}
-
-			if txResult.Next(ctx) {
-				record := txResult.Record()
-				role, found := record.Get("replication_role")
-				if !found {
-					return nil, fmt.Errorf("replication_role field not found in result")
-				}
-				
-				roleStr, ok := role.(string)
-				if !ok {
-					return nil, fmt.Errorf("replication_role is not a string: %T", role)
-				}
-
-				return &ReplicationRole{Role: roleStr}, nil
-			}
-
-			return nil, fmt.Errorf("no results returned from SHOW REPLICATION ROLE")
-		})
-
+		// Use auto-commit mode for replication queries
+		txResult, err := session.Run(ctx, "SHOW REPLICATION ROLE", nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to execute SHOW REPLICATION ROLE: %w", err)
 		}
 
-		replicationRole, ok := sessionResult.(*ReplicationRole)
-		if !ok {
-			return fmt.Errorf("unexpected result type: %T", sessionResult)
+		if txResult.Next(ctx) {
+			record := txResult.Record()
+			role, found := record.Get("replication role")
+			if !found {
+				return fmt.Errorf("replication role field not found in result")
+			}
+			
+			roleStr, ok := role.(string)
+			if !ok {
+				return fmt.Errorf("replication role is not a string: %T", role)
+			}
+
+			result = &ReplicationRole{Role: roleStr}
+			return nil
 		}
 
-		result = replicationRole
-		return nil
+		return fmt.Errorf("no results returned from SHOW REPLICATION ROLE")
 	}, mc.retryConfig)
 
 	if err != nil {
@@ -93,64 +81,52 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 			}
 		}()
 
-		sessionResult, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (interface{}, error) {
-			txResult, err := tx.Run(ctx, "SHOW REPLICAS", nil)
-			if err != nil {
-				return nil, err
-			}
-
-			var replicas []ReplicaInfo
-			for txResult.Next(ctx) {
-				record := txResult.Record()
-				
-				replica := ReplicaInfo{}
-				
-				if name, found := record.Get("name"); found {
-					if nameStr, ok := name.(string); ok {
-						replica.Name = nameStr
-					}
-				}
-				
-				if socketAddr, found := record.Get("socket_address"); found {
-					if socketAddrStr, ok := socketAddr.(string); ok {
-						replica.SocketAddress = socketAddrStr
-					}
-				}
-				
-				if syncMode, found := record.Get("sync_mode"); found {
-					if syncModeStr, ok := syncMode.(string); ok {
-						replica.SyncMode = syncModeStr
-					}
-				}
-				
-				if sysTimestamp, found := record.Get("system_timestamp"); found {
-					if sysTimestampInt, ok := sysTimestamp.(int64); ok {
-						replica.SystemTimestamp = sysTimestampInt
-					}
-				}
-				
-				if checkFreq, found := record.Get("check_frequency"); found {
-					if checkFreqInt, ok := checkFreq.(int64); ok {
-						replica.CheckFrequency = checkFreqInt
-					}
-				}
-				
-				replicas = append(replicas, replica)
-			}
-
-			return &ReplicasResponse{Replicas: replicas}, nil
-		})
-
+		// Use auto-commit mode for replication queries
+		txResult, err := session.Run(ctx, "SHOW REPLICAS", nil)
 		if err != nil {
-			return err
+			return fmt.Errorf("failed to execute SHOW REPLICAS: %w", err)
 		}
 
-		replicasResponse, ok := sessionResult.(*ReplicasResponse)
-		if !ok {
-			return fmt.Errorf("unexpected result type: %T", sessionResult)
+		var replicas []ReplicaInfo
+		for txResult.Next(ctx) {
+			record := txResult.Record()
+			
+			replica := ReplicaInfo{}
+			
+			if name, found := record.Get("name"); found {
+				if nameStr, ok := name.(string); ok {
+					replica.Name = nameStr
+				}
+			}
+			
+			if socketAddr, found := record.Get("socket_address"); found {
+				if socketAddrStr, ok := socketAddr.(string); ok {
+					replica.SocketAddress = socketAddrStr
+				}
+			}
+			
+			if syncMode, found := record.Get("sync_mode"); found {
+				if syncModeStr, ok := syncMode.(string); ok {
+					replica.SyncMode = syncModeStr
+				}
+			}
+			
+			if sysTimestamp, found := record.Get("system_timestamp"); found {
+				if sysTimestampInt, ok := sysTimestamp.(int64); ok {
+					replica.SystemTimestamp = sysTimestampInt
+				}
+			}
+				
+			if checkFreq, found := record.Get("check_frequency"); found {
+				if checkFreqInt, ok := checkFreq.(int64); ok {
+					replica.CheckFrequency = checkFreqInt
+				}
+			}
+			
+			replicas = append(replicas, replica)
 		}
 
-		result = replicasResponse
+		result = &ReplicasResponse{Replicas: replicas}
 		return nil
 	}, mc.retryConfig)
 

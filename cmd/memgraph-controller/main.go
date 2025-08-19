@@ -1,7 +1,12 @@
 package main
 
 import (
+	"context"
 	"log"
+	"os"
+	"os/signal"
+	"syscall"
+	"time"
 
 	"memgraph-controller/pkg/controller"
 
@@ -32,6 +37,44 @@ func main() {
 	}
 
 	log.Println("Memgraph Controller started successfully")
+
+	// Set up graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Handle shutdown signals
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+
+	go func() {
+		<-sigChan
+		log.Println("Received shutdown signal, stopping controller...")
+		cancel()
+	}()
+
+	// Start reconciliation loop
+	ticker := time.NewTicker(config.ReconcileInterval)
+	defer ticker.Stop()
+
+	log.Printf("Starting reconciliation loop with interval: %s", config.ReconcileInterval)
+	
+	// Run initial reconciliation
+	if err := ctrl.Reconcile(ctx); err != nil {
+		log.Printf("Initial reconciliation failed: %v", err)
+	}
+
+	// Main reconciliation loop
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Controller shutting down...")
+			return
+		case <-ticker.C:
+			if err := ctrl.Reconcile(ctx); err != nil {
+				log.Printf("Reconciliation failed: %v", err)
+			}
+		}
+	}
 }
 
 

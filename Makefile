@@ -1,4 +1,9 @@
-.PHONY: build test test-e2e clean up down
+# Variables
+REGISTRY ?= ghcr.io/rophy
+TAG ?= latest
+IMAGE_NAME ?= memgraph-controller
+
+.PHONY: build test test-e2e clean up down docker-build docker-push
 
 # Build targets
 build:
@@ -22,3 +27,11 @@ up:
 
 down:
 	kubectl delete namespace memgraph --ignore-not-found=true
+
+# Docker targets
+docker-build:
+	docker build -t $(IMAGE_NAME):$(TAG) .
+
+docker-push: docker-build
+	docker tag $(IMAGE_NAME):$(TAG) $(REGISTRY)/$(IMAGE_NAME):$(TAG)
+	docker push $(REGISTRY)/$(IMAGE_NAME):$(TAG)

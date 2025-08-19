@@ -181,3 +181,31 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 
 	return nil
 }
+
+// Reconcile performs a full reconciliation cycle
+func (c *MemgraphController) Reconcile(ctx context.Context) error {
+	log.Println("Starting reconciliation cycle...")
+	
+	// Discover the current cluster state
+	clusterState, err := c.DiscoverCluster(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to discover cluster state: %w", err)
+	}
+	
+	if len(clusterState.Pods) == 0 {
+		log.Println("No Memgraph pods found in cluster")
+		return nil
+	}
+	
+	log.Printf("Reconciliation cycle completed successfully. Current cluster state:")
+	log.Printf("  - Total pods: %d", len(clusterState.Pods))
+	log.Printf("  - Current master: %s", clusterState.CurrentMaster)
+	
+	// Log pod states
+	for podName, podInfo := range clusterState.Pods {
+		log.Printf("  - Pod %s: State=%s, K8sRole=%s, MemgraphRole=%s, Replicas=%d", 
+			podName, podInfo.State, podInfo.KubernetesRole, podInfo.MemgraphRole, len(podInfo.Replicas))
+	}
+	
+	return nil
+}

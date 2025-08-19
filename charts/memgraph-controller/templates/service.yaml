@@ -1,0 +1,28 @@
+{{- if or .Values.health.port (and .Values.metrics.enabled .Values.metrics.port) }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "memgraph-controller.fullname" . }}
+  labels:
+    {{- include "memgraph-controller.labels" . | nindent 4 }}
+    {{- if .Values.metrics.enabled }}
+    app.kubernetes.io/component: metrics
+    {{- end }}
+spec:
+  type: ClusterIP
+  ports:
+  {{- if .Values.health.port }}
+  - port: {{ .Values.health.port }}
+    targetPort: health
+    protocol: TCP
+    name: health
+  {{- end }}
+  {{- if and .Values.metrics.enabled .Values.metrics.port }}
+  - port: {{ .Values.metrics.port }}
+    targetPort: metrics
+    protocol: TCP
+    name: metrics
+  {{- end }}
+  selector:
+    {{- include "memgraph-controller.selectorLabels" . | nindent 4 }}
+{{- end }}

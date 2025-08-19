@@ -1,0 +1,68 @@
+image:
+  repository: memgraph-controller
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicas: 1
+
+env:
+  APP_NAME: memgraph
+  NAMESPACE: memgraph
+  RECONCILE_INTERVAL: 30s
+  BOLT_PORT: "7687"
+  SERVICE_NAME: memgraph
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 100m
+    memory: 128Mi
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+rbac:
+  create: true
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+# Logging configuration
+log:
+  level: info
+  format: json
+
+# Health check configuration (disabled - controller doesn't expose health endpoints yet)
+health:
+  port: null
+  path: /healthz
+
+# Metrics configuration
+metrics:
+  enabled: false
+  port: 8081
+  path: /metrics

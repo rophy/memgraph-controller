@@ -3,7 +3,7 @@
 # Build targets
 build:
 	mkdir -p bin
-	go build -o bin/memgraph-controller .
+	go build -o bin/memgraph-controller ./cmd/memgraph-controller
 
 clean:
 	rm -rf bin/

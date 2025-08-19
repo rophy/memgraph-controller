@@ -33,7 +33,7 @@ A Kubernetes controller that manages Memgraph cluster replication by inspecting 
 - Test Bolt connection establishment to pods
 - Test replication role queries
 - Test timestamp-based master selection
-**Status**: Not Started
+**Status**: Complete
 
 ### Tasks:
 - Implement `PodState` enum (INITIAL, MASTER, REPLICA)

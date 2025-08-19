@@ -212,6 +212,11 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 		return fmt.Errorf("failed to configure replication: %w", err)
 	}
 	
+	// Sync pod labels with replication state
+	if err := c.SyncPodLabels(ctx, clusterState); err != nil {
+		return fmt.Errorf("failed to sync pod labels: %w", err)
+	}
+	
 	log.Println("Reconciliation cycle completed successfully")
 	return nil
 }
@@ -358,5 +363,32 @@ func (c *MemgraphController) cleanupObsoleteReplicas(ctx context.Context, cluste
 		return fmt.Errorf("cleanup had %d errors: %v", len(cleanupErrors), cleanupErrors)
 	}
 
+	return nil
+}
+
+// SyncPodLabels synchronizes pod labels with their actual replication state
+func (c *MemgraphController) SyncPodLabels(ctx context.Context, clusterState *ClusterState) error {
+	if len(clusterState.Pods) == 0 {
+		log.Println("No pods to sync labels for")
+		return nil
+	}
+
+	log.Println("Starting pod label synchronization...")
+
+	// Update cluster state with current pod states after replication configuration
+	for podName, podInfo := range clusterState.Pods {
+		// Reclassify state based on current information
+		podInfo.State = podInfo.ClassifyState()
+		log.Printf("Pod %s final state: %s (K8sRole=%s, MemgraphRole=%s)", 
+			podName, podInfo.State, podInfo.KubernetesRole, podInfo.MemgraphRole)
+	}
+
+	// Use the pod discovery component to sync labels
+	err := c.podDiscovery.SyncPodLabelsWithState(ctx, clusterState)
+	if err != nil {
+		return fmt.Errorf("failed to synchronize pod labels with state: %w", err)
+	}
+
+	log.Println("Pod label synchronization completed successfully")
 	return nil
 }

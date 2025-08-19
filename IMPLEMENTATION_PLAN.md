@@ -110,7 +110,7 @@ A Kubernetes controller that manages Memgraph cluster replication by inspecting 
 - Test label update operations
 - Test label consistency with Memgraph state
 - Test partial failure scenarios
-**Status**: Not Started
+**Status**: Complete
 
 ### Tasks:
 - Implement pod label update via Kubernetes API

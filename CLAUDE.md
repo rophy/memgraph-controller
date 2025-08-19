@@ -10,6 +10,17 @@ Reference: https://memgraph.com/docs/clustering/replication
 
 # Development Workflow
 
+## CRITICAL: Claude NEVER Runs Deployment Commands
+
+**Claude must NEVER run the following commands:**
+- `skaffold run`
+- `skaffold dev` 
+- `kubectl apply`
+- `docker build`
+- Any deployment or build commands
+
+**After implementing fixes, Claude should explicitly state: "Please run skaffold and I'll check the logs"**
+
 ## Standard Development Process
 
 Our development workflow follows this pattern:

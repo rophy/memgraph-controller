@@ -13,23 +13,23 @@ func TestPodInfo_ClassifyState(t *testing.T) {
 		expectedState  PodState
 	}{
 		{
-			name:           "initial state - no label, MAIN with no replicas",
+			name:           "initial state - no label, main with no replicas",
 			kubernetesRole: "",
-			memgraphRole:   "MAIN",
+			memgraphRole:   "main",
 			replicaCount:   0,
 			expectedState:  INITIAL,
 		},
 		{
-			name:           "master state - master label, MAIN role",
+			name:           "master state - main role with replicas",
 			kubernetesRole: "master",
-			memgraphRole:   "MAIN",
+			memgraphRole:   "main",
 			replicaCount:   2,
 			expectedState:  MASTER,
 		},
 		{
-			name:           "replica state - replica label, REPLICA role",
+			name:           "replica state - replica role",
 			kubernetesRole: "replica",
-			memgraphRole:   "REPLICA",
+			memgraphRole:   "replica",
 			replicaCount:   0,
 			expectedState:  REPLICA,
 		},
@@ -41,11 +41,11 @@ func TestPodInfo_ClassifyState(t *testing.T) {
 			expectedState:  INITIAL, // Current state unchanged
 		},
 		{
-			name:           "inconsistent state - master label with no replicas",
+			name:           "initial state - main with no replicas",
 			kubernetesRole: "master",
-			memgraphRole:   "MAIN",
+			memgraphRole:   "main",
 			replicaCount:   0,
-			expectedState:  MASTER, // Still classified as MASTER despite no replicas
+			expectedState:  INITIAL, // main with no replicas = INITIAL
 		},
 	}
 
@@ -80,7 +80,7 @@ func TestPodInfo_DetectStateInconsistency(t *testing.T) {
 		{
 			name:               "consistent initial state",
 			kubernetesRole:     "",
-			memgraphRole:       "MAIN",
+			memgraphRole:       "main",
 			currentState:       INITIAL,
 			replicaCount:       0,
 			expectInconsistency: false,
@@ -88,38 +88,38 @@ func TestPodInfo_DetectStateInconsistency(t *testing.T) {
 		{
 			name:                "inconsistent - no role but has replicas",
 			kubernetesRole:      "",
-			memgraphRole:        "MAIN",
+			memgraphRole:        "main",
 			currentState:        INITIAL,
 			replicaCount:        2,
 			expectInconsistency: true,
-			expectedDescription: "Pod has no role label but is MAIN with 2 replicas (should be MASTER)",
+			expectedDescription: "Pod has no role label but is main with 2 replicas (should be MASTER)",
 		},
 		{
-			name:                "inconsistent - master label but REPLICA role",
+			name:                "inconsistent - master label but replica role",
 			kubernetesRole:      "master",
-			memgraphRole:        "REPLICA",
+			memgraphRole:        "replica",
 			currentState:        MASTER,
 			replicaCount:        0,
 			expectInconsistency: true,
-			expectedDescription: "Pod labeled as master but Memgraph role is REPLICA",
+			expectedDescription: "Pod labeled as master but Memgraph role is replica",
 		},
 		{
-			name:                "inconsistent - replica label but MAIN role",
+			name:                "inconsistent - replica label but main role",
 			kubernetesRole:      "replica",
-			memgraphRole:        "MAIN",
+			memgraphRole:        "main",
 			currentState:        REPLICA,
 			replicaCount:        0,
 			expectInconsistency: true,
-			expectedDescription: "Pod labeled as replica but Memgraph role is MAIN",
+			expectedDescription: "Pod labeled as replica but Memgraph role is main",
 		},
 		{
-			name:                "inconsistent - no role but REPLICA",
+			name:                "inconsistent - no role but replica",
 			kubernetesRole:      "",
-			memgraphRole:        "REPLICA",
+			memgraphRole:        "replica",
 			currentState:        INITIAL,
 			replicaCount:        0,
 			expectInconsistency: true,
-			expectedDescription: "Pod has no role label but Memgraph role is REPLICA",
+			expectedDescription: "Pod has no role label but Memgraph role is replica",
 		},
 		{
 			name:               "no memgraph role info",
@@ -132,7 +132,7 @@ func TestPodInfo_DetectStateInconsistency(t *testing.T) {
 		{
 			name:               "consistent master state",
 			kubernetesRole:     "master",
-			memgraphRole:       "MAIN",
+			memgraphRole:       "main",
 			currentState:       MASTER,
 			replicaCount:       1,
 			expectInconsistency: false,
@@ -140,7 +140,7 @@ func TestPodInfo_DetectStateInconsistency(t *testing.T) {
 		{
 			name:               "consistent replica state",
 			kubernetesRole:     "replica",
-			memgraphRole:       "REPLICA",
+			memgraphRole:       "replica",
 			currentState:       REPLICA,
 			replicaCount:       0,
 			expectInconsistency: false,
@@ -196,23 +196,23 @@ func TestBuildInconsistencyDescription(t *testing.T) {
 		{
 			name:           "no role but has replicas",
 			kubernetesRole: "",
-			memgraphRole:   "MAIN",
+			memgraphRole:   "main",
 			replicaCount:   3,
-			expected:       "Pod has no role label but is MAIN with 3 replicas (should be MASTER)",
+			expected:       "Pod has no role label but is main with 3 replicas (should be MASTER)",
 		},
 		{
 			name:           "master but replica role",
 			kubernetesRole: "master",
-			memgraphRole:   "REPLICA",
+			memgraphRole:   "replica",
 			replicaCount:   0,
-			expected:       "Pod labeled as master but Memgraph role is REPLICA",
+			expected:       "Pod labeled as master but Memgraph role is replica",
 		},
 		{
 			name:           "replica but main role",
 			kubernetesRole: "replica",
-			memgraphRole:   "MAIN",
+			memgraphRole:   "main",
 			replicaCount:   0,
-			expected:       "Pod labeled as replica but Memgraph role is MAIN",
+			expected:       "Pod labeled as replica but Memgraph role is main",
 		},
 		{
 			name:           "unknown inconsistency",

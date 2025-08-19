@@ -83,8 +83,8 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 		log.Printf("Pod %s has Memgraph role: %s", podName, role.Role)
 
 		// If this is a MAIN node, query its replicas
-		if role.Role == "MAIN" {
-			log.Printf("Querying replicas for MAIN pod %s", podName)
+		if role.Role == "main" {
+			log.Printf("Querying replicas for main pod %s", podName)
 			
 			replicasResp, err := c.memgraphClient.QueryReplicasWithRetry(ctx, podInfo.BoltAddress)
 			if err != nil {

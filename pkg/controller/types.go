@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"fmt"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -103,4 +104,98 @@ func convertPodNameForReplica(podName string) string {
 		}
 	}
 	return result
+}
+
+// ClassifyPodState determines the actual pod state based on Kubernetes labels and Memgraph role
+func (pi *PodInfo) ClassifyState() PodState {
+	// If we don't have Memgraph role information yet, return current state
+	if pi.MemgraphRole == "" {
+		return pi.State
+	}
+
+	// State classification rules from implementation plan:
+	// - INITIAL: No role label AND Memgraph role is MAIN with no replicas
+	// - MASTER: role=master label AND Memgraph role is MAIN
+	// - REPLICA: role=replica label AND Memgraph role is REPLICA
+
+	switch {
+	case pi.KubernetesRole == "" && pi.MemgraphRole == "MAIN" && len(pi.Replicas) == 0:
+		return INITIAL
+	case pi.KubernetesRole == "master" && pi.MemgraphRole == "MAIN":
+		return MASTER
+	case pi.KubernetesRole == "replica" && pi.MemgraphRole == "REPLICA":
+		return REPLICA
+	default:
+		// State inconsistency detected - return current state but log the issue
+		return pi.State
+	}
+}
+
+// DetectStateInconsistency checks if Kubernetes labels match Memgraph reality
+func (pi *PodInfo) DetectStateInconsistency() *StateInconsistency {
+	if pi.MemgraphRole == "" {
+		// Can't detect inconsistency without Memgraph role info
+		return nil
+	}
+
+	expectedState := pi.ClassifyState()
+	
+	// Check for actual inconsistencies between K8s labels and Memgraph state
+	hasInconsistency := false
+	
+	// Check specific inconsistency patterns
+	switch {
+	case pi.KubernetesRole == "" && pi.MemgraphRole == "MAIN" && len(pi.Replicas) > 0:
+		hasInconsistency = true
+	case pi.KubernetesRole == "master" && pi.MemgraphRole == "REPLICA":
+		hasInconsistency = true
+	case pi.KubernetesRole == "replica" && pi.MemgraphRole == "MAIN":
+		hasInconsistency = true
+	case pi.KubernetesRole == "" && pi.MemgraphRole == "REPLICA":
+		hasInconsistency = true
+	}
+
+	if !hasInconsistency {
+		return nil // No inconsistency
+	}
+
+	return &StateInconsistency{
+		PodName:           pi.Name,
+		KubernetesRole:    pi.KubernetesRole,
+		MemgraphRole:      pi.MemgraphRole,
+		CurrentState:      pi.State,
+		ExpectedState:     expectedState,
+		ReplicaCount:      len(pi.Replicas),
+		Description:       buildInconsistencyDescription(pi),
+	}
+}
+
+type StateInconsistency struct {
+	PodName        string
+	KubernetesRole string
+	MemgraphRole   string
+	CurrentState   PodState
+	ExpectedState  PodState
+	ReplicaCount   int
+	Description    string
+}
+
+func buildInconsistencyDescription(pi *PodInfo) string {
+	switch {
+	case pi.KubernetesRole == "" && pi.MemgraphRole == "MAIN" && len(pi.Replicas) > 0:
+		return fmt.Sprintf("Pod has no role label but is MAIN with %d replicas (should be MASTER)", len(pi.Replicas))
+	case pi.KubernetesRole == "master" && pi.MemgraphRole == "REPLICA":
+		return "Pod labeled as master but Memgraph role is REPLICA"
+	case pi.KubernetesRole == "replica" && pi.MemgraphRole == "MAIN":
+		return "Pod labeled as replica but Memgraph role is MAIN"
+	case pi.KubernetesRole == "" && pi.MemgraphRole == "REPLICA":
+		return "Pod has no role label but Memgraph role is REPLICA"
+	case pi.KubernetesRole == "master" && pi.MemgraphRole == "MAIN" && len(pi.Replicas) == 0:
+		return "Pod labeled as master but has no replicas (might be INITIAL state)"
+	case pi.KubernetesRole == "replica" && pi.MemgraphRole == "REPLICA":
+		return "Pod correctly configured as replica"
+	default:
+		return fmt.Sprintf("Unknown inconsistency: k8s_role=%s, memgraph_role=%s, replicas=%d", 
+			pi.KubernetesRole, pi.MemgraphRole, len(pi.Replicas))
+	}
 }

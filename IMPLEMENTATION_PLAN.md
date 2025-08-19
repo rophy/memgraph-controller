@@ -56,7 +56,7 @@ A Kubernetes controller that manages Memgraph cluster replication by inspecting 
 - Test state classification logic (K8s labels vs Memgraph reality)
 - Test error handling for unreachable instances
 - Test state inconsistency detection
-**Status**: Not Started
+**Status**: Complete
 
 ### Tasks:
 - Implement `SHOW REPLICAS` query and response parsing

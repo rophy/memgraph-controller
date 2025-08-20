@@ -1,4 +1,4 @@
-{{- if or .Values.health.port (and .Values.metrics.enabled .Values.metrics.port) }}
+{{- if or .Values.statusApi.enabled .Values.health.port (and .Values.metrics.enabled .Values.metrics.port) }}
 apiVersion: v1
 kind: Service
 metadata:
@@ -11,6 +11,12 @@ metadata:
 spec:
   type: ClusterIP
   ports:
+  {{- if .Values.statusApi.enabled }}
+  - port: {{ .Values.statusApi.port }}
+    targetPort: status-api
+    protocol: TCP
+    name: status-api
+  {{- end }}
   {{- if .Values.health.port }}
   - port: {{ .Values.health.port }}
     targetPort: health

@@ -11,6 +11,7 @@ env:
   RECONCILE_INTERVAL: 30s
   BOLT_PORT: "7687"
   SERVICE_NAME: memgraph
+  HTTP_PORT: "8080"
 
 resources:
   limits:
@@ -55,6 +56,12 @@ securityContext:
 log:
   level: info
   format: json
+
+# Status API configuration
+statusApi:
+  enabled: true
+  port: 8080
+  path: /api/v1/status
 
 # Health check configuration (disabled - controller doesn't expose health endpoints yet)
 health:

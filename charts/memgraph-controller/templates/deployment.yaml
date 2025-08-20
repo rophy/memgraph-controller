@@ -50,8 +50,15 @@ spec:
           value: {{ .Values.env.BOLT_PORT | quote }}
         - name: SERVICE_NAME
           value: {{ .Values.env.SERVICE_NAME | quote }}
-        {{- if .Values.health.port }}
+        - name: HTTP_PORT
+          value: {{ .Values.env.HTTP_PORT | quote }}
         ports:
+        {{- if .Values.statusApi.enabled }}
+        - name: status-api
+          containerPort: {{ .Values.statusApi.port }}
+          protocol: TCP
+        {{- end }}
+        {{- if .Values.health.port }}
         - name: health
           containerPort: {{ .Values.health.port }}
           protocol: TCP

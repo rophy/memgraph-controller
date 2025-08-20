@@ -118,6 +118,40 @@ A Kubernetes controller that manages Memgraph cluster replication by inspecting 
 - Implement rollback logic for failed updates
 - Add proper RBAC permissions for pod label updates
 
+## Stage 5.5: API for Memgraph Status
+**Goal**: Expose HTTP API that shows latest replication status of all controlled Memgraph pods
+**Success Criteria**:
+- HTTP server exposes `/api/v1/status` endpoint
+- API returns real-time Memgraph replication status (not just pod labels)
+- Response includes cluster state summary and per-pod details
+- API handles unreachable pods gracefully
+- Status reflects actual Memgraph SHOW REPLICATION ROLE and SHOW REPLICAS results
+**Tests**:
+- Test HTTP server startup and endpoint availability
+- Test status response with healthy pods
+- Test status response with unreachable pods
+- Test JSON response format and schema validation
+- Test concurrent API requests
+**Status**: Complete
+
+### Tasks:
+- Add HTTP server setup with standard library `net/http`
+- Create status response data structures
+- Implement `/api/v1/status` endpoint handler
+- Add cluster state aggregation logic
+- Implement per-pod status collection from actual Memgraph queries
+- Add error handling for unreachable pods
+- Configure HTTP server port via environment variable
+- Add graceful HTTP server shutdown
+- Include API server in main controller startup
+
+### API Design:
+**Endpoint**: `/api/v1/status`
+**Method**: GET
+**Response**: JSON with cluster summary and per-pod replication status
+**Data Sources**: Live queries to Memgraph instances (SHOW REPLICATION ROLE, SHOW REPLICAS)
+**Error Handling**: Mark pods as unhealthy when Memgraph queries fail
+
 ## Stage 6: Controller Loop & Reconciliation
 **Goal**: Implement main controller reconciliation loop
 **Success Criteria**:
@@ -129,14 +163,22 @@ A Kubernetes controller that manages Memgraph cluster replication by inspecting 
 - Test full reconciliation scenarios
 - Test pod lifecycle events (add/delete/restart)
 - Test error recovery and backoff behavior
-**Status**: Not Started
+**Status**: Complete
 
 ### Tasks:
-- Implement main reconciliation loop
-- Add event-driven pod watching
-- Implement exponential backoff for failures
-- Add comprehensive logging and metrics
-- Implement graceful shutdown handling
+- Implement main reconciliation loop with work queue and multiple workers
+- Add event-driven pod watching using Kubernetes informers
+- Implement exponential backoff for reconciliation failures (3 retries with 2s base delay)
+- Add comprehensive logging and error tracking with failure count monitoring
+- Implement graceful shutdown handling with proper cleanup
+
+### Implementation Details:
+- **Worker Model**: 2 concurrent workers processing reconcile requests from work queue
+- **Event-Driven**: Kubernetes informers trigger reconciliation on pod add/update/delete
+- **Periodic Reconciliation**: Timer-based reconciliation using configured interval
+- **Exponential Backoff**: 3 retries with exponential backoff (2s, 4s, 8s delays)
+- **Failure Handling**: Tracks failure count (max 5) with recovery on successful reconciliation
+- **Graceful Shutdown**: Proper cleanup of informers, workers, and HTTP server
 
 ## Stage 7: Configuration & Deployment
 **Goal**: Package controller for deployment and add configuration options
@@ -221,6 +263,7 @@ type PodInfo struct {
 - `BOLT_PORT`: Memgraph Bolt port (default: "7687")
 - `REPLICATION_PORT`: Fixed port for replica replication (fixed: "10000")
 - `SERVICE_NAME`: Headless service name for replication addresses (default: "memgraph")
+- `HTTP_PORT`: HTTP server port for status API (default: "8080")
 
 ## Dependencies:
 - `k8s.io/client-go`: Kubernetes API client

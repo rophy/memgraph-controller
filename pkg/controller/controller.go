@@ -4,26 +4,63 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"math"
+	"sync"
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 )
+
+// reconcileRequest represents a request to reconcile the cluster
+type reconcileRequest struct {
+	reason    string
+	timestamp time.Time
+}
 
 type MemgraphController struct {
 	clientset       kubernetes.Interface
 	config          *Config
 	podDiscovery    *PodDiscovery
 	memgraphClient  *MemgraphClient
+	httpServer      *HTTPServer
+	
+	// Controller loop state
+	isRunning       bool
+	mu              sync.RWMutex
+	lastReconcile   time.Time
+	failureCount    int
+	maxFailures     int
+	
+	// Event-driven reconciliation
+	podInformer     cache.SharedInformer
+	informerFactory informers.SharedInformerFactory
+	workQueue       chan reconcileRequest
+	stopCh          chan struct{}
 }
 
 func NewMemgraphController(clientset kubernetes.Interface, config *Config) *MemgraphController {
-	return &MemgraphController{
+	controller := &MemgraphController{
 		clientset:      clientset,
 		config:         config,
 		podDiscovery:   NewPodDiscovery(clientset, config),
 		memgraphClient: NewMemgraphClient(config),
 	}
+	
+	// Initialize HTTP server
+	controller.httpServer = NewHTTPServer(controller, config)
+	
+	// Initialize controller state
+	controller.maxFailures = 5
+	controller.workQueue = make(chan reconcileRequest, 100)
+	controller.stopCh = make(chan struct{})
+	
+	// Set up pod informer for event-driven reconciliation
+	controller.setupInformers()
+	
+	return controller
 }
 
 func (c *MemgraphController) TestConnection() error {
@@ -281,10 +318,9 @@ func (c *MemgraphController) ConfigureReplication(ctx context.Context, clusterSt
 			continue
 		}
 
-		// Only register pods that should be replicas
-		if !podInfo.ShouldBecomeReplica(currentMaster) {
-			continue
-		}
+		// Register all non-master pods as replicas (they should be connected to master)
+		// This includes both pods that need to become replicas and existing replicas
+		// that need to be registered with the (potentially new) master
 
 		replicaName := podInfo.GetReplicaName()
 		replicaAddress := podInfo.GetReplicationAddress(c.config.ServiceName)
@@ -338,9 +374,10 @@ func (c *MemgraphController) cleanupObsoleteReplicas(ctx context.Context, cluste
 	}
 
 	// Build set of expected replica names
+	// All non-master pods should be registered as replicas
 	expectedReplicas := make(map[string]bool)
 	for podName, podInfo := range clusterState.Pods {
-		if podName != currentMaster && podInfo.ShouldBecomeReplica(currentMaster) {
+		if podName != currentMaster {
 			expectedReplicas[podInfo.GetReplicaName()] = true
 		}
 	}
@@ -391,4 +428,300 @@ func (c *MemgraphController) SyncPodLabels(ctx context.Context, clusterState *Cl
 
 	log.Println("Pod label synchronization completed successfully")
 	return nil
+}
+
+// GetClusterStatus collects current cluster status for API response
+func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusResponse, error) {
+	log.Println("Collecting cluster status for API...")
+	
+	// Discover current cluster state with all Memgraph queries
+	clusterState, err := c.DiscoverCluster(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover cluster state: %w", err)
+	}
+
+	// Build cluster summary
+	totalPods := len(clusterState.Pods)
+	healthyPods := 0
+	podStatuses := make([]PodStatus, 0, totalPods)
+
+	// Process each pod to determine health and build status
+	for _, podInfo := range clusterState.Pods {
+		// Pod is healthy if we can query Memgraph role successfully
+		healthy := podInfo.MemgraphRole != ""
+		if healthy {
+			healthyPods++
+		} else if podInfo.BoltAddress == "" {
+			// Pod without IP is also unhealthy
+			healthy = false
+		}
+
+		// Pod status will be handled in convertPodInfoToStatus which checks DetectStateInconsistency
+
+		podStatus := convertPodInfoToStatus(podInfo, healthy)
+		podStatuses = append(podStatuses, podStatus)
+	}
+
+	unhealthyPods := totalPods - healthyPods
+
+	response := &StatusResponse{
+		Timestamp: time.Now(),
+		ClusterState: ClusterStatus{
+			CurrentMaster:  clusterState.CurrentMaster,
+			TotalPods:      totalPods,
+			HealthyPods:    healthyPods,
+			UnhealthyPods:  unhealthyPods,
+		},
+		Pods: podStatuses,
+	}
+
+	log.Printf("Cluster status collected: %d total pods, %d healthy, %d unhealthy, master: %s", 
+		totalPods, healthyPods, unhealthyPods, clusterState.CurrentMaster)
+
+	return response, nil
+}
+
+// StartHTTPServer starts the HTTP server for status API
+func (c *MemgraphController) StartHTTPServer() error {
+	if c.httpServer == nil {
+		return fmt.Errorf("HTTP server not initialized")
+	}
+	return c.httpServer.Start()
+}
+
+// StopHTTPServer gracefully stops the HTTP server
+func (c *MemgraphController) StopHTTPServer(ctx context.Context) error {
+	if c.httpServer == nil {
+		return nil // Nothing to stop
+	}
+	return c.httpServer.Stop(ctx)
+}
+
+// setupInformers initializes Kubernetes informers for event-driven reconciliation
+func (c *MemgraphController) setupInformers() {
+	// Create shared informer factory
+	c.informerFactory = informers.NewSharedInformerFactoryWithOptions(
+		c.clientset,
+		time.Second*30, // Resync period
+		informers.WithNamespace(c.config.Namespace),
+	)
+
+	// Set up pod informer with label selector
+	c.podInformer = c.informerFactory.Core().V1().Pods().Informer()
+	
+	// Add event handlers
+	c.podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc:    c.onPodAdd,
+		UpdateFunc: c.onPodUpdate,
+		DeleteFunc: c.onPodDelete,
+	})
+}
+
+// onPodAdd handles pod addition events
+func (c *MemgraphController) onPodAdd(obj interface{}) {
+	c.enqueuePodEvent("pod-added")
+}
+
+// onPodUpdate handles pod update events
+func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
+	c.enqueuePodEvent("pod-updated")
+}
+
+// onPodDelete handles pod deletion events
+func (c *MemgraphController) onPodDelete(obj interface{}) {
+	c.enqueuePodEvent("pod-deleted")
+}
+
+// enqueuePodEvent adds a reconcile request to the work queue
+func (c *MemgraphController) enqueuePodEvent(reason string) {
+	select {
+	case c.workQueue <- reconcileRequest{reason: reason, timestamp: time.Now()}:
+		log.Printf("Enqueued reconcile request: %s", reason)
+	default:
+		log.Printf("Work queue full, dropping reconcile request: %s", reason)
+	}
+}
+
+// Run starts the main controller loop
+func (c *MemgraphController) Run(ctx context.Context) error {
+	log.Println("Starting Memgraph Controller main loop...")
+	
+	c.mu.Lock()
+	if c.isRunning {
+		c.mu.Unlock()
+		return fmt.Errorf("controller is already running")
+	}
+	c.isRunning = true
+	c.mu.Unlock()
+	
+	// Start informers
+	log.Println("Starting Kubernetes informers...")
+	c.informerFactory.Start(c.stopCh)
+	
+	// Wait for informer caches to sync
+	log.Println("Waiting for informer caches to sync...")
+	if !cache.WaitForCacheSync(c.stopCh, c.podInformer.HasSynced) {
+		return fmt.Errorf("failed to sync informer caches")
+	}
+	log.Println("Informer caches synced successfully")
+	
+	// Initial reconciliation
+	c.enqueueReconcile("initial-reconciliation")
+	
+	// Start worker goroutines
+	const numWorkers = 2
+	var wg sync.WaitGroup
+	for i := 0; i < numWorkers; i++ {
+		wg.Add(1)
+		go func(workerID int) {
+			defer wg.Done()
+			c.worker(ctx, workerID)
+		}(i)
+	}
+	
+	// Start periodic reconciliation timer
+	ticker := time.NewTicker(c.config.ReconcileInterval)
+	defer ticker.Stop()
+	
+	log.Printf("Controller loop started with %d workers, reconcile interval: %s", 
+		numWorkers, c.config.ReconcileInterval)
+	
+	// Main controller loop
+	for {
+		select {
+		case <-ctx.Done():
+			log.Println("Context cancelled, stopping controller...")
+			c.stop()
+			wg.Wait()
+			return ctx.Err()
+			
+		case <-ticker.C:
+			c.enqueueReconcile("periodic-reconciliation")
+		}
+	}
+}
+
+// worker processes reconcile requests from the work queue
+func (c *MemgraphController) worker(ctx context.Context, workerID int) {
+	log.Printf("Worker %d started", workerID)
+	
+	for {
+		select {
+		case <-ctx.Done():
+			log.Printf("Worker %d stopping due to context cancellation", workerID)
+			return
+			
+		case <-c.stopCh:
+			log.Printf("Worker %d stopping due to stop signal", workerID)
+			return
+			
+		case request := <-c.workQueue:
+			c.processReconcileRequest(ctx, request, workerID)
+		}
+	}
+}
+
+// processReconcileRequest handles a single reconcile request
+func (c *MemgraphController) processReconcileRequest(ctx context.Context, request reconcileRequest, workerID int) {
+	startTime := time.Now()
+	log.Printf("Worker %d processing reconcile request: %s (queued at %s)", 
+		workerID, request.reason, request.timestamp.Format(time.RFC3339))
+	
+	// Execute reconciliation with retry logic
+	err := c.reconcileWithBackoff(ctx)
+	
+	c.mu.Lock()
+	c.lastReconcile = time.Now()
+	if err != nil {
+		c.failureCount++
+		log.Printf("Worker %d reconciliation failed (%d/%d failures): %v", 
+			workerID, c.failureCount, c.maxFailures, err)
+		
+		// Check if we've exceeded max failures
+		if c.failureCount >= c.maxFailures {
+			log.Printf("Worker %d: Maximum failures (%d) reached, will attempt recovery on next cycle", 
+				workerID, c.maxFailures)
+		}
+	} else {
+		c.failureCount = 0 // Reset failure count on success
+		log.Printf("Worker %d reconciliation completed successfully in %s", 
+			workerID, time.Since(startTime))
+	}
+	c.mu.Unlock()
+}
+
+// reconcileWithBackoff performs reconciliation with exponential backoff
+func (c *MemgraphController) reconcileWithBackoff(ctx context.Context) error {
+	const maxRetries = 3
+	const baseDelay = time.Second * 2
+	
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		if attempt > 0 {
+			// Calculate exponential backoff delay
+			delay := time.Duration(float64(baseDelay) * math.Pow(2, float64(attempt-1)))
+			log.Printf("Reconciliation attempt %d failed, retrying in %s", attempt, delay)
+			
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(delay):
+				// Continue to retry
+			}
+		}
+		
+		err := c.Reconcile(ctx)
+		if err == nil {
+			if attempt > 0 {
+				log.Printf("Reconciliation succeeded on attempt %d", attempt+1)
+			}
+			return nil
+		}
+		
+		log.Printf("Reconciliation attempt %d failed: %v", attempt+1, err)
+	}
+	
+	return fmt.Errorf("reconciliation failed after %d attempts", maxRetries)
+}
+
+// enqueueReconcile adds a reconcile request to the work queue
+func (c *MemgraphController) enqueueReconcile(reason string) {
+	select {
+	case c.workQueue <- reconcileRequest{reason: reason, timestamp: time.Now()}:
+		// Successfully enqueued
+	default:
+		log.Printf("Work queue full, dropping reconcile request: %s", reason)
+	}
+}
+
+// stop gracefully stops the controller
+func (c *MemgraphController) stop() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	if !c.isRunning {
+		return
+	}
+	
+	log.Println("Stopping controller...")
+	c.isRunning = false
+	
+	// Signal stop to all components
+	close(c.stopCh)
+	close(c.workQueue)
+	
+	log.Println("Controller stopped")
+}
+
+// GetControllerStatus returns the current status of the controller
+func (c *MemgraphController) GetControllerStatus() map[string]interface{} {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	return map[string]interface{}{
+		"running":          c.isRunning,
+		"last_reconcile":   c.lastReconcile,
+		"failure_count":    c.failureCount,
+		"max_failures":     c.maxFailures,
+		"work_queue_size":  len(c.workQueue),
+	}
 }

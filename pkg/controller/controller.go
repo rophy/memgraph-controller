@@ -94,7 +94,11 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 		return clusterState, nil
 	}
 
-	log.Printf("Discovered %d pods, current master: %s", len(clusterState.Pods), clusterState.CurrentMaster)
+	// Mark this as bootstrap phase for safety validation
+	clusterState.IsBootstrapPhase = true
+	clusterState.LastStateChange = time.Now()
+	
+	log.Printf("Discovered %d pods, starting bootstrap discovery...", len(clusterState.Pods))
 
 	// Track errors for comprehensive reporting
 	var queryErrors []error
@@ -166,6 +170,20 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 	// Update SYNC replica information based on actual master's replica data
 	c.updateSyncReplicaInfo(clusterState)
 
+	// Classify cluster state and perform bootstrap safety validation
+	log.Println("Classifying cluster state for bootstrap safety...")
+	if err := c.performBootstrapValidation(clusterState); err != nil {
+		return nil, fmt.Errorf("bootstrap validation failed: %w", err)
+	}
+	
+	// Validate controller state consistency
+	if warnings := clusterState.ValidateControllerState(); len(warnings) > 0 {
+		log.Printf("⚠️  Controller state validation warnings:")
+		for _, warning := range warnings {
+			log.Printf("  - %s", warning)
+		}
+	}
+
 	// NOW select master based on actual Memgraph state (not pod labels)
 	log.Println("Selecting master based on actual Memgraph replication state...")
 	c.selectMasterAfterQuerying(clusterState)
@@ -193,80 +211,273 @@ func getPodNames(pods map[string]*PodInfo) []string {
 	return names
 }
 
+// performBootstrapValidation validates cluster state during bootstrap phase
+func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterState) error {
+	// Classify the current cluster state
+	oldStateType := clusterState.StateType
+	stateType := clusterState.ClassifyClusterState()
+	clusterState.StateType = stateType
+	
+	// Log state transition if changed
+	clusterState.LogStateTransition(oldStateType, "bootstrap classification")
+	
+	log.Printf("Bootstrap validation: cluster state classified as %s", stateType.String())
+	
+	// Log pod role distribution for debugging
+	mainPods := clusterState.GetMainPods()
+	replicaPods := clusterState.GetReplicaPods()
+	log.Printf("Pod role distribution: %d main pods %v, %d replica pods %v", 
+		len(mainPods), mainPods, len(replicaPods), replicaPods)
+	
+	// Check if bootstrap is safe to proceed
+	isBootstrapSafe := clusterState.IsBootstrapSafe()
+	clusterState.BootstrapSafe = isBootstrapSafe
+	
+	if !isBootstrapSafe {
+		// DANGEROUS states during bootstrap - refuse to continue
+		switch stateType {
+		case MIXED_STATE:
+			log.Printf("❌ BOOTSTRAP BLOCKED: Mixed replication state detected")
+			log.Printf("❌ Some pods are main, some are replica - unclear data freshness")
+			log.Printf("❌ Manual intervention required to determine safe master")
+			log.Printf("❌ Possible data divergence between pods")
+			log.Printf("🔧 Recovery options:")
+			log.Printf("  1. Check which pod has latest data using mgconsole")
+			log.Printf("  2. Manually set desired master to MAIN role")
+			log.Printf("  3. Set all other pods to REPLICA role")
+			log.Printf("  4. Restart controller after manual intervention")
+			return fmt.Errorf("unsafe mixed state during bootstrap: main=%v, replica=%v", mainPods, replicaPods)
+			
+		case NO_MASTER_STATE:
+			log.Printf("❌ BOOTSTRAP BLOCKED: No master found, unclear data freshness")
+			log.Printf("❌ All pods are replicas - cannot determine which has latest data")
+			log.Printf("❌ Manual intervention required to select master")
+			log.Printf("🔧 Recovery options:")
+			log.Printf("  1. Identify pod with latest data (check STORAGE INFO)")
+			log.Printf("  2. Promote chosen pod: kubectl exec <pod> -- mgconsole -e 'SET REPLICATION ROLE TO MAIN;'")
+			log.Printf("  3. Restart controller after manual promotion")
+			return fmt.Errorf("no master during bootstrap: all %d pods are replicas", len(replicaPods))
+			
+		case SPLIT_BRAIN_STATE:
+			log.Printf("❌ BOOTSTRAP BLOCKED: Multiple masters detected")
+			log.Printf("❌ Split-brain condition - potential data divergence")
+			log.Printf("❌ Manual intervention required to resolve conflicts")
+			log.Printf("🔧 Recovery options:")
+			log.Printf("  1. Compare data between masters using STORAGE INFO")
+			log.Printf("  2. Choose master with most recent data")
+			log.Printf("  3. Demote others: kubectl exec <pod> -- mgconsole -e 'SET REPLICATION ROLE TO REPLICA;'")
+			log.Printf("  4. Restart controller after resolving split-brain")
+			return fmt.Errorf("split-brain during bootstrap: multiple masters %v", mainPods)
+			
+		default:
+			log.Printf("❌ BOOTSTRAP BLOCKED: Unknown unsafe state")
+			return fmt.Errorf("unknown unsafe cluster state: %s", stateType.String())
+		}
+	}
+	
+	// Safe states - proceed with bootstrap and determine target master index
+	switch stateType {
+	case INITIAL_STATE:
+		log.Printf("✅ Bootstrap SAFE: Fresh cluster state detected")
+		log.Printf("All pods are main or no role data yet - no data divergence risk")
+		log.Printf("Will apply deterministic role assignment")
+		
+	case OPERATIONAL_STATE:
+		log.Printf("✅ Bootstrap SAFE: Operational cluster state detected")
+		log.Printf("Exactly one master found - will learn existing topology")
+		log.Printf("Current master: %s", mainPods[0])
+	}
+	
+	// Determine target master index (0 or 1)
+	targetMasterIndex, err := clusterState.DetermineMasterIndex(c.config)
+	if err != nil {
+		return fmt.Errorf("failed to determine target master index: %w", err)
+	}
+	
+	clusterState.TargetMasterIndex = targetMasterIndex
+	log.Printf("Target master index determined: %d (pod: %s)", 
+		targetMasterIndex, c.config.GetPodName(targetMasterIndex))
+	
+	return nil
+}
+
 // selectMasterAfterQuerying selects master based on actual Memgraph replication state
 func (c *MemgraphController) selectMasterAfterQuerying(clusterState *ClusterState) {
-	// Priority-based master selection using ACTUAL Memgraph state
-	// 1. Prefer existing MAIN node (avoid unnecessary failover)
-	// 2. If no MAIN, promote SYNC replica (guaranteed consistency)  
-	// 3. If no SYNC replica, REQUIRE MANUAL INTERVENTION (prevent data loss)
+	// After bootstrap validation, we now have authority to make decisions
+	clusterState.IsBootstrapPhase = false
 	
-	var existingMain *PodInfo
-	var syncReplica *PodInfo
-	var latestPod *PodInfo
-	var latestTime time.Time
+	// Use controller state authority based on bootstrap vs operational phase
+	if clusterState.StateType == INITIAL_STATE {
+		c.applyDeterministicRoles(clusterState)
+	} else {
+		c.learnExistingTopology(clusterState)
+	}
+}
 
-	// Analyze all pods based on ACTUAL Memgraph roles
-	for _, podInfo := range clusterState.Pods {
-		// Priority 1: Existing MAIN node (from actual Memgraph query)
-		if podInfo.MemgraphRole == "main" {
-			existingMain = podInfo
-			log.Printf("Found existing MAIN node: %s (actual role, not label)", podInfo.Name)
-		}
-		
-		// Priority 2: SYNC replica (guaranteed data consistency)
-		if podInfo.IsSyncReplica {
-			syncReplica = podInfo
-			log.Printf("Found SYNC replica: %s", podInfo.Name)
-		}
-		
-		// Priority 3: Latest timestamp (fallback)
-		if latestPod == nil || podInfo.Timestamp.After(latestTime) {
-			latestPod = podInfo
-			latestTime = podInfo.Timestamp
+// applyDeterministicRoles applies roles for fresh/initial clusters
+func (c *MemgraphController) applyDeterministicRoles(clusterState *ClusterState) {
+	log.Printf("Applying deterministic role assignment for fresh cluster")
+	
+	// Use the determined target master index
+	targetMasterName := c.config.GetPodName(clusterState.TargetMasterIndex)
+	clusterState.CurrentMaster = targetMasterName
+	
+	log.Printf("Deterministic master assignment: %s (index %d)", 
+		targetMasterName, clusterState.TargetMasterIndex)
+	
+	// Log planned topology
+	syncReplicaIndex := 1 - clusterState.TargetMasterIndex // 0->1, 1->0
+	syncReplicaName := c.config.GetPodName(syncReplicaIndex)
+	
+	log.Printf("Planned topology:")
+	log.Printf("  Master: %s (index %d)", targetMasterName, clusterState.TargetMasterIndex)
+	log.Printf("  SYNC replica: %s (index %d)", syncReplicaName, syncReplicaIndex)
+	
+	// Mark remaining pods as ASYNC replicas
+	asyncCount := 0
+	for podName := range clusterState.Pods {
+		if podName != targetMasterName && podName != syncReplicaName {
+			asyncCount++
 		}
 	}
+	log.Printf("  ASYNC replicas: %d pods", asyncCount)
+}
 
-	// Master selection decision tree (based on actual state)
-	var selectedMaster *PodInfo
-	var selectionReason string
+// learnExistingTopology learns the current operational topology
+func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
+	log.Printf("Learning existing operational topology")
 	
-	if existingMain != nil {
-		// Prefer existing MAIN node - avoid unnecessary failover
-		selectedMaster = existingMain
-		selectionReason = "existing MAIN node (from actual Memgraph state)"
-	} else if syncReplica != nil {
-		// ONLY safe automatic promotion: SYNC replica has all committed data
-		selectedMaster = syncReplica
-		selectionReason = "SYNC replica promotion (guaranteed consistency)"
-		log.Printf("PROMOTING SYNC REPLICA: %s has all committed transactions", syncReplica.Name)
+	mainPods := clusterState.GetMainPods()
+	if len(mainPods) == 1 {
+		currentMaster := mainPods[0]
+		clusterState.CurrentMaster = currentMaster
+		log.Printf("Learned existing master: %s", currentMaster)
+		
+		// Extract current master index for tracking
+		currentMasterIndex := c.config.ExtractPodIndex(currentMaster)
+		if currentMasterIndex >= 0 {
+			clusterState.TargetMasterIndex = currentMasterIndex
+			log.Printf("Updated target master index to match existing: %d", currentMasterIndex)
+		}
+		
+		// Log current SYNC replica
+		for podName, podInfo := range clusterState.Pods {
+			if podInfo.IsSyncReplica {
+				log.Printf("Current SYNC replica: %s", podName)
+				break
+			}
+		}
+		
 	} else {
-		// CRITICAL: No SYNC replica available - DO NOT auto-promote ASYNC replicas
-		// ASYNC replicas may be missing committed transactions, causing data loss
-		if len(clusterState.Pods) > 1 {
-			log.Printf("CRITICAL: No SYNC replica available for safe automatic promotion")
-			log.Printf("CRITICAL: Cannot guarantee data consistency - manual intervention required")
-			log.Printf("CRITICAL: ASYNC replicas may be missing committed transactions")
-			log.Printf("Available pods: %v", getPodNames(clusterState.Pods))
+		log.Printf("WARNING: Expected exactly 1 master in operational state, found %d: %v", 
+			len(mainPods), mainPods)
+		
+		// Use the determined target master as fallback
+		targetMasterName := c.config.GetPodName(clusterState.TargetMasterIndex)
+		clusterState.CurrentMaster = targetMasterName
+		log.Printf("Using determined target master as fallback: %s", targetMasterName)
+	}
+}
+
+// enforceExpectedTopology enforces controller's known good topology against state drift
+func (c *MemgraphController) enforceExpectedTopology(ctx context.Context, clusterState *ClusterState) error {
+	log.Printf("Enforcing expected topology against state drift...")
+	
+	// Reclassify current state to detect drift
+	currentStateType := clusterState.ClassifyClusterState()
+	
+	// Check for problematic states that need correction
+	switch currentStateType {
+	case SPLIT_BRAIN_STATE:
+		log.Printf("Split-brain detected during operational phase - applying resolution")
+		return c.resolveSplitBrain(ctx, clusterState)
+		
+	case MIXED_STATE:
+		log.Printf("Mixed state detected during operational phase - enforcing known topology")
+		return c.enforceKnownTopology(ctx, clusterState)
+		
+	case NO_MASTER_STATE:
+		log.Printf("No master detected - promoting expected master")
+		return c.promoteExpectedMaster(ctx, clusterState)
+		
+	case OPERATIONAL_STATE:
+		log.Printf("Cluster in healthy operational state")
+		return nil
+		
+	case INITIAL_STATE:
+		log.Printf("Cluster reverted to initial state - reapplying deterministic roles")
+		c.applyDeterministicRoles(clusterState)
+		return nil
+		
+	default:
+		log.Printf("Unknown cluster state during operational phase: %s", currentStateType.String())
+		return nil
+	}
+}
+
+// resolveSplitBrain resolves split-brain scenarios using lower-index precedence
+func (c *MemgraphController) resolveSplitBrain(ctx context.Context, clusterState *ClusterState) error {
+	mainPods := clusterState.GetMainPods()
+	log.Printf("Resolving split-brain: multiple masters detected: %v", mainPods)
+	
+	// Apply lower-index precedence rule
+	expectedMasterName := c.config.GetPodName(clusterState.TargetMasterIndex)
+	
+	// Demote all masters except the expected one
+	var demotionErrors []error
+	for _, masterPod := range mainPods {
+		if masterPod != expectedMasterName {
+			log.Printf("Demoting incorrect master: %s (expected: %s)", masterPod, expectedMasterName)
 			
-			// Do NOT select any master - require manual intervention
-			selectedMaster = nil
-			selectionReason = "no safe automatic promotion possible (SYNC replica unavailable)"
-		} else {
-			// Single pod scenario - safe to promote (no replication risk)
-			selectedMaster = latestPod
-			selectionReason = "single pod cluster (no replication consistency risk)"
+			if podInfo, exists := clusterState.Pods[masterPod]; exists {
+				err := c.memgraphClient.SetReplicationRoleToReplicaWithRetry(ctx, podInfo.BoltAddress)
+				if err != nil {
+					log.Printf("Failed to demote incorrect master %s: %v", masterPod, err)
+					demotionErrors = append(demotionErrors, fmt.Errorf("demote %s: %w", masterPod, err))
+				} else {
+					log.Printf("Successfully demoted incorrect master: %s", masterPod)
+				}
+			}
 		}
 	}
-
-	if selectedMaster != nil {
-		clusterState.CurrentMaster = selectedMaster.Name
-		log.Printf("Selected master: %s (reason: %s, timestamp: %s)",
-			selectedMaster.Name,
-			selectionReason,
-			selectedMaster.Timestamp.Format(time.RFC3339))
-	} else {
-		log.Printf("No pods available for master selection")
+	
+	if len(demotionErrors) > 0 {
+		return fmt.Errorf("split-brain resolution had %d errors: %v", len(demotionErrors), demotionErrors)
 	}
+	
+	log.Printf("Split-brain resolved: %s remains as master", expectedMasterName)
+	return nil
+}
+
+// enforceKnownTopology enforces the controller's known topology
+func (c *MemgraphController) enforceKnownTopology(ctx context.Context, clusterState *ClusterState) error {
+	log.Printf("Enforcing known topology: target master index %d", clusterState.TargetMasterIndex)
+	
+	expectedMasterName := c.config.GetPodName(clusterState.TargetMasterIndex)
+	clusterState.CurrentMaster = expectedMasterName
+	
+	log.Printf("Enforcing expected master: %s", expectedMasterName)
+	return nil
+}
+
+// promoteExpectedMaster promotes the expected master when no masters exist
+func (c *MemgraphController) promoteExpectedMaster(ctx context.Context, clusterState *ClusterState) error {
+	expectedMasterName := c.config.GetPodName(clusterState.TargetMasterIndex)
+	
+	log.Printf("Promoting expected master: %s", expectedMasterName)
+	
+	if podInfo, exists := clusterState.Pods[expectedMasterName]; exists {
+		err := c.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, podInfo.BoltAddress)
+		if err != nil {
+			return fmt.Errorf("failed to promote expected master %s: %w", expectedMasterName, err)
+		}
+		
+		clusterState.CurrentMaster = expectedMasterName
+		log.Printf("Successfully promoted expected master: %s", expectedMasterName)
+		return nil
+	}
+	
+	return fmt.Errorf("expected master pod %s not found", expectedMasterName)
 }
 
 // updateSyncReplicaInfo updates IsSyncReplica field for all pods based on actual master replica data
@@ -375,11 +586,20 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 	log.Printf("Current cluster state discovered:")
 	log.Printf("  - Total pods: %d", len(clusterState.Pods))
 	log.Printf("  - Current master: %s", clusterState.CurrentMaster)
+	log.Printf("  - State type: %s", clusterState.StateType.String())
+	log.Printf("  - Target master index: %d", clusterState.TargetMasterIndex)
 	
 	// Log pod states
 	for podName, podInfo := range clusterState.Pods {
 		log.Printf("  - Pod %s: State=%s, MemgraphRole=%s, Replicas=%d", 
 			podName, podInfo.State, podInfo.MemgraphRole, len(podInfo.Replicas))
+	}
+
+	// Operational phase: enforce expected topology against drift
+	if !clusterState.IsBootstrapPhase {
+		if err := c.enforceExpectedTopology(ctx, clusterState); err != nil {
+			return fmt.Errorf("failed to enforce expected topology: %w", err)
+		}
 	}
 
 	// Configure replication if needed

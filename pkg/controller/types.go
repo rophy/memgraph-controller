@@ -2,6 +2,7 @@ package controller
 
 import (
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -14,6 +15,16 @@ const (
 	INITIAL PodState = iota // Memgraph is MAIN with no replicas
 	MASTER                  // Memgraph role is MAIN with replicas
 	REPLICA                 // Memgraph role is REPLICA
+)
+
+type ClusterStateType int
+
+const (
+	INITIAL_STATE     ClusterStateType = iota // All pods are "main" - fresh cluster
+	OPERATIONAL_STATE                         // Exactly one master - healthy state  
+	MIXED_STATE                               // Some main, some replica - conflicts
+	NO_MASTER_STATE                           // No main pods - requires promotion
+	SPLIT_BRAIN_STATE                         // Multiple masters - dangerous
 )
 
 func (ps PodState) String() string {
@@ -29,9 +40,33 @@ func (ps PodState) String() string {
 	}
 }
 
+func (cst ClusterStateType) String() string {
+	switch cst {
+	case INITIAL_STATE:
+		return "INITIAL_STATE"
+	case OPERATIONAL_STATE:
+		return "OPERATIONAL_STATE"
+	case MIXED_STATE:
+		return "MIXED_STATE"
+	case NO_MASTER_STATE:
+		return "NO_MASTER_STATE"
+	case SPLIT_BRAIN_STATE:
+		return "SPLIT_BRAIN_STATE"
+	default:
+		return "UNKNOWN_STATE"
+	}
+}
+
 type ClusterState struct {
 	Pods          map[string]*PodInfo
 	CurrentMaster string
+	
+	// Controller state tracking
+	StateType           ClusterStateType
+	TargetMasterIndex   int    // 0 or 1 - which of pod-0/pod-1 should be master
+	IsBootstrapPhase    bool   // True during initial discovery
+	BootstrapSafe       bool   // True if bootstrap can proceed safely
+	LastStateChange     time.Time
 }
 
 type PodInfo struct {
@@ -198,4 +233,200 @@ func (pi *PodInfo) ShouldBecomeReplica(currentMasterName string) bool {
 // NeedsReplicationConfiguration determines if this pod needs replication changes
 func (pi *PodInfo) NeedsReplicationConfiguration(currentMasterName string) bool {
 	return pi.ShouldBecomeMaster(currentMasterName) || pi.ShouldBecomeReplica(currentMasterName)
+}
+
+// ClassifyClusterState determines the cluster state type based on pod roles
+func (cs *ClusterState) ClassifyClusterState() ClusterStateType {
+	var mainPods []string
+	var replicaPods []string
+	
+	// Categorize pods by their actual Memgraph roles
+	for podName, podInfo := range cs.Pods {
+		switch podInfo.MemgraphRole {
+		case "main":
+			mainPods = append(mainPods, podName)
+		case "replica":
+			replicaPods = append(replicaPods, podName)
+		}
+	}
+	
+	// Classify based on main/replica distribution
+	switch {
+	case len(mainPods) == 0 && len(replicaPods) == 0:
+		// No pods with role information yet
+		return INITIAL_STATE
+		
+	case len(mainPods) == len(cs.Pods) && len(replicaPods) == 0:
+		// All pods are main - fresh cluster
+		return INITIAL_STATE
+		
+	case len(mainPods) == 1 && len(replicaPods) >= 0:
+		// Exactly one main - healthy operational state
+		return OPERATIONAL_STATE
+		
+	case len(mainPods) > 1:
+		// Multiple main pods - split brain
+		return SPLIT_BRAIN_STATE
+		
+	case len(mainPods) == 0 && len(replicaPods) > 0:
+		// All replicas, no main - needs promotion
+		return NO_MASTER_STATE
+		
+	case len(mainPods) > 0 && len(replicaPods) > 0:
+		// Mixed state - some main, some replica, need to analyze
+		if len(mainPods) == 1 {
+			return OPERATIONAL_STATE
+		} else {
+			return MIXED_STATE
+		}
+		
+	default:
+		return MIXED_STATE
+	}
+}
+
+// IsBootstrapSafe determines if it's safe to proceed during bootstrap
+func (cs *ClusterState) IsBootstrapSafe() bool {
+	stateType := cs.ClassifyClusterState()
+	
+	switch stateType {
+	case INITIAL_STATE, OPERATIONAL_STATE:
+		return true
+	case MIXED_STATE, NO_MASTER_STATE, SPLIT_BRAIN_STATE:
+		return false
+	default:
+		return false
+	}
+}
+
+// GetMainPods returns list of pods with "main" role
+func (cs *ClusterState) GetMainPods() []string {
+	var mainPods []string
+	for podName, podInfo := range cs.Pods {
+		if podInfo.MemgraphRole == "main" {
+			mainPods = append(mainPods, podName)
+		}
+	}
+	return mainPods
+}
+
+// GetReplicaPods returns list of pods with "replica" role
+func (cs *ClusterState) GetReplicaPods() []string {
+	var replicaPods []string
+	for podName, podInfo := range cs.Pods {
+		if podInfo.MemgraphRole == "replica" {
+			replicaPods = append(replicaPods, podName)
+		}
+	}
+	return replicaPods
+}
+
+// DetermineMasterIndex determines which pod index (0 or 1) should be master
+func (cs *ClusterState) DetermineMasterIndex(config *Config) (int, error) {
+	mainPods := cs.GetMainPods()
+	replicaPods := cs.GetReplicaPods()
+	
+	// Rule 1: If ALL pods are masters (fresh cluster scenario)
+	if len(replicaPods) == 0 && len(mainPods) == len(cs.Pods) {
+		// Fresh cluster - always choose index 0 as master
+		log.Printf("Fresh cluster detected - selecting pod-0 as master")
+		return 0, nil
+	}
+	
+	// Rule 2: If ANY pod is in replica state (existing cluster)
+	if len(replicaPods) > 0 {
+		return cs.analyzeExistingCluster(mainPods, replicaPods, config)
+	}
+	
+	// Rule 3: No pods have role information yet
+	if len(mainPods) == 0 && len(replicaPods) == 0 {
+		// Default to pod-0 when no role information available
+		log.Printf("No role information available - defaulting to pod-0 as master")
+		return 0, nil
+	}
+	
+	// Fallback: select pod-0
+	return 0, nil
+}
+
+// analyzeExistingCluster determines master index for existing clusters
+func (cs *ClusterState) analyzeExistingCluster(mainPods, replicaPods []string, config *Config) (int, error) {
+	// Look for existing master among eligible pods (pod-0 or pod-1)
+	pod0Name := config.GetPodName(0)
+	pod1Name := config.GetPodName(1)
+	
+	// Check if pod-0 is the current master
+	for _, masterPod := range mainPods {
+		if masterPod == pod0Name {
+			log.Printf("Found existing master pod-0: %s", masterPod)
+			return 0, nil
+		}
+	}
+	
+	// Check if pod-1 is the current master
+	for _, masterPod := range mainPods {
+		if masterPod == pod1Name {
+			log.Printf("Found existing master pod-1: %s", masterPod)
+			return 1, nil
+		}
+	}
+	
+	// Master is not pod-0 or pod-1 (unusual but possible)
+	// Apply lower-index precedence rule
+	log.Printf("Current master not in eligible pods (pod-0/pod-1)")
+	log.Printf("Current masters: %v", mainPods)
+	log.Printf("Applying lower-index precedence rule")
+	
+	// Check if pod-0 exists and is available
+	if _, exists := cs.Pods[pod0Name]; exists {
+		log.Printf("Selecting pod-0 as master (lower index precedence)")
+		return 0, nil
+	}
+	
+	// Check if pod-1 exists and is available
+	if _, exists := cs.Pods[pod1Name]; exists {
+		log.Printf("Selecting pod-1 as master (pod-0 not available)")
+		return 1, nil
+	}
+	
+	return -1, fmt.Errorf("neither pod-0 nor pod-1 available for master role")
+}
+
+// ValidateControllerState validates the internal controller state consistency
+func (cs *ClusterState) ValidateControllerState() []string {
+	var warnings []string
+	
+	// Validate target master index
+	if cs.TargetMasterIndex < 0 || cs.TargetMasterIndex > 1 {
+		warnings = append(warnings, fmt.Sprintf("Invalid target master index: %d (should be 0 or 1)", cs.TargetMasterIndex))
+	}
+	
+	// Validate current master exists in pods
+	if cs.CurrentMaster != "" {
+		if _, exists := cs.Pods[cs.CurrentMaster]; !exists {
+			warnings = append(warnings, fmt.Sprintf("Current master '%s' not found in discovered pods", cs.CurrentMaster))
+		}
+	}
+	
+	// Validate state type consistency
+	actualStateType := cs.ClassifyClusterState()
+	if cs.StateType != actualStateType {
+		warnings = append(warnings, fmt.Sprintf("State type mismatch: recorded=%s, actual=%s", cs.StateType.String(), actualStateType.String()))
+	}
+	
+	// Bootstrap phase consistency
+	if cs.IsBootstrapPhase && !cs.BootstrapSafe {
+		warnings = append(warnings, "Bootstrap phase marked as unsafe - controller should not proceed")
+	}
+	
+	return warnings
+}
+
+// LogStateTransition logs important state changes for debugging
+func (cs *ClusterState) LogStateTransition(oldState ClusterStateType, reason string) {
+	if oldState != cs.StateType {
+		log.Printf("🔄 STATE TRANSITION: %s → %s (reason: %s)", 
+			oldState.String(), cs.StateType.String(), reason)
+		cs.LastStateChange = time.Now()
+	}
 }

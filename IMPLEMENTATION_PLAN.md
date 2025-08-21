@@ -35,6 +35,42 @@ This plan implements a simplified robust master selection and failover strategy 
 - Handle failover by swapping target index
 - Maintain SYNC replica strategy for consistency
 
+## Configuration
+
+### **StatefulSet Name Configuration**
+
+The controller now supports configurable StatefulSet names via the `STATEFULSET_NAME` environment variable:
+
+```bash
+# Example: Managing memgraph deployed as "my-db-memgraph"
+export STATEFULSET_NAME="my-db-memgraph"
+
+# Pod names will be: my-db-memgraph-0, my-db-memgraph-1, my-db-memgraph-2, etc.
+# Eligible pods for master/SYNC: my-db-memgraph-0 and my-db-memgraph-1
+# Other pods (my-db-memgraph-2+) are always ASYNC replicas
+```
+
+### **Helm Chart Configuration**
+
+```yaml
+# values.yaml
+env:
+  STATEFULSET_NAME: "my-release-memgraph"  # Set to match your Memgraph StatefulSet name
+  
+# Or use default "memgraph" if not specified
+```
+
+### **Usage Examples**
+
+```bash
+# Default deployment (manages "memgraph" StatefulSet)
+helm install memgraph-controller ./charts/memgraph-controller
+
+# Custom StatefulSet name
+helm install memgraph-controller ./charts/memgraph-controller \
+  --set env.STATEFULSET_NAME="my-production-memgraph"
+```
+
 ## Implementation Stages
 
 ---
@@ -51,7 +87,7 @@ This plan implements a simplified robust master selection and failover strategy 
 ```go
 // pkg/controller/controller_state.go
 type ControllerState struct {
-    targetMasterIndex int  // 0 or 1 - which pod should be master (memgraph-0 or memgraph-1)
+    targetMasterIndex int  // 0 or 1 - which pod should be master (${STATEFULSET_NAME}-0 or ${STATEFULSET_NAME}-1)
     isBootstrapped    bool // whether initial bootstrap has completed
     mu                sync.RWMutex
 }
@@ -127,8 +163,9 @@ func (c *MemgraphController) determineMasterIndex(pods map[string]*PodInfo) (int
     // Rule 1: If ALL pods are masters (fresh cluster scenario)
     if len(replicaPods) == 0 && len(mainPods) == len(pods) {
         log.Printf("Fresh cluster detected: all %d pods are masters", len(pods))
-        log.Printf("Assigning: pod-0=master, pod-1=sync, others=async")
-        return 0, nil  // Always choose pod-0 as master in fresh cluster
+        log.Printf("Assigning: %s=master, %s=sync, others=async", 
+            c.config.GetPodName(0), c.config.GetPodName(1))
+        return 0, nil  // Always choose index 0 as master in fresh cluster
     }
     
     // Rule 2: If ANY pod is in replica state (existing cluster)
@@ -144,14 +181,15 @@ func (c *MemgraphController) analyzeExistingCluster(mainPods, replicaPods []stri
     // Exactly one master - healthy existing cluster
     if len(mainPods) == 1 {
         masterName := mainPods[0]
-        if masterName == "memgraph-0" {
-            return 0, nil
+        masterIndex := c.config.ExtractPodIndex(masterName)
+        
+        if masterIndex == 0 || masterIndex == 1 {
+            return masterIndex, nil
         }
-        if masterName == "memgraph-1" {
-            return 1, nil
-        }
-        // Master is not pod-0 or pod-1 - problematic
-        return -1, fmt.Errorf("master is %s (not pod-0 or pod-1) - manual intervention required", masterName)
+        
+        // Master is not an eligible pod (index 0 or 1) - problematic
+        return -1, fmt.Errorf("master is %s (index %d, not 0 or 1) - manual intervention required", 
+            masterName, masterIndex)
     }
     
     // No masters - all replicas (ambiguous)
@@ -190,7 +228,7 @@ func (c *MemgraphController) Bootstrap(ctx context.Context) error {
     // Remember the decision
     c.controllerState.SetTargetMaster(masterIndex)
     
-    log.Printf("Bootstrap complete: target master is memgraph-%d", masterIndex)
+    log.Printf("Bootstrap complete: target master is %s", c.config.GetPodName(masterIndex))
     return nil
 }
 ```
@@ -217,7 +255,7 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
         return c.Bootstrap(ctx)
     }
     
-    log.Printf("Operational reconciliation: target master is memgraph-%d", targetIndex)
+    log.Printf("Operational reconciliation: target master is %s", c.config.GetPodName(targetIndex))
     
     // Discover current cluster state
     clusterState, err := c.DiscoverCluster(ctx)
@@ -226,8 +264,8 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
     }
     
     // Calculate target topology
-    targetMaster := fmt.Sprintf("memgraph-%d", targetIndex)
-    targetSync := fmt.Sprintf("memgraph-%d", 1-targetIndex)  // The other eligible pod
+    targetMaster := c.config.GetPodName(targetIndex)
+    targetSync := c.config.GetPodName(1-targetIndex)  // The other eligible pod
     
     // Enforce the target topology
     return c.enforceTargetTopology(ctx, clusterState, targetMaster, targetSync)
@@ -252,7 +290,7 @@ func (c *MemgraphController) enforceTargetTopology(ctx context.Context, clusterS
 func (c *MemgraphController) handleMasterFailover(ctx context.Context, clusterState *ClusterState) error {
     // Swap target master index (failover)
     newTargetIndex := c.controllerState.HandleFailover()
-    newMaster := fmt.Sprintf("memgraph-%d", newTargetIndex)
+    newMaster := c.config.GetPodName(newTargetIndex)
     
     log.Printf("FAILOVER: Promoting %s to master", newMaster)
     
@@ -336,9 +374,9 @@ func TestDetermineMasterIndex(t *testing.T) {
         {
             name: "fresh_cluster_all_masters",
             pods: map[string]*PodInfo{
-                "memgraph-0": {MemgraphRole: "main"},
-                "memgraph-1": {MemgraphRole: "main"},
-                "memgraph-2": {MemgraphRole: "main"},
+                "my-release-memgraph-0": {MemgraphRole: "main"},
+                "my-release-memgraph-1": {MemgraphRole: "main"},
+                "my-release-memgraph-2": {MemgraphRole: "main"},
             },
             expectedIndex: 0,
             shouldFail:    false,
@@ -346,9 +384,9 @@ func TestDetermineMasterIndex(t *testing.T) {
         {
             name: "healthy_cluster_pod0_master",
             pods: map[string]*PodInfo{
-                "memgraph-0": {MemgraphRole: "main"},
-                "memgraph-1": {MemgraphRole: "replica"},
-                "memgraph-2": {MemgraphRole: "replica"},
+                "my-release-memgraph-0": {MemgraphRole: "main"},
+                "my-release-memgraph-1": {MemgraphRole: "replica"},
+                "my-release-memgraph-2": {MemgraphRole: "replica"},
             },
             expectedIndex: 0,
             shouldFail:    false,
@@ -356,9 +394,9 @@ func TestDetermineMasterIndex(t *testing.T) {
         {
             name: "failover_cluster_pod1_master",
             pods: map[string]*PodInfo{
-                "memgraph-0": {MemgraphRole: "replica"},
-                "memgraph-1": {MemgraphRole: "main"},
-                "memgraph-2": {MemgraphRole: "replica"},
+                "my-release-memgraph-0": {MemgraphRole: "replica"},
+                "my-release-memgraph-1": {MemgraphRole: "main"},
+                "my-release-memgraph-2": {MemgraphRole: "replica"},
             },
             expectedIndex: 1,
             shouldFail:    false,
@@ -366,9 +404,9 @@ func TestDetermineMasterIndex(t *testing.T) {
         {
             name: "split_brain_multiple_masters",
             pods: map[string]*PodInfo{
-                "memgraph-0": {MemgraphRole: "main"},
-                "memgraph-1": {MemgraphRole: "replica"},
-                "memgraph-2": {MemgraphRole: "main"},
+                "my-release-memgraph-0": {MemgraphRole: "main"},
+                "my-release-memgraph-1": {MemgraphRole: "replica"},
+                "my-release-memgraph-2": {MemgraphRole: "main"},
             },
             expectedIndex: -1,
             shouldFail:    true,
@@ -377,9 +415,9 @@ func TestDetermineMasterIndex(t *testing.T) {
         {
             name: "no_master_all_replicas",
             pods: map[string]*PodInfo{
-                "memgraph-0": {MemgraphRole: "replica"},
-                "memgraph-1": {MemgraphRole: "replica"},
-                "memgraph-2": {MemgraphRole: "replica"},
+                "my-release-memgraph-0": {MemgraphRole: "replica"},
+                "my-release-memgraph-1": {MemgraphRole: "replica"},
+                "my-release-memgraph-2": {MemgraphRole: "replica"},
             },
             expectedIndex: -1,
             shouldFail:    true,
@@ -389,7 +427,9 @@ func TestDetermineMasterIndex(t *testing.T) {
     
     for _, tt := range tests {
         t.Run(tt.name, func(t *testing.T) {
-            controller := &MemgraphController{}
+            controller := &MemgraphController{
+                config: &Config{StatefulSetName: "my-release-memgraph"},
+            }
             index, err := controller.determineMasterIndex(tt.pods)
             
             if tt.shouldFail {
@@ -459,13 +499,14 @@ func TestFailoverHandling(t *testing.T) {
 func TestBootstrapToOperationalFlow(t *testing.T) {
     // Test complete flow from bootstrap through operational enforcement
     controller := &MemgraphController{
+        config: &Config{StatefulSetName: "test-memgraph"},
         controllerState: &ControllerState{},
     }
     
     // Simulate fresh cluster
     pods := map[string]*PodInfo{
-        "memgraph-0": {MemgraphRole: "main"},
-        "memgraph-1": {MemgraphRole: "main"},
+        "test-memgraph-0": {MemgraphRole: "main"},
+        "test-memgraph-1": {MemgraphRole: "main"},
     }
     
     // Bootstrap should succeed and choose pod-0

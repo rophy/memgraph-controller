@@ -52,6 +52,8 @@ spec:
           value: {{ .Values.env.SERVICE_NAME | quote }}
         - name: HTTP_PORT
           value: {{ .Values.env.HTTP_PORT | quote }}
+        - name: STATEFULSET_NAME
+          value: {{ .Values.env.STATEFULSET_NAME | default "memgraph" | quote }}
         ports:
         {{- if .Values.statusApi.enabled }}
         - name: status-api

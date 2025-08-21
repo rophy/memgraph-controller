@@ -12,6 +12,9 @@ env:
   BOLT_PORT: "7687"
   SERVICE_NAME: memgraph
   HTTP_PORT: "8080"
+  # STATEFULSET_NAME will be set automatically based on the target memgraph release name
+  # For example: if user installs memgraph with "helm install my-db memgraph/memgraph"
+  # then STATEFULSET_NAME should be "my-db-memgraph" to match the StatefulSet name
 
 resources:
   limits:

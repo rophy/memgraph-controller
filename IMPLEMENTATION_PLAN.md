@@ -328,7 +328,7 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 }
 ```
 
-**Status**: Not Started
+**Status**: Complete
 
 ---
 
@@ -430,122 +430,69 @@ func (c *MemgraphController) Bootstrap(ctx context.Context) error {
 }
 ```
 
-**Status**: Not Started
+**Status**: Complete
 
 ---
 
-## **Stage 3: Operational Enforcement**
+## **Stage 3: SYNC Replica Strategy Implementation**
 
-**Goal**: Implement operational logic that enforces target master and handles failover
-**Success Criteria**: Controller enforces target topology and handles master failures gracefully
-**Tests**: Operational enforcement and failover tests
+**Goal**: Implement comprehensive SYNC/ASYNC replica management with health monitoring and emergency procedures
+**Success Criteria**: SYNC replica strategy with guaranteed data consistency during failover
+**Tests**: SYNC replica health monitoring and emergency promotion tests
 
 ### Implementation Tasks
 
-#### 3.1 Operational Reconciliation
+#### 3.1 Enhanced SYNC/ASYNC Replica Registration
 ```go
-// Update existing Reconcile method in controller.go
-func (c *MemgraphController) Reconcile(ctx context.Context) error {
-    // Check if we need to bootstrap
-    targetIndex, isBootstrapped := c.controllerState.GetTargetMaster()
-    if !isBootstrapped {
-        return c.Bootstrap(ctx)
-    }
-    
-    log.Printf("Operational reconciliation: target master is %s", c.config.GetPodName(targetIndex))
-    
-    // Discover current cluster state
-    clusterState, err := c.DiscoverCluster(ctx)
-    if err != nil {
-        return fmt.Errorf("failed to discover cluster state: %w", err)
-    }
-    
-    // Calculate target topology
-    targetMaster := c.config.GetPodName(targetIndex)
-    targetSync := c.config.GetPodName(1-targetIndex)  // The other eligible pod
-    
-    // Enforce the target topology
-    return c.enforceTargetTopology(ctx, clusterState, targetMaster, targetSync)
-}
-
-func (c *MemgraphController) enforceTargetTopology(ctx context.Context, clusterState *ClusterState, targetMaster, targetSync string) error {
-    masterPod := clusterState.Pods[targetMaster]
-    
-    // Handle master failure -> trigger failover
-    if masterPod == nil || masterPod.MemgraphRole != "main" {
-        log.Printf("Master failure detected: %s is not available or not master", targetMaster)
-        return c.handleMasterFailover(ctx, clusterState)
-    }
-    
-    // Master is healthy - ensure replication is configured correctly
-    return c.configureReplicationWithTargetTopology(ctx, clusterState, targetMaster, targetSync)
+// Enhanced RegisterReplicaWithModeAndRetry method supports both SYNC and ASYNC modes
+func (mc *MemgraphClient) RegisterReplicaWithModeAndRetry(ctx context.Context, masterBoltAddress, replicaName, replicaAddress, syncMode string) error {
+    // Validates syncMode is "SYNC" or "ASYNC"
+    // Registers replica with specified mode using retry logic
 }
 ```
 
-#### 3.2 Failover Handling
+#### 3.2 Deterministic SYNC Replica Selection  
 ```go
-func (c *MemgraphController) handleMasterFailover(ctx context.Context, clusterState *ClusterState) error {
-    // Swap target master index (failover)
-    newTargetIndex := c.controllerState.HandleFailover()
-    newMaster := c.config.GetPodName(newTargetIndex)
-    
-    log.Printf("FAILOVER: Promoting %s to master", newMaster)
-    
-    // Check if the new master candidate is available
-    newMasterPod := clusterState.Pods[newMaster]
-    if newMasterPod == nil {
-        return fmt.Errorf("failover failed: new master candidate %s is not available", newMaster)
-    }
-    
-    // Check if it's a SYNC replica (safest to promote)
-    if newMasterPod.IsSyncReplica {
-        log.Printf("Promoting SYNC replica %s to master (guaranteed consistency)", newMaster)
-    } else {
-        log.Printf("WARNING: Promoting non-SYNC replica %s - potential data loss risk", newMaster)
-    }
-    
-    // Promote the new master
-    if err := c.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, newMasterPod.BoltAddress); err != nil {
-        return fmt.Errorf("failed to promote %s to master: %w", newMaster, err)
-    }
-    
-    log.Printf("Successfully promoted %s to master", newMaster)
-    return nil
+// Deterministic selection: First pod alphabetically (memgraph-0 over memgraph-1)
+func selectSyncReplica(replicas []*PodInfo) *PodInfo {
+    // Sort by pod name alphabetically, return first
+    // Ensures consistent SYNC replica choice across controller restarts
 }
 ```
 
-#### 3.3 Target Topology Configuration
+#### 3.3 SYNC Replica Health Monitoring
 ```go
-func (c *MemgraphController) configureReplicationWithTargetTopology(ctx context.Context, clusterState *ClusterState, targetMaster, targetSync string) error {
-    log.Printf("Configuring replication: master=%s, sync=%s", targetMaster, targetSync)
-    
-    // Use existing SYNC/ASYNC configuration logic but with target topology
-    clusterState.CurrentMaster = targetMaster
-    
-    // Configure SYNC replica
-    if syncPod := clusterState.Pods[targetSync]; syncPod != nil {
-        if !syncPod.IsSyncReplica {
-            log.Printf("Configuring %s as SYNC replica", targetSync)
-            // Configure as SYNC using existing logic
-        }
-    }
-    
-    // Configure other pods as ASYNC replicas
-    for podName, podInfo := range clusterState.Pods {
-        if podName != targetMaster && podName != targetSync {
-            if podInfo.IsSyncReplica {
-                log.Printf("Reconfiguring %s from SYNC to ASYNC replica", podName)
-                // Reconfigure as ASYNC using existing logic
-            }
-        }
-    }
-    
-    // Use existing ConfigureReplication logic
-    return c.ConfigureReplication(ctx, clusterState)
+// 5-level health monitoring system for SYNC replicas
+func (c *MemgraphController) monitorSyncReplicaHealth(ctx context.Context, clusterState *ClusterState) {
+    // Level 1: Pod running and reachable
+    // Level 2: Memgraph process responding  
+    // Level 3: Replication role confirmed as "replica"
+    // Level 4: Registered in master's SHOW REPLICAS with sync_mode="sync"
+    // Level 5: Replication lag acceptable (behind=0 or low)
 }
 ```
 
-**Status**: Not Started
+#### 3.4 Emergency ASYNC→SYNC Promotion
+```go
+func (c *MemgraphController) promoteAsyncToSync(ctx context.Context, clusterState *ClusterState, targetReplicaPod string) error {
+    // Conservative automation with validation:
+    // 1. Drop current replica registration
+    // 2. Verify replica is caught up (behind=0)
+    // 3. Re-register as SYNC replica
+    // 4. Test write operation to confirm SYNC working
+}
+```
+
+#### 3.5 Controller State Authority Integration
+```go
+func (c *MemgraphController) configureReplicationWithEnhancedSyncStrategy(ctx context.Context, clusterState *ClusterState) error {
+    // Integrates SYNC strategy with controller state tracking
+    // Uses target master index for deterministic SYNC replica assignment
+    // Handles edge cases like missing eligible pods
+}
+```
+
+**Status**: Complete
 
 ---
 

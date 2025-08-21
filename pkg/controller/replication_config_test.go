@@ -288,7 +288,6 @@ func TestReplicationConfiguration_Integration(t *testing.T) {
 			"memgraph-0": {
 				Name:           "memgraph-0",
 				State:          INITIAL,
-				KubernetesRole: "",
 				MemgraphRole:   "main",
 				BoltAddress:    "10.0.0.1:7687",
 				Timestamp:      time.Now(),
@@ -296,7 +295,6 @@ func TestReplicationConfiguration_Integration(t *testing.T) {
 			"memgraph-1": {
 				Name:           "memgraph-1",
 				State:          INITIAL,
-				KubernetesRole: "",
 				MemgraphRole:   "main",
 				BoltAddress:    "10.0.0.2:7687",
 				Timestamp:      time.Now().Add(-1 * time.Minute),
@@ -304,7 +302,6 @@ func TestReplicationConfiguration_Integration(t *testing.T) {
 			"memgraph-2": {
 				Name:           "memgraph-2",
 				State:          INITIAL,
-				KubernetesRole: "",
 				MemgraphRole:   "main",
 				BoltAddress:    "10.0.0.3:7687",
 				Timestamp:      time.Now().Add(-2 * time.Minute),

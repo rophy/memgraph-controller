@@ -25,7 +25,6 @@ type ClusterStatus struct {
 type PodStatus struct {
 	Name                 string                `json:"name"`
 	State                string                `json:"state"`
-	KubernetesRole       string                `json:"kubernetes_role"`
 	MemgraphRole         string                `json:"memgraph_role"`
 	BoltAddress          string                `json:"bolt_address"`
 	ReplicationAddress   string                `json:"replication_address"`
@@ -39,7 +38,6 @@ type PodStatus struct {
 // StatusInconsistency represents pod state inconsistency for API response
 type StatusInconsistency struct {
 	Description      string `json:"description"`
-	KubernetesRole   string `json:"kubernetes_role"`
 	MemgraphRole     string `json:"memgraph_role"`
 }
 
@@ -51,7 +49,6 @@ func convertPodInfoToStatus(podInfo *PodInfo, healthy bool) PodStatus {
 	if stateInc := podInfo.DetectStateInconsistency(); stateInc != nil {
 		inconsistency = &StatusInconsistency{
 			Description:    stateInc.Description,
-			KubernetesRole: stateInc.KubernetesRole,
 			MemgraphRole:   stateInc.MemgraphRole,
 		}
 	} else if !healthy {
@@ -63,7 +60,6 @@ func convertPodInfoToStatus(podInfo *PodInfo, healthy bool) PodStatus {
 		
 		inconsistency = &StatusInconsistency{
 			Description:    "Pod is unreachable - cannot query Memgraph status",
-			KubernetesRole: podInfo.KubernetesRole,
 			MemgraphRole:   memgraphRole,
 		}
 	}
@@ -77,7 +73,6 @@ func convertPodInfoToStatus(podInfo *PodInfo, healthy bool) PodStatus {
 	return PodStatus{
 		Name:                 podInfo.Name,
 		State:                podInfo.State.String(),
-		KubernetesRole:       podInfo.KubernetesRole,
 		MemgraphRole:         podInfo.MemgraphRole,
 		BoltAddress:          podInfo.BoltAddress,
 		ReplicationAddress:   podInfo.ReplicationAddress,

@@ -47,9 +47,6 @@ func TestConvertPodInfoToStatus(t *testing.T) {
 		t.Error("Expected pod to be healthy")
 	}
 	
-	if status.KubernetesRole != "master" {
-		t.Errorf("Expected KubernetesRole 'master', got '%s'", status.KubernetesRole)
-	}
 	
 	if status.MemgraphRole != "main" {
 		t.Errorf("Expected MemgraphRole 'main', got '%s'", status.MemgraphRole)
@@ -118,9 +115,6 @@ func TestConvertPodInfoToStatus_SyncReplica(t *testing.T) {
 		t.Error("Expected pod to be a SYNC replica")
 	}
 	
-	if status.KubernetesRole != "replica" {
-		t.Errorf("Expected KubernetesRole 'replica', got '%s'", status.KubernetesRole)
-	}
 	
 	if status.MemgraphRole != "replica" {
 		t.Errorf("Expected MemgraphRole 'replica', got '%s'", status.MemgraphRole)

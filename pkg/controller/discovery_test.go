@@ -87,9 +87,6 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 
 	// Check pod1
 	if podInfo, exists := clusterState.Pods["memgraph-0"]; exists {
-		if podInfo.KubernetesRole != "master" {
-			t.Errorf("Pod memgraph-0 role = %s, want master", podInfo.KubernetesRole)
-		}
 		if podInfo.BoltAddress != "10.0.0.1:7687" {
 			t.Errorf("Pod memgraph-0 BoltAddress = %s, want 10.0.0.1:7687", podInfo.BoltAddress)
 		}
@@ -99,9 +96,6 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 
 	// Check pod2
 	if podInfo, exists := clusterState.Pods["memgraph-1"]; exists {
-		if podInfo.KubernetesRole != "replica" {
-			t.Errorf("Pod memgraph-1 role = %s, want replica", podInfo.KubernetesRole)
-		}
 		if podInfo.ReplicaName != "memgraph_1" {
 			t.Errorf("Pod memgraph-1 ReplicaName = %s, want memgraph_1", podInfo.ReplicaName)
 		}

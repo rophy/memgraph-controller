@@ -111,9 +111,9 @@ func TestE2E_PodDiscovery(t *testing.T) {
 			t.Errorf("Pod %s has no IP address", podName)
 		}
 
-		t.Logf("Pod %s: Phase=%s, IP=%s, BoltAddr=%s, Role=%s", 
+		t.Logf("Pod %s: Phase=%s, IP=%s, BoltAddr=%s", 
 			podName, podInfo.Pod.Status.Phase, podInfo.Pod.Status.PodIP, 
-			podInfo.BoltAddress, podInfo.KubernetesRole)
+			podInfo.BoltAddress)
 	}
 
 	// Validate master selection

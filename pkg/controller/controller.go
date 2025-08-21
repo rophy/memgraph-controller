@@ -378,8 +378,8 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 	
 	// Log pod states
 	for podName, podInfo := range clusterState.Pods {
-		log.Printf("  - Pod %s: State=%s, K8sRole=%s, MemgraphRole=%s, Replicas=%d", 
-			podName, podInfo.State, podInfo.KubernetesRole, podInfo.MemgraphRole, len(podInfo.Replicas))
+		log.Printf("  - Pod %s: State=%s, MemgraphRole=%s, Replicas=%d", 
+			podName, podInfo.State, podInfo.MemgraphRole, len(podInfo.Replicas))
 	}
 
 	// Configure replication if needed
@@ -876,17 +876,11 @@ func (c *MemgraphController) SyncPodLabels(ctx context.Context, clusterState *Cl
 	for podName, podInfo := range clusterState.Pods {
 		// Reclassify state based on current information
 		podInfo.State = podInfo.ClassifyState()
-		log.Printf("Pod %s final state: %s (K8sRole=%s, MemgraphRole=%s)", 
-			podName, podInfo.State, podInfo.KubernetesRole, podInfo.MemgraphRole)
+		log.Printf("Pod %s final state: %s (MemgraphRole=%s)", 
+			podName, podInfo.State, podInfo.MemgraphRole)
 	}
 
-	// Use the pod discovery component to sync labels
-	err := c.podDiscovery.SyncPodLabelsWithState(ctx, clusterState)
-	if err != nil {
-		return fmt.Errorf("failed to synchronize pod labels with state: %w", err)
-	}
-
-	log.Println("Pod label synchronization completed successfully")
+	log.Println("Replication configuration completed successfully")
 	return nil
 }
 

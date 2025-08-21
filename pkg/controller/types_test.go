@@ -81,9 +81,6 @@ func TestNewPodInfo(t *testing.T) {
 		t.Errorf("Timestamp = %s, want %s", podInfo.Timestamp, expectedTime)
 	}
 
-	if podInfo.KubernetesRole != "master" {
-		t.Errorf("KubernetesRole = %s, want master", podInfo.KubernetesRole)
-	}
 
 	if podInfo.BoltAddress != "10.0.0.1:7687" {
 		t.Errorf("BoltAddress = %s, want 10.0.0.1:7687", podInfo.BoltAddress)
@@ -130,9 +127,6 @@ func TestNewPodInfo_NoStartTime(t *testing.T) {
 		t.Errorf("Timestamp = %s, want %s", podInfo.Timestamp, expectedTime)
 	}
 
-	if podInfo.KubernetesRole != "" {
-		t.Errorf("KubernetesRole = %s, want empty", podInfo.KubernetesRole)
-	}
 }
 
 func TestNewPodInfo_NoPodIP(t *testing.T) {

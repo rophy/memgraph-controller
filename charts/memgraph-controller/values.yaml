@@ -63,10 +63,10 @@ statusApi:
   port: 8080
   path: /api/v1/status
 
-# Health check configuration (disabled - controller doesn't expose health endpoints yet)
+# Health check configuration
 health:
-  port: null
-  path: /healthz
+  port: 8080
+  path: /health
 
 # Metrics configuration
 metrics:

@@ -306,12 +306,27 @@ func (c *MemgraphController) selectMasterAfterQuerying(clusterState *ClusterStat
 	// After bootstrap validation, we now have authority to make decisions
 	clusterState.IsBootstrapPhase = false
 	
-	// Use controller state authority based on bootstrap vs operational phase
-	if clusterState.StateType == INITIAL_STATE {
+	// Enhanced master selection using controller state authority
+	log.Printf("Enhanced master selection: state=%s, target_index=%d", 
+		clusterState.StateType.String(), clusterState.TargetMasterIndex)
+	
+	// Use controller state authority based on cluster state
+	switch clusterState.StateType {
+	case INITIAL_STATE:
 		c.applyDeterministicRoles(clusterState)
-	} else {
+	case OPERATIONAL_STATE:
 		c.learnExistingTopology(clusterState)
+	default:
+		// For other states, apply enhanced master selection logic
+		c.enhancedMasterSelection(clusterState)
 	}
+	
+	// Validate master selection result
+	c.validateMasterSelection(clusterState)
+	
+	// Log comprehensive cluster health summary
+	healthSummary := clusterState.GetClusterHealthSummary()
+	log.Printf("📋 CLUSTER HEALTH SUMMARY: %+v", healthSummary)
 }
 
 // applyDeterministicRoles applies roles for fresh/initial clusters
@@ -377,6 +392,397 @@ func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
 		clusterState.CurrentMaster = targetMasterName
 		log.Printf("Using determined target master as fallback: %s", targetMasterName)
 	}
+}
+
+// enhancedMasterSelection applies enhanced master selection with SYNC replica priority
+func (c *MemgraphController) enhancedMasterSelection(clusterState *ClusterState) {
+	log.Printf("Applying enhanced master selection logic...")
+	
+	// Priority-based master selection strategy:
+	// 1. Controller's target master (if available and healthy)
+	// 2. Existing MAIN node (avoid unnecessary failover)
+	// 3. SYNC replica (guaranteed data consistency)
+	// 4. Manual intervention required (no safe automatic promotion)
+	
+	targetMasterName := c.config.GetPodName(clusterState.TargetMasterIndex)
+	var targetMaster *PodInfo
+	var existingMain *PodInfo
+	var syncReplica *PodInfo
+	
+	// Analyze available pods
+	for podName, podInfo := range clusterState.Pods {
+		// Priority 1: Controller's target master
+		if podName == targetMasterName {
+			targetMaster = podInfo
+		}
+		
+		// Priority 2: Existing MAIN node
+		if podInfo.MemgraphRole == "main" {
+			existingMain = podInfo
+		}
+		
+		// Priority 3: SYNC replica
+		if podInfo.IsSyncReplica {
+			syncReplica = podInfo
+		}
+	}
+	
+	// Enhanced master selection decision tree
+	var selectedMaster *PodInfo
+	var selectionReason string
+	
+	// Priority 1: Controller's target master (if healthy)
+	if targetMaster != nil && c.isPodHealthyForMaster(targetMaster) {
+		selectedMaster = targetMaster
+		selectionReason = fmt.Sprintf("controller target master (index %d)", clusterState.TargetMasterIndex)
+		log.Printf("✅ Using controller's target master: %s", targetMasterName)
+		
+	// Priority 2: Existing MAIN node (avoid unnecessary failover)
+	} else if existingMain != nil && c.isPodHealthyForMaster(existingMain) {
+		selectedMaster = existingMain
+		selectionReason = "existing MAIN node (avoid failover)"
+		log.Printf("✅ Keeping existing MAIN node: %s", existingMain.Name)
+		
+		// Update target master index to match existing master
+		existingMasterIndex := c.config.ExtractPodIndex(existingMain.Name)
+		if existingMasterIndex >= 0 && existingMasterIndex <= 1 {
+			clusterState.TargetMasterIndex = existingMasterIndex
+			log.Printf("Updated target master index to match existing: %d", existingMasterIndex)
+		}
+		
+	// Priority 3: SYNC replica (guaranteed data consistency)
+	} else if syncReplica != nil && c.isPodHealthyForMaster(syncReplica) {
+		selectedMaster = syncReplica
+		selectionReason = "SYNC replica promotion (guaranteed consistency)"
+		log.Printf("🔄 PROMOTING SYNC REPLICA: %s has all committed transactions", syncReplica.Name)
+		
+		// Update target master index to match SYNC replica
+		syncReplicaIndex := c.config.ExtractPodIndex(syncReplica.Name)
+		if syncReplicaIndex >= 0 && syncReplicaIndex <= 1 {
+			clusterState.TargetMasterIndex = syncReplicaIndex
+			log.Printf("Updated target master index to match SYNC replica: %d", syncReplicaIndex)
+		}
+		
+	// Priority 4: No safe automatic promotion available
+	} else {
+		c.handleNoSafePromotion(clusterState, targetMasterName, existingMain, syncReplica)
+		return
+	}
+	
+	// Set the selected master
+	if selectedMaster != nil {
+		clusterState.CurrentMaster = selectedMaster.Name
+		log.Printf("✅ Enhanced master selection result: %s (reason: %s)", 
+			selectedMaster.Name, selectionReason)
+	}
+	
+	// Create and log master selection metrics
+	metrics := &MasterSelectionMetrics{
+		Timestamp:            time.Now(),
+		StateType:            clusterState.StateType,
+		TargetMasterIndex:    clusterState.TargetMasterIndex,
+		SelectedMaster:       clusterState.CurrentMaster,
+		SelectionReason:      selectionReason,
+		HealthyPodsCount:     c.countHealthyPods(clusterState),
+		SyncReplicaAvailable: syncReplica != nil,
+		FailoverDetected:     false,
+		DecisionFactors:      c.buildDecisionFactors(targetMaster, existingMain, syncReplica),
+	}
+	
+	clusterState.LogMasterSelectionDecision(metrics)
+}
+
+// countHealthyPods counts pods that are healthy for master role
+func (c *MemgraphController) countHealthyPods(clusterState *ClusterState) int {
+	count := 0
+	for _, podInfo := range clusterState.Pods {
+		if c.isPodHealthyForMaster(podInfo) {
+			count++
+		}
+	}
+	return count
+}
+
+// buildDecisionFactors creates list of factors that influenced master selection
+func (c *MemgraphController) buildDecisionFactors(targetMaster, existingMain, syncReplica *PodInfo) []string {
+	var factors []string
+	
+	if targetMaster != nil {
+		if c.isPodHealthyForMaster(targetMaster) {
+			factors = append(factors, "target_master_healthy")
+		} else {
+			factors = append(factors, "target_master_unhealthy")
+		}
+	} else {
+		factors = append(factors, "target_master_missing")
+	}
+	
+	if existingMain != nil {
+		if c.isPodHealthyForMaster(existingMain) {
+			factors = append(factors, "existing_main_healthy")
+		} else {
+			factors = append(factors, "existing_main_unhealthy")
+		}
+	} else {
+		factors = append(factors, "no_existing_main")
+	}
+	
+	if syncReplica != nil {
+		if c.isPodHealthyForMaster(syncReplica) {
+			factors = append(factors, "sync_replica_available")
+		} else {
+			factors = append(factors, "sync_replica_unhealthy")
+		}
+	} else {
+		factors = append(factors, "no_sync_replica")
+	}
+	
+	return factors
+}
+
+// isPodHealthyForMaster checks if a pod is healthy enough to be master
+func (c *MemgraphController) isPodHealthyForMaster(podInfo *PodInfo) bool {
+	// Pod must have a bolt address (IP assigned)
+	if podInfo.BoltAddress == "" {
+		log.Printf("Pod %s not healthy for master: no bolt address", podInfo.Name)
+		return false
+	}
+	
+	// Pod must have been successfully queried for Memgraph role
+	if podInfo.MemgraphRole == "" {
+		log.Printf("Pod %s not healthy for master: no Memgraph role info", podInfo.Name)
+		return false
+	}
+	
+	return true
+}
+
+// handleNoSafePromotion handles scenarios where no safe automatic promotion is possible
+func (c *MemgraphController) handleNoSafePromotion(clusterState *ClusterState, targetMasterName string, existingMain, syncReplica *PodInfo) {
+	log.Printf("❌ CRITICAL: No safe automatic master promotion available")
+	
+	// Analyze why promotion is not safe
+	if targetMaster, exists := clusterState.Pods[targetMasterName]; exists {
+		if !c.isPodHealthyForMaster(targetMaster) {
+			log.Printf("Target master %s is not healthy", targetMasterName)
+		}
+	} else {
+		log.Printf("Target master %s not found in cluster", targetMasterName)
+	}
+	
+	if existingMain != nil && !c.isPodHealthyForMaster(existingMain) {
+		log.Printf("Existing main %s is not healthy", existingMain.Name)
+	}
+	
+	if syncReplica != nil && !c.isPodHealthyForMaster(syncReplica) {
+		log.Printf("SYNC replica %s is not healthy", syncReplica.Name)
+	} else if syncReplica == nil {
+		log.Printf("No SYNC replica available for safe promotion")
+	}
+	
+	// Provide recovery guidance
+	log.Printf("🔧 Manual intervention required:")
+	log.Printf("  1. Check pod health: kubectl get pods -n %s", c.config.Namespace)
+	log.Printf("  2. Check Memgraph connectivity to pods")
+	log.Printf("  3. Manually promote healthy pod if available")
+	log.Printf("  4. Consider emergency ASYNC→SYNC promotion if needed")
+	
+	// Do not set any master - require manual intervention
+	clusterState.CurrentMaster = ""
+}
+
+// validateMasterSelection validates the master selection result
+func (c *MemgraphController) validateMasterSelection(clusterState *ClusterState) {
+	log.Printf("Validating master selection result...")
+	
+	if clusterState.CurrentMaster == "" {
+		log.Printf("⚠️  No master selected - cluster will require manual intervention")
+		return
+	}
+	
+	// Validate selected master exists in pods
+	masterPod, exists := clusterState.Pods[clusterState.CurrentMaster]
+	if !exists {
+		log.Printf("❌ VALIDATION FAILED: Selected master %s not found in pods", clusterState.CurrentMaster)
+		clusterState.CurrentMaster = ""
+		return
+	}
+	
+	// Validate master health
+	if !c.isPodHealthyForMaster(masterPod) {
+		log.Printf("❌ VALIDATION FAILED: Selected master %s is not healthy", clusterState.CurrentMaster)
+		clusterState.CurrentMaster = ""
+		return
+	}
+	
+	// Validate master index consistency
+	masterIndex := c.config.ExtractPodIndex(clusterState.CurrentMaster)
+	if masterIndex != clusterState.TargetMasterIndex {
+		log.Printf("⚠️  Master index mismatch: selected=%d, target=%d", masterIndex, clusterState.TargetMasterIndex)
+		if masterIndex >= 0 && masterIndex <= 1 {
+			// Update target to match reality
+			clusterState.TargetMasterIndex = masterIndex
+			log.Printf("Updated target master index to match selection: %d", masterIndex)
+		}
+	}
+	
+	log.Printf("✅ Master selection validation passed: %s (index %d)", 
+		clusterState.CurrentMaster, clusterState.TargetMasterIndex)
+}
+
+// detectMasterFailover detects if current master has failed and promotion is needed
+func (c *MemgraphController) detectMasterFailover(clusterState *ClusterState) bool {
+	if clusterState.CurrentMaster == "" {
+		// No master currently set - not a failover scenario
+		return false
+	}
+	
+	// Check if current master pod still exists
+	masterPod, exists := clusterState.Pods[clusterState.CurrentMaster]
+	if !exists {
+		log.Printf("🚨 MASTER FAILOVER DETECTED: Master pod %s no longer exists", clusterState.CurrentMaster)
+		return true
+	}
+	
+	// Check if current master is still healthy
+	if !c.isPodHealthyForMaster(masterPod) {
+		log.Printf("🚨 MASTER FAILOVER DETECTED: Master pod %s is no longer healthy", clusterState.CurrentMaster)
+		return true
+	}
+	
+	// Check if current master still has MAIN role
+	if masterPod.MemgraphRole != "main" {
+		log.Printf("🚨 MASTER FAILOVER DETECTED: Master pod %s no longer has MAIN role (current: %s)", 
+			clusterState.CurrentMaster, masterPod.MemgraphRole)
+		return true
+	}
+	
+	return false
+}
+
+// handleMasterFailover handles master failover scenarios with SYNC replica priority
+func (c *MemgraphController) handleMasterFailover(ctx context.Context, clusterState *ClusterState) error {
+	log.Printf("🔄 Handling master failover...")
+	
+	// Clear failed master
+	oldMaster := clusterState.CurrentMaster
+	clusterState.CurrentMaster = ""
+	
+	// Find suitable replacement using SYNC replica priority
+	var syncReplica *PodInfo
+	var healthyReplicas []*PodInfo
+	
+	for _, podInfo := range clusterState.Pods {
+		if podInfo.Name == oldMaster {
+			continue // Skip the failed master
+		}
+		
+		if c.isPodHealthyForMaster(podInfo) {
+			healthyReplicas = append(healthyReplicas, podInfo)
+			
+			// Identify SYNC replica
+			if podInfo.IsSyncReplica {
+				syncReplica = podInfo
+			}
+		}
+	}
+	
+	// Failover decision tree
+	var newMaster *PodInfo
+	var promotionReason string
+	
+	if syncReplica != nil {
+		// Priority 1: SYNC replica (guaranteed data consistency)
+		newMaster = syncReplica
+		promotionReason = "SYNC replica failover (zero data loss)"
+		log.Printf("✅ SYNC REPLICA FAILOVER: Promoting %s (guaranteed all committed data)", syncReplica.Name)
+		
+	} else if len(healthyReplicas) > 0 {
+		// Priority 2: Healthy replica (potential data loss warning)
+		newMaster = c.selectBestAsyncReplica(healthyReplicas, clusterState.TargetMasterIndex)
+		promotionReason = "ASYNC replica failover (potential data loss)"
+		log.Printf("⚠️  ASYNC REPLICA FAILOVER: Promoting %s (may have missing transactions)", newMaster.Name)
+		log.Printf("⚠️  WARNING: Potential data loss - ASYNC replica may not have latest committed data")
+		
+	} else {
+		// No healthy replicas available
+		log.Printf("❌ CRITICAL: No healthy replicas available for failover")
+		log.Printf("Cluster will remain without master until manual intervention")
+		return fmt.Errorf("no healthy replicas available for master failover")
+	}
+	
+	// Promote new master
+	if newMaster != nil {
+		log.Printf("🔄 Promoting new master: %s → %s (reason: %s)", 
+			oldMaster, newMaster.Name, promotionReason)
+		
+		// Perform promotion
+		err := c.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, newMaster.BoltAddress)
+		if err != nil {
+			return fmt.Errorf("failed to promote new master %s: %w", newMaster.Name, err)
+		}
+		
+		// Update cluster state
+		clusterState.CurrentMaster = newMaster.Name
+		
+		// Update target master index to match promoted master
+		newMasterIndex := c.config.ExtractPodIndex(newMaster.Name)
+		if newMasterIndex >= 0 && newMasterIndex <= 1 {
+			clusterState.TargetMasterIndex = newMasterIndex
+		}
+		
+		log.Printf("✅ Master failover completed: %s promoted successfully", newMaster.Name)
+		
+		// Log failover event with detailed metrics
+		failoverMetrics := &MasterSelectionMetrics{
+			Timestamp:            time.Now(),
+			StateType:            clusterState.StateType,
+			TargetMasterIndex:    clusterState.TargetMasterIndex,
+			SelectedMaster:       newMaster.Name,
+			SelectionReason:      promotionReason,
+			HealthyPodsCount:     len(healthyReplicas),
+			SyncReplicaAvailable: syncReplica != nil,
+			FailoverDetected:     true,
+			DecisionFactors:      []string{fmt.Sprintf("old_master_failed:%s", oldMaster), fmt.Sprintf("data_safety:%t", syncReplica != nil)},
+		}
+		
+		log.Printf("📊 FAILOVER EVENT: old_master=%s, new_master=%s, reason=%s, data_safe=%t", 
+			oldMaster, newMaster.Name, promotionReason, syncReplica != nil)
+		
+		clusterState.LogMasterSelectionDecision(failoverMetrics)
+	}
+	
+	return nil
+}
+
+// selectBestAsyncReplica selects the best ASYNC replica for failover
+func (c *MemgraphController) selectBestAsyncReplica(replicas []*PodInfo, targetIndex int) *PodInfo {
+	// Prefer replica that matches target master index
+	targetMasterName := c.config.GetPodName(targetIndex)
+	for _, replica := range replicas {
+		if replica.Name == targetMasterName {
+			log.Printf("Selected ASYNC replica matching target index: %s", replica.Name)
+			return replica
+		}
+	}
+	
+	// Fallback: select replica with lowest index (deterministic)
+	var bestReplica *PodInfo
+	bestIndex := 999
+	
+	for _, replica := range replicas {
+		replicaIndex := c.config.ExtractPodIndex(replica.Name)
+		if replicaIndex >= 0 && replicaIndex < bestIndex {
+			bestIndex = replicaIndex
+			bestReplica = replica
+		}
+	}
+	
+	if bestReplica != nil {
+		log.Printf("Selected ASYNC replica with lowest index: %s (index %d)", bestReplica.Name, bestIndex)
+	}
+	
+	return bestReplica
 }
 
 // enforceExpectedTopology enforces controller's known good topology against state drift
@@ -595,8 +1001,18 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 			podName, podInfo.State, podInfo.MemgraphRole, len(podInfo.Replicas))
 	}
 
-	// Operational phase: enforce expected topology against drift
+	// Operational phase: detect failover and enforce expected topology
 	if !clusterState.IsBootstrapPhase {
+		// Check for master failover first
+		if c.detectMasterFailover(clusterState) {
+			log.Printf("Master failover detected - initiating failover procedure...")
+			if err := c.handleMasterFailover(ctx, clusterState); err != nil {
+				log.Printf("❌ Master failover failed: %v", err)
+				// Continue with topology enforcement to handle partial failures
+			}
+		}
+		
+		// Enforce expected topology against drift
 		if err := c.enforceExpectedTopology(ctx, clusterState); err != nil {
 			return fmt.Errorf("failed to enforce expected topology: %w", err)
 		}

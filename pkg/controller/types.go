@@ -430,3 +430,70 @@ func (cs *ClusterState) LogStateTransition(oldState ClusterStateType, reason str
 		cs.LastStateChange = time.Now()
 	}
 }
+
+// MasterSelectionMetrics tracks master selection decision making
+type MasterSelectionMetrics struct {
+	Timestamp                time.Time
+	StateType               ClusterStateType
+	TargetMasterIndex       int
+	SelectedMaster          string
+	SelectionReason         string
+	HealthyPodsCount        int
+	SyncReplicaAvailable    bool
+	FailoverDetected        bool
+	DecisionFactors         []string
+}
+
+// LogMasterSelectionDecision logs detailed master selection metrics
+func (cs *ClusterState) LogMasterSelectionDecision(metrics *MasterSelectionMetrics) {
+	log.Printf("📊 MASTER SELECTION METRICS:")
+	log.Printf("  Timestamp: %s", metrics.Timestamp.Format(time.RFC3339))
+	log.Printf("  State Type: %s", metrics.StateType.String())
+	log.Printf("  Target Master Index: %d", metrics.TargetMasterIndex)
+	log.Printf("  Selected Master: %s", metrics.SelectedMaster)
+	log.Printf("  Selection Reason: %s", metrics.SelectionReason)
+	log.Printf("  Healthy Pods: %d", metrics.HealthyPodsCount)
+	log.Printf("  SYNC Replica Available: %t", metrics.SyncReplicaAvailable)
+	log.Printf("  Failover Detected: %t", metrics.FailoverDetected)
+	log.Printf("  Decision Factors: %v", metrics.DecisionFactors)
+}
+
+// GetClusterHealthSummary returns a summary of cluster health
+func (cs *ClusterState) GetClusterHealthSummary() map[string]interface{} {
+	healthyPods := 0
+	totalPods := len(cs.Pods)
+	syncReplicaCount := 0
+	mainPods := 0
+	replicaPods := 0
+	
+	for _, podInfo := range cs.Pods {
+		if podInfo.BoltAddress != "" && podInfo.MemgraphRole != "" {
+			healthyPods++
+		}
+		
+		if podInfo.IsSyncReplica {
+			syncReplicaCount++
+		}
+		
+		switch podInfo.MemgraphRole {
+		case "main":
+			mainPods++
+		case "replica":
+			replicaPods++
+		}
+	}
+	
+	return map[string]interface{}{
+		"total_pods":         totalPods,
+		"healthy_pods":       healthyPods,
+		"unhealthy_pods":     totalPods - healthyPods,
+		"main_pods":         mainPods,
+		"replica_pods":      replicaPods,
+		"sync_replicas":     syncReplicaCount,
+		"current_master":    cs.CurrentMaster,
+		"target_index":      cs.TargetMasterIndex,
+		"state_type":        cs.StateType.String(),
+		"bootstrap_phase":   cs.IsBootstrapPhase,
+		"last_change":       cs.LastStateChange,
+	}
+}

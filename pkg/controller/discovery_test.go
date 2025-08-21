@@ -109,9 +109,9 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 		t.Error("Pod memgraph-1 not found")
 	}
 
-	// Master should be pod2 (memgraph-1) because it has the most recent start time
-	if clusterState.CurrentMaster != "memgraph-1" {
-		t.Errorf("CurrentMaster = %s, want memgraph-1", clusterState.CurrentMaster)
+	// After discovery, master selection is deferred until after Memgraph querying
+	if clusterState.CurrentMaster != "" {
+		t.Errorf("CurrentMaster = %s, want empty (deferred until after Memgraph querying)", clusterState.CurrentMaster)
 	}
 }
 

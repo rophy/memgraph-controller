@@ -44,6 +44,8 @@ type PodInfo struct {
 	ReplicationAddress    string        // <pod-name>.<service-name>:10000 for replication
 	ReplicaName           string        // Pod name with dashes → underscores for REGISTER REPLICA
 	Replicas              []string      // Result of SHOW REPLICAS (only for MAIN nodes)
+	ReplicasInfo          []ReplicaInfo // Detailed replica information including sync mode
+	IsSyncReplica         bool          // True if this replica is configured as SYNC
 	Pod                   *v1.Pod       // Reference to Kubernetes pod object
 }
 
@@ -89,6 +91,8 @@ func NewPodInfo(pod *v1.Pod, serviceName string) *PodInfo {
 		ReplicationAddress: replicationAddress,
 		ReplicaName:        replicaName,
 		Replicas:           []string{},
+		ReplicasInfo:       []ReplicaInfo{},
+		IsSyncReplica:      false,
 		Pod:                pod,
 	}
 }

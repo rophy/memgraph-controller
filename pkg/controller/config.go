@@ -13,6 +13,7 @@ type Config struct {
 	BoltPort           string
 	ReplicationPort    string
 	ServiceName        string
+	HTTPPort           string
 }
 
 func LoadConfig() *Config {
@@ -28,6 +29,7 @@ func LoadConfig() *Config {
 		BoltPort:           getEnvOrDefault("BOLT_PORT", "7687"),
 		ReplicationPort:    getEnvOrDefault("REPLICATION_PORT", "10000"),
 		ServiceName:        getEnvOrDefault("SERVICE_NAME", "memgraph"),
+		HTTPPort:           getEnvOrDefault("HTTP_PORT", "8080"),
 	}
 }
 

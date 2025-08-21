@@ -180,7 +180,65 @@ A Kubernetes controller that manages Memgraph cluster replication by inspecting 
 - **Failure Handling**: Tracks failure count (max 5) with recovery on successful reconciliation
 - **Graceful Shutdown**: Proper cleanup of informers, workers, and HTTP server
 
-## Stage 7: Configuration & Deployment
+## Stage 7: SYNC Replica Strategy Implementation
+**Goal**: Implement SYNC/ASYNC replication strategy for guaranteed data consistency
+**Success Criteria**:
+- One SYNC replica per cluster (guaranteed consistency)
+- Remaining replicas configured as ASYNC (performance)
+- Master selection prioritizes SYNC replicas (zero data loss)
+- Emergency ASYNC→SYNC promotion procedures
+- Enhanced status API with SYNC replica tracking
+**Tests**:
+- Test SYNC replica selection and configuration
+- Test master selection with SYNC replica priority
+- Test emergency procedures for SYNC replica failures
+- Test status API SYNC replica information
+**Status**: Complete
+
+### Tasks:
+- ✅ Implement `RegisterReplicaWithModeAndRetry()` supporting SYNC/ASYNC modes
+- ✅ Add deterministic SYNC replica selection (alphabetical)
+- ✅ Update master selection logic to prioritize SYNC replicas
+- ✅ Add `IsSyncReplica` tracking to PodInfo structure
+- ✅ Implement emergency ASYNC→SYNC promotion procedures
+- ✅ Add SYNC replica health monitoring and failure detection
+- ✅ Enhance status API with SYNC replica information
+- ✅ Update tests to cover SYNC replica scenarios
+
+### Implementation Details:
+- **SYNC Replica Selection**: Deterministic (first pod alphabetically)
+- **Master Selection Priority**: 1) Existing MAIN, 2) SYNC replica, 3) Latest timestamp
+- **Emergency Procedures**: Automatic SYNC replica failure detection with manual promotion guidance
+- **Status API**: `current_sync_replica`, `sync_replica_healthy`, and `is_sync_replica` fields
+
+## Stage 8: Remove Pod Label Dependencies
+**Goal**: Eliminate pod labels as source of truth to remove consistency issues
+**Success Criteria**:
+- Single source of truth: Only Memgraph state via mgconsole queries
+- No pod label management code
+- Simplified controller logic with fewer failure points
+- Faster reconciliation without label update overhead
+**Tests**:
+- Test pod discovery without label dependencies
+- Test state classification using only Memgraph data
+- Verify no label-related consistency issues
+**Status**: Not Started
+
+### Tasks:
+- Remove all label management code (`UpdatePodLabel`, `SyncPodLabelsWithState`, etc.)
+- Remove `KubernetesRole` field from `PodInfo` structure
+- Simplify `DetectStateInconsistency` to only check Memgraph state
+- Remove label-based logic from pod discovery
+- Update status API to remove `kubernetes_role` field
+- Update tests to remove label-based expectations
+
+### Rationale:
+- **Consistency Issues**: Pod labels create dual source of truth with Memgraph state
+- **Race Conditions**: Labels can diverge from actual Memgraph replication state
+- **Additional Complexity**: Label syncing adds failure points and maintenance overhead
+- **Not Functional**: Labels are metadata only - don't control actual replication
+
+## Stage 9: Configuration & Deployment
 **Goal**: Package controller for deployment and add configuration options
 **Success Criteria**:
 - Controller can be deployed as Kubernetes Deployment

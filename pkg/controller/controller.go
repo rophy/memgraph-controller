@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -128,13 +129,21 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 				log.Printf("Failed to query replicas for pod %s: %v", podName, err)
 				queryErrors = append(queryErrors, fmt.Errorf("pod %s replicas query: %w", podName, err))
 			} else {
-				// Extract replica names for the PodInfo
+				// Store detailed replica information including sync mode
+				podInfo.ReplicasInfo = replicasResp.Replicas
+				
+				// Extract replica names for backward compatibility
 				var replicaNames []string
 				for _, replica := range replicasResp.Replicas {
 					replicaNames = append(replicaNames, replica.Name)
 				}
 				podInfo.Replicas = replicaNames
-				log.Printf("Pod %s has %d replicas: %v", podName, len(replicaNames), replicaNames)
+				
+				// Log detailed replica information including sync modes
+				log.Printf("Pod %s has %d replicas:", podName, len(replicaNames))
+				for _, replica := range replicasResp.Replicas {
+					log.Printf("  - %s (sync_mode: %s)", replica.Name, replica.SyncMode)
+				}
 			}
 		}
 
@@ -154,6 +163,13 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 		successCount++
 	}
 
+	// Update SYNC replica information based on actual master's replica data
+	c.updateSyncReplicaInfo(clusterState)
+
+	// NOW select master based on actual Memgraph state (not pod labels)
+	log.Println("Selecting master based on actual Memgraph replication state...")
+	c.selectMasterAfterQuerying(clusterState)
+
 	// Log summary of query results
 	log.Printf("Cluster discovery complete: %d/%d pods successfully queried", 
 		successCount, len(clusterState.Pods))
@@ -166,6 +182,110 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 	}
 
 	return clusterState, nil
+}
+
+// selectMasterAfterQuerying selects master based on actual Memgraph replication state
+func (c *MemgraphController) selectMasterAfterQuerying(clusterState *ClusterState) {
+	// Priority-based master selection using ACTUAL Memgraph state
+	// 1. Prefer existing MAIN node (avoid unnecessary failover)
+	// 2. If no MAIN, promote SYNC replica (guaranteed consistency)  
+	// 3. If no SYNC replica, use timestamp fallback (with warnings)
+	
+	var existingMain *PodInfo
+	var syncReplica *PodInfo
+	var latestPod *PodInfo
+	var latestTime time.Time
+
+	// Analyze all pods based on ACTUAL Memgraph roles
+	for _, podInfo := range clusterState.Pods {
+		// Priority 1: Existing MAIN node (from actual Memgraph query)
+		if podInfo.MemgraphRole == "main" {
+			existingMain = podInfo
+			log.Printf("Found existing MAIN node: %s (actual role, not label)", podInfo.Name)
+		}
+		
+		// Priority 2: SYNC replica (guaranteed data consistency)
+		if podInfo.IsSyncReplica {
+			syncReplica = podInfo
+			log.Printf("Found SYNC replica: %s", podInfo.Name)
+		}
+		
+		// Priority 3: Latest timestamp (fallback)
+		if latestPod == nil || podInfo.Timestamp.After(latestTime) {
+			latestPod = podInfo
+			latestTime = podInfo.Timestamp
+		}
+	}
+
+	// Master selection decision tree (based on actual state)
+	var selectedMaster *PodInfo
+	var selectionReason string
+	
+	if existingMain != nil {
+		// Prefer existing MAIN node - avoid unnecessary failover
+		selectedMaster = existingMain
+		selectionReason = "existing MAIN node (from actual Memgraph state)"
+	} else if syncReplica != nil {
+		// ONLY safe automatic promotion: SYNC replica has all committed data
+		selectedMaster = syncReplica
+		selectionReason = "SYNC replica promotion (guaranteed consistency)"
+		log.Printf("PROMOTING SYNC REPLICA: %s has all committed transactions", syncReplica.Name)
+	} else {
+		// No SYNC replica available - use timestamp fallback but log warning
+		selectedMaster = latestPod
+		selectionReason = "latest timestamp fallback (ASYNC replicas may be missing data)"
+		if len(clusterState.Pods) > 1 {
+			log.Printf("WARNING: No SYNC replica available for safe promotion")
+			log.Printf("WARNING: Selected master %s may be missing committed transactions", latestPod.Name)
+		}
+	}
+
+	if selectedMaster != nil {
+		clusterState.CurrentMaster = selectedMaster.Name
+		log.Printf("Selected master: %s (reason: %s, timestamp: %s)",
+			selectedMaster.Name,
+			selectionReason,
+			selectedMaster.Timestamp.Format(time.RFC3339))
+	} else {
+		log.Printf("No pods available for master selection")
+	}
+}
+
+// updateSyncReplicaInfo updates IsSyncReplica field for all pods based on actual master replica data
+func (c *MemgraphController) updateSyncReplicaInfo(clusterState *ClusterState) {
+	// Find current MAIN node
+	var masterPod *PodInfo
+	for _, podInfo := range clusterState.Pods {
+		if podInfo.MemgraphRole == "main" {
+			masterPod = podInfo
+			break
+		}
+	}
+	
+	if masterPod == nil {
+		// No MAIN node found, clear all SYNC replica flags
+		for _, podInfo := range clusterState.Pods {
+			podInfo.IsSyncReplica = false
+		}
+		return
+	}
+	
+	// Mark all replicas as ASYNC first
+	for _, podInfo := range clusterState.Pods {
+		podInfo.IsSyncReplica = false
+	}
+	
+	// Identify SYNC replicas from master's replica information
+	for _, replica := range masterPod.ReplicasInfo {
+		if replica.SyncMode == "sync" { // Memgraph returns lowercase "sync"
+			// Convert replica name back to pod name (underscores to dashes)
+			podName := strings.ReplaceAll(replica.Name, "_", "-")
+			if podInfo, exists := clusterState.Pods[podName]; exists {
+				podInfo.IsSyncReplica = true
+				log.Printf("Identified SYNC replica: %s", podName)
+			}
+		}
+	}
 }
 
 func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error {
@@ -304,44 +424,25 @@ func (c *MemgraphController) ConfigureReplication(ctx context.Context, clusterSt
 		}
 	}
 
-	// Phase 2: Register replicas with master
-	masterPod, exists := clusterState.Pods[currentMaster]
-	if !exists {
-		return fmt.Errorf("master pod %s not found in cluster state", currentMaster)
+	// Phase 2: Configure SYNC/ASYNC replication strategy
+	if err := c.configureReplicationWithSyncStrategy(ctx, clusterState); err != nil {
+		log.Printf("Failed to configure SYNC/ASYNC replication: %v", err)
+		configErrors = append(configErrors, fmt.Errorf("SYNC/ASYNC replication configuration: %w", err))
 	}
 
-	log.Printf("Registering replicas with master %s", currentMaster)
-	
-	for podName, podInfo := range clusterState.Pods {
-		// Skip the master pod itself
-		if podName == currentMaster {
-			continue
-		}
-
-		// Register all non-master pods as replicas (they should be connected to master)
-		// This includes both pods that need to become replicas and existing replicas
-		// that need to be registered with the (potentially new) master
-
-		replicaName := podInfo.GetReplicaName()
-		replicaAddress := podInfo.GetReplicationAddress(c.config.ServiceName)
-		
-		log.Printf("Registering replica %s (pod %s) at %s with master %s", 
-			replicaName, podName, replicaAddress, currentMaster)
-
-		if err := c.memgraphClient.RegisterReplicaWithRetry(ctx, masterPod.BoltAddress, replicaName, replicaAddress); err != nil {
-			log.Printf("Failed to register replica %s with master: %v", replicaName, err)
-			configErrors = append(configErrors, fmt.Errorf("register replica %s: %w", replicaName, err))
-			continue
-		}
-
-		log.Printf("Successfully registered replica %s with master %s (ASYNC mode)", replicaName, currentMaster)
+	// Phase 2.5: Monitor SYNC replica health and handle failures
+	if err := c.detectSyncReplicaHealth(ctx, clusterState); err != nil {
+		log.Printf("SYNC replica health check failed: %v", err)
+		configErrors = append(configErrors, fmt.Errorf("SYNC replica health monitoring: %w", err))
 	}
 
 	// Phase 3: Handle any existing replicas that should be removed
-	if err := c.cleanupObsoleteReplicas(ctx, clusterState); err != nil {
-		log.Printf("Warning: failed to cleanup obsolete replicas: %v", err)
-		configErrors = append(configErrors, fmt.Errorf("cleanup obsolete replicas: %w", err))
-	}
+	// TEMPORARILY DISABLED: Conservative cleanup to prevent state corruption
+	log.Printf("Skipping replica cleanup phase to preserve existing replication state")
+	// if err := c.cleanupObsoleteReplicas(ctx, clusterState); err != nil {
+	//	log.Printf("Warning: failed to cleanup obsolete replicas: %v", err)
+	//	configErrors = append(configErrors, fmt.Errorf("cleanup obsolete replicas: %w", err))
+	// }
 
 	if len(configErrors) > 0 {
 		log.Printf("Replication configuration completed with %d errors:", len(configErrors))
@@ -355,7 +456,334 @@ func (c *MemgraphController) ConfigureReplication(ctx context.Context, clusterSt
 	return nil
 }
 
+// selectSyncReplica determines which replica should be configured as SYNC
+// Uses deterministic selection: first pod alphabetically (e.g., memgraph-0 over memgraph-1)
+func (c *MemgraphController) selectSyncReplica(clusterState *ClusterState, currentMaster string) string {
+	var eligibleReplicas []string
+	
+	// Collect all non-master pods as potential SYNC replicas
+	for podName := range clusterState.Pods {
+		if podName != currentMaster {
+			eligibleReplicas = append(eligibleReplicas, podName)
+		}
+	}
+	
+	if len(eligibleReplicas) == 0 {
+		return "" // No replicas available
+	}
+	
+	// Sort alphabetically to ensure deterministic selection
+	for i := 0; i < len(eligibleReplicas)-1; i++ {
+		for j := i + 1; j < len(eligibleReplicas); j++ {
+			if eligibleReplicas[i] > eligibleReplicas[j] {
+				eligibleReplicas[i], eligibleReplicas[j] = eligibleReplicas[j], eligibleReplicas[i]
+			}
+		}
+	}
+	
+	// Return first pod alphabetically
+	return eligibleReplicas[0]
+}
+
+// identifySyncReplica finds which replica (if any) is currently configured as SYNC
+func (c *MemgraphController) identifySyncReplica(clusterState *ClusterState, currentMaster string) string {
+	masterPod, exists := clusterState.Pods[currentMaster]
+	if !exists {
+		return ""
+	}
+	
+	// Check ReplicasInfo for any SYNC replica
+	for _, replica := range masterPod.ReplicasInfo {
+		if replica.SyncMode == "sync" { // Memgraph returns lowercase "sync"
+			// Convert replica name back to pod name (underscores to dashes)
+			podName := strings.ReplaceAll(replica.Name, "_", "-")
+			return podName
+		}
+	}
+	
+	return "" // No SYNC replica found
+}
+
+// configureReplicationWithSyncStrategy configures replication using SYNC/ASYNC strategy
+func (c *MemgraphController) configureReplicationWithSyncStrategy(ctx context.Context, clusterState *ClusterState) error {
+	currentMaster := clusterState.CurrentMaster
+	if currentMaster == "" {
+		return fmt.Errorf("no master pod selected for SYNC replication configuration")
+	}
+	
+	masterPod, exists := clusterState.Pods[currentMaster]
+	if !exists {
+		return fmt.Errorf("master pod %s not found in cluster state", currentMaster)
+	}
+	
+	log.Printf("Configuring SYNC/ASYNC replication with master: %s", currentMaster)
+	
+	// Identify or select SYNC replica
+	currentSyncReplica := c.identifySyncReplica(clusterState, currentMaster)
+	targetSyncReplica := c.selectSyncReplica(clusterState, currentMaster)
+	
+	if targetSyncReplica == "" {
+		log.Println("No replicas available for SYNC configuration")
+		return nil
+	}
+	
+	log.Printf("Target SYNC replica: %s (current: %s)", targetSyncReplica, currentSyncReplica)
+	
+	var configErrors []error
+	
+	// Phase 1: Configure SYNC replica (highest priority - must succeed)
+	if targetSyncReplica != currentSyncReplica {
+		log.Printf("Configuring %s as SYNC replica", targetSyncReplica)
+		
+		targetPod, exists := clusterState.Pods[targetSyncReplica]
+		if !exists {
+			return fmt.Errorf("target SYNC replica pod %s not found", targetSyncReplica)
+		}
+		
+		replicaName := targetPod.GetReplicaName()
+		replicaAddress := targetPod.GetReplicationAddress(c.config.ServiceName)
+		
+		// Check if already configured as SYNC
+		isAlreadySyncReplica := false
+		currentMode := ""
+		for _, replica := range masterPod.ReplicasInfo {
+			if replica.Name == replicaName {
+				currentMode = replica.SyncMode
+				if currentMode == "sync" {
+					isAlreadySyncReplica = true
+				}
+				break
+			}
+		}
+		
+		if isAlreadySyncReplica {
+			log.Printf("SYNC replica %s already correctly configured, skipping", replicaName)
+			targetPod.IsSyncReplica = true
+		} else {
+			// Only drop if changing mode (ASYNC -> SYNC) or not registered
+			if currentMode != "" && currentMode != "sync" {
+				log.Printf("Changing replica %s from %s to SYNC mode", replicaName, currentMode)
+				if err := c.memgraphClient.DropReplicaWithRetry(ctx, masterPod.BoltAddress, replicaName); err != nil {
+					log.Printf("Warning: Could not drop existing replica %s: %v", replicaName, err)
+				}
+			}
+			
+			// Register as SYNC replica (CRITICAL - must succeed)
+			if err := c.memgraphClient.RegisterReplicaWithModeAndRetry(ctx, masterPod.BoltAddress, replicaName, replicaAddress, "SYNC"); err != nil {
+				configErrors = append(configErrors, fmt.Errorf("CRITICAL: failed to register SYNC replica %s: %w", replicaName, err))
+				return fmt.Errorf("CRITICAL: Cannot guarantee data consistency without SYNC replica: %w", err)
+			}
+			
+			log.Printf("Successfully registered SYNC replica: %s", replicaName)
+			
+			// Update pod tracking
+			targetPod.IsSyncReplica = true
+		}
+		
+		// Clear old SYNC replica flag if different
+		if currentSyncReplica != "" && currentSyncReplica != targetSyncReplica {
+			if oldSyncPod, exists := clusterState.Pods[currentSyncReplica]; exists {
+				oldSyncPod.IsSyncReplica = false
+			}
+		}
+	}
+	
+	// Phase 2: Configure ASYNC replicas (failures are warnings, not critical)
+	for podName, podInfo := range clusterState.Pods {
+		// Skip master pod and SYNC replica
+		if podName == currentMaster || podName == targetSyncReplica {
+			continue
+		}
+		
+		replicaName := podInfo.GetReplicaName()
+		replicaAddress := podInfo.GetReplicationAddress(c.config.ServiceName)
+		
+		// Check if replica is already registered with correct mode
+		isAlreadyConfigured := false
+		currentMode := ""
+		for _, replica := range masterPod.ReplicasInfo {
+			if replica.Name == replicaName {
+				isAlreadyConfigured = true
+				currentMode = replica.SyncMode
+				break
+			}
+		}
+		
+		if isAlreadyConfigured && currentMode == "async" {
+			log.Printf("ASYNC replica %s already correctly configured, skipping", replicaName)
+			podInfo.IsSyncReplica = false
+			continue
+		}
+		
+		log.Printf("Configuring %s as ASYNC replica", replicaName)
+		
+		// Only drop if mode needs to change (SYNC -> ASYNC) or not registered
+		if isAlreadyConfigured && currentMode != "async" {
+			log.Printf("Changing replica %s from %s to ASYNC mode", replicaName, currentMode)
+			if err := c.memgraphClient.DropReplicaWithRetry(ctx, masterPod.BoltAddress, replicaName); err != nil {
+				log.Printf("Warning: Could not drop existing replica %s: %v", replicaName, err)
+			}
+		}
+		
+		// Register as ASYNC replica (only if needed)
+		if !isAlreadyConfigured || currentMode != "async" {
+			if err := c.memgraphClient.RegisterReplicaWithModeAndRetry(ctx, masterPod.BoltAddress, replicaName, replicaAddress, "ASYNC"); err != nil {
+				log.Printf("Warning: failed to register ASYNC replica %s: %v", replicaName, err)
+				configErrors = append(configErrors, fmt.Errorf("register ASYNC replica %s: %w", replicaName, err))
+				continue
+			}
+			log.Printf("Successfully registered ASYNC replica: %s", replicaName)
+		}
+		
+		podInfo.IsSyncReplica = false
+	}
+	
+	if len(configErrors) > 0 {
+		log.Printf("SYNC replication configuration completed with %d warnings:", len(configErrors))
+		for _, err := range configErrors {
+			log.Printf("  - %v", err)
+		}
+		// Don't return error for ASYNC replica failures - SYNC replica success is what matters
+	}
+	
+	log.Printf("SYNC replication configuration completed: SYNC=%s, ASYNC replicas=%d", 
+		targetSyncReplica, len(clusterState.Pods)-2) // -2 for master and SYNC replica
+	
+	return nil
+}
+
+// promoteAsyncToSync promotes an ASYNC replica to SYNC mode (emergency procedure)
+func (c *MemgraphController) promoteAsyncToSync(ctx context.Context, clusterState *ClusterState, targetReplicaPod string) error {
+	currentMaster := clusterState.CurrentMaster
+	if currentMaster == "" {
+		return fmt.Errorf("no master pod available for ASYNC→SYNC promotion")
+	}
+	
+	masterPod, exists := clusterState.Pods[currentMaster]
+	if !exists {
+		return fmt.Errorf("master pod %s not found", currentMaster)
+	}
+	
+	targetPod, exists := clusterState.Pods[targetReplicaPod]
+	if !exists {
+		return fmt.Errorf("target replica pod %s not found", targetReplicaPod)
+	}
+	
+	log.Printf("EMERGENCY: Promoting ASYNC replica %s to SYNC mode", targetReplicaPod)
+	
+	replicaName := targetPod.GetReplicaName()
+	replicaAddress := targetPod.GetReplicationAddress(c.config.ServiceName)
+	
+	// Step 1: Drop existing ASYNC registration
+	log.Printf("Dropping existing ASYNC replica registration: %s", replicaName)
+	if err := c.memgraphClient.DropReplicaWithRetry(ctx, masterPod.BoltAddress, replicaName); err != nil {
+		return fmt.Errorf("failed to drop ASYNC replica %s: %w", replicaName, err)
+	}
+	
+	// Step 2: Re-register as SYNC replica
+	log.Printf("Re-registering %s as SYNC replica", replicaName)
+	if err := c.memgraphClient.RegisterReplicaWithModeAndRetry(ctx, masterPod.BoltAddress, replicaName, replicaAddress, "SYNC"); err != nil {
+		return fmt.Errorf("failed to register SYNC replica %s: %w", replicaName, err)
+	}
+	
+	// Step 3: Update tracking
+	targetPod.IsSyncReplica = true
+	
+	log.Printf("Successfully promoted %s to SYNC replica", targetReplicaPod)
+	log.Printf("WARNING: Verify replica is caught up before considering promotion complete")
+	
+	return nil
+}
+
+// handleSyncReplicaFailure responds to SYNC replica becoming unavailable
+func (c *MemgraphController) handleSyncReplicaFailure(ctx context.Context, clusterState *ClusterState, failedSyncReplica string) error {
+	currentMaster := clusterState.CurrentMaster
+	if currentMaster == "" {
+		return fmt.Errorf("no master available during SYNC replica failure")
+	}
+	
+	log.Printf("CRITICAL: SYNC replica %s is down - master will block all writes", failedSyncReplica)
+	log.Printf("Available options:")
+	log.Printf("  1. Restart SYNC replica pod (preferred)")
+	log.Printf("  2. Promote healthy ASYNC replica to SYNC")
+	log.Printf("  3. Drop SYNC replica (accept data loss risk)")
+	
+	// Find healthy ASYNC replicas for potential promotion
+	var healthyAsyncReplicas []string
+	for podName, podInfo := range clusterState.Pods {
+		if podName != currentMaster && podName != failedSyncReplica && !podInfo.IsSyncReplica {
+			// Check if pod is healthy (has bolt address and can be reached)
+			if podInfo.BoltAddress != "" && podInfo.MemgraphRole == "replica" {
+				healthyAsyncReplicas = append(healthyAsyncReplicas, podName)
+			}
+		}
+	}
+	
+	if len(healthyAsyncReplicas) == 0 {
+		log.Printf("CRITICAL: No healthy ASYNC replicas available for emergency promotion")
+		return fmt.Errorf("no healthy ASYNC replicas for emergency SYNC promotion")
+	}
+	
+	// Select first healthy ASYNC replica alphabetically (deterministic)
+	for i := 0; i < len(healthyAsyncReplicas)-1; i++ {
+		for j := i + 1; j < len(healthyAsyncReplicas); j++ {
+			if healthyAsyncReplicas[i] > healthyAsyncReplicas[j] {
+				healthyAsyncReplicas[i], healthyAsyncReplicas[j] = healthyAsyncReplicas[j], healthyAsyncReplicas[i]
+			}
+		}
+	}
+	
+	emergencyCandidate := healthyAsyncReplicas[0]
+	log.Printf("Emergency SYNC candidate: %s", emergencyCandidate)
+	
+	// Note: This is just identification - actual promotion should be manual or with explicit user confirmation
+	log.Printf("To restore write capability, run emergency promotion:")
+	log.Printf("  kubectl exec %s -- bash -c 'echo \"DROP REPLICA %s; REGISTER REPLICA %s SYNC TO \\\"%s:10000\\\";\" | mgconsole'", 
+		currentMaster, strings.ReplaceAll(failedSyncReplica, "-", "_"), 
+		strings.ReplaceAll(emergencyCandidate, "-", "_"), emergencyCandidate)
+	
+	return nil
+}
+
+// detectSyncReplicaHealth monitors SYNC replica availability and triggers emergency procedures
+func (c *MemgraphController) detectSyncReplicaHealth(ctx context.Context, clusterState *ClusterState) error {
+	currentMaster := clusterState.CurrentMaster
+	if currentMaster == "" {
+		return nil // No master, nothing to check
+	}
+	
+	// Find current SYNC replica
+	var syncReplicaPod string
+	for podName, podInfo := range clusterState.Pods {
+		if podInfo.IsSyncReplica {
+			syncReplicaPod = podName
+			break
+		}
+	}
+	
+	if syncReplicaPod == "" {
+		log.Printf("No SYNC replica configured - cluster may have write availability issues")
+		return nil
+	}
+	
+	// Check SYNC replica health
+	syncPod := clusterState.Pods[syncReplicaPod]
+	if syncPod.BoltAddress == "" || syncPod.MemgraphRole == "" {
+		log.Printf("SYNC replica %s appears unhealthy - investigating", syncReplicaPod)
+		
+		// Try to connect to SYNC replica
+		if err := c.memgraphClient.TestConnectionWithRetry(ctx, syncPod.BoltAddress); err != nil {
+			log.Printf("CRITICAL: SYNC replica %s is unreachable: %v", syncReplicaPod, err)
+			return c.handleSyncReplicaFailure(ctx, clusterState, syncReplicaPod)
+		}
+	}
+	
+	log.Printf("SYNC replica %s is healthy", syncReplicaPod)
+	return nil
+}
+
 // cleanupObsoleteReplicas removes replica registrations that are no longer needed
+// CONSERVATIVE: Only drops replicas that are definitively obsolete, not temporarily unreachable
 func (c *MemgraphController) cleanupObsoleteReplicas(ctx context.Context, clusterState *ClusterState) error {
 	currentMaster := clusterState.CurrentMaster
 	if currentMaster == "" {
@@ -373,26 +801,40 @@ func (c *MemgraphController) cleanupObsoleteReplicas(ctx context.Context, cluste
 		return fmt.Errorf("failed to query current replicas from master: %w", err)
 	}
 
-	// Build set of expected replica names
-	// All non-master pods should be registered as replicas
-	expectedReplicas := make(map[string]bool)
+	// Build set of ALL known pod names (including temporarily unreachable ones)
+	// We only want to drop replicas for pods that are definitively gone
+	allKnownPods := make(map[string]bool)
+	runningPods := make(map[string]bool)
+	
 	for podName, podInfo := range clusterState.Pods {
 		if podName != currentMaster {
-			expectedReplicas[podInfo.GetReplicaName()] = true
+			replicaName := podInfo.GetReplicaName()
+			allKnownPods[replicaName] = true
+			// Only mark as running if we can actually query it
+			if podInfo.MemgraphRole != "" {
+				runningPods[replicaName] = true
+			}
 		}
 	}
 
-	// Remove any replicas that shouldn't exist
+	// CONSERVATIVE CLEANUP: Only drop replicas that are definitely obsolete
 	var cleanupErrors []error
 	for _, replica := range replicasResp.Replicas {
-		if !expectedReplicas[replica.Name] {
-			log.Printf("Dropping obsolete replica %s from master %s", replica.Name, currentMaster)
+		if !allKnownPods[replica.Name] {
+			// This replica doesn't correspond to any known pod - safe to drop
+			log.Printf("Dropping truly obsolete replica %s (no corresponding pod found)", replica.Name)
 			if err := c.memgraphClient.DropReplicaWithRetry(ctx, masterPod.BoltAddress, replica.Name); err != nil {
 				log.Printf("Failed to drop obsolete replica %s: %v", replica.Name, err)
 				cleanupErrors = append(cleanupErrors, fmt.Errorf("drop replica %s: %w", replica.Name, err))
 			} else {
 				log.Printf("Successfully dropped obsolete replica %s", replica.Name)
 			}
+		} else if !runningPods[replica.Name] {
+			// Pod exists but is temporarily unreachable - DO NOT DROP
+			log.Printf("Keeping replica %s (pod temporarily unreachable, will recover)", replica.Name)
+		} else {
+			// Pod exists and is running - keep replica
+			log.Printf("Keeping replica %s (pod healthy)", replica.Name)
 		}
 	}
 
@@ -444,6 +886,18 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	totalPods := len(clusterState.Pods)
 	healthyPods := 0
 	podStatuses := make([]PodStatus, 0, totalPods)
+	
+	// Find current SYNC replica
+	var currentSyncReplica string
+	var syncReplicaHealthy bool
+	for podName, podInfo := range clusterState.Pods {
+		if podInfo.IsSyncReplica {
+			currentSyncReplica = podName
+			// SYNC replica is healthy if we can query its Memgraph role
+			syncReplicaHealthy = podInfo.MemgraphRole != ""
+			break
+		}
+	}
 
 	// Process each pod to determine health and build status
 	for _, podInfo := range clusterState.Pods {
@@ -467,16 +921,18 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	response := &StatusResponse{
 		Timestamp: time.Now(),
 		ClusterState: ClusterStatus{
-			CurrentMaster:  clusterState.CurrentMaster,
-			TotalPods:      totalPods,
-			HealthyPods:    healthyPods,
-			UnhealthyPods:  unhealthyPods,
+			CurrentMaster:      clusterState.CurrentMaster,
+			CurrentSyncReplica: currentSyncReplica,
+			TotalPods:          totalPods,
+			HealthyPods:        healthyPods,
+			UnhealthyPods:      unhealthyPods,
+			SyncReplicaHealthy: syncReplicaHealthy,
 		},
 		Pods: podStatuses,
 	}
 
-	log.Printf("Cluster status collected: %d total pods, %d healthy, %d unhealthy, master: %s", 
-		totalPods, healthyPods, unhealthyPods, clusterState.CurrentMaster)
+	log.Printf("Cluster status collected: %d total pods, %d healthy, %d unhealthy, master: %s, sync_replica: %s (healthy: %t)", 
+		totalPods, healthyPods, unhealthyPods, clusterState.CurrentMaster, currentSyncReplica, syncReplicaHealthy)
 
 	return response, nil
 }

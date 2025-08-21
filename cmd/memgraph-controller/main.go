@@ -17,8 +17,8 @@ func main() {
 	log.Println("Starting Memgraph Controller...")
 
 	config := controller.LoadConfig()
-	log.Printf("Configuration: AppName=%s, Namespace=%s, ReconcileInterval=%s",
-		config.AppName, config.Namespace, config.ReconcileInterval)
+	log.Printf("Configuration: AppName=%s, Namespace=%s, ReconcileInterval=%s, HTTPPort=%s",
+		config.AppName, config.Namespace, config.ReconcileInterval, config.HTTPPort)
 
 	k8sConfig, err := controller.GetKubernetesConfig()
 	if err != nil {
@@ -38,6 +38,11 @@ func main() {
 
 	log.Println("Memgraph Controller started successfully")
 
+	// Start HTTP server for status API
+	if err := ctrl.StartHTTPServer(); err != nil {
+		log.Fatalf("Failed to start HTTP server: %v", err)
+	}
+
 	// Set up graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -49,32 +54,25 @@ func main() {
 	go func() {
 		<-sigChan
 		log.Println("Received shutdown signal, stopping controller...")
+		
+		// Stop HTTP server with timeout
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer shutdownCancel()
+		if err := ctrl.StopHTTPServer(shutdownCtx); err != nil {
+			log.Printf("HTTP server shutdown error: %v", err)
+		}
+		
 		cancel()
 	}()
 
-	// Start reconciliation loop
-	ticker := time.NewTicker(config.ReconcileInterval)
-	defer ticker.Stop()
-
-	log.Printf("Starting reconciliation loop with interval: %s", config.ReconcileInterval)
+	// Start the main controller loop (includes event-driven reconciliation, 
+	// periodic reconciliation, exponential backoff, and graceful shutdown)
+	log.Println("Starting controller main loop...")
+	if err := ctrl.Run(ctx); err != nil && err != context.Canceled {
+		log.Fatalf("Controller loop failed: %v", err)
+	}
 	
-	// Run initial reconciliation
-	if err := ctrl.Reconcile(ctx); err != nil {
-		log.Printf("Initial reconciliation failed: %v", err)
-	}
-
-	// Main reconciliation loop
-	for {
-		select {
-		case <-ctx.Done():
-			log.Println("Controller shutting down...")
-			return
-		case <-ticker.C:
-			if err := ctrl.Reconcile(ctx); err != nil {
-				log.Printf("Reconciliation failed: %v", err)
-			}
-		}
-	}
+	log.Println("Controller shutdown complete")
 }
 
 

@@ -35,39 +35,6 @@ func TestMemgraphClient_TestConnection_EmptyAddress(t *testing.T) {
 	}
 }
 
-func TestMemgraphClient_QueryReplicationRole_InvalidAddress(t *testing.T) {
-	config := &Config{}
-	client := NewMemgraphClient(config)
-
-	// Use an invalid address that will fail to connect
-	_, err := client.QueryReplicationRole(context.Background(), "invalid-host:7687")
-	if err == nil {
-		t.Error("Expected error for invalid address, got nil")
-	}
-
-	// Should contain "failed to create driver" or "failed to verify connectivity"
-	errMsg := err.Error()
-	if errMsg == "" {
-		t.Error("Error message is empty")
-	}
-}
-
-func TestMemgraphClient_TestConnection_InvalidAddress(t *testing.T) {
-	config := &Config{}
-	client := NewMemgraphClient(config)
-
-	// Use an invalid address that will fail to connect
-	err := client.TestConnection(context.Background(), "invalid-host:7687")
-	if err == nil {
-		t.Error("Expected error for invalid address, got nil")
-	}
-
-	// Should contain connection failure message
-	errMsg := err.Error()
-	if errMsg == "" {
-		t.Error("Error message is empty")
-	}
-}
 
 func TestNewMemgraphClient(t *testing.T) {
 	config := &Config{

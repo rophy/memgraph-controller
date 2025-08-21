@@ -238,8 +238,8 @@ func (mc *MemgraphClient) SetReplicationRoleToReplicaWithRetry(ctx context.Conte
 	return nil
 }
 
-// RegisterReplicaWithRetry registers a replica with the master using ASYNC mode
-func (mc *MemgraphClient) RegisterReplicaWithRetry(ctx context.Context, masterBoltAddress, replicaName, replicaAddress string) error {
+// RegisterReplicaWithModeAndRetry registers a replica with the master using specified mode (SYNC or ASYNC)
+func (mc *MemgraphClient) RegisterReplicaWithModeAndRetry(ctx context.Context, masterBoltAddress, replicaName, replicaAddress, syncMode string) error {
 	if masterBoltAddress == "" {
 		return fmt.Errorf("master bolt address is empty")
 	}
@@ -248,6 +248,9 @@ func (mc *MemgraphClient) RegisterReplicaWithRetry(ctx context.Context, masterBo
 	}
 	if replicaAddress == "" {
 		return fmt.Errorf("replica address is empty")
+	}
+	if syncMode != "SYNC" && syncMode != "ASYNC" {
+		return fmt.Errorf("invalid sync mode: %s (must be SYNC or ASYNC)", syncMode)
 	}
 
 	err := WithRetry(ctx, func() error {
@@ -264,23 +267,25 @@ func (mc *MemgraphClient) RegisterReplicaWithRetry(ctx context.Context, masterBo
 		}()
 
 		// Use auto-commit mode for replication commands
-		query := fmt.Sprintf("REGISTER REPLICA %s ASYNC TO \"%s\"", replicaName, replicaAddress)
+		query := fmt.Sprintf("REGISTER REPLICA %s %s TO \"%s\"", replicaName, syncMode, replicaAddress)
 		_, err = session.Run(ctx, query, nil)
 		if err != nil {
 			return fmt.Errorf("failed to execute REGISTER REPLICA: %w", err)
 		}
 
-		log.Printf("Successfully registered replica %s at %s with master %s (ASYNC mode)", 
-			replicaName, replicaAddress, masterBoltAddress)
 		return nil
 	}, mc.retryConfig)
 
 	if err != nil {
-		return fmt.Errorf("failed to register replica %s with master %s after retries: %w", 
-			replicaName, masterBoltAddress, err)
+		return fmt.Errorf("register replica %s (%s mode) with master at %s: %w", replicaName, syncMode, masterBoltAddress, err)
 	}
 
 	return nil
+}
+
+// RegisterReplicaWithRetry registers a replica with the master using ASYNC mode (backward compatibility)
+func (mc *MemgraphClient) RegisterReplicaWithRetry(ctx context.Context, masterBoltAddress, replicaName, replicaAddress string) error {
+	return mc.RegisterReplicaWithModeAndRetry(ctx, masterBoltAddress, replicaName, replicaAddress, "ASYNC")
 }
 
 // DropReplicaWithRetry removes a replica registration from the master

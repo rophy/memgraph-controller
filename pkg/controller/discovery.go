@@ -56,29 +56,76 @@ func (pd *PodDiscovery) DiscoverPods(ctx context.Context) (*ClusterState, error)
 			podInfo.Timestamp.Format(time.RFC3339))
 	}
 
-	// Determine current master based on latest timestamp
-	pd.selectMaster(clusterState)
+	// Master selection will be done AFTER querying actual Memgraph state
+	// This ensures we use real replication roles, not potentially stale pod labels
+	log.Printf("Pod discovery complete. Master selection deferred until after Memgraph querying.")
 
 	return clusterState, nil
 }
 
 func (pd *PodDiscovery) selectMaster(clusterState *ClusterState) {
+	// SYNC Replica Priority Strategy:
+	// 1. Look for existing MAIN node (prefer current master if healthy)
+	// 2. If no MAIN, look for SYNC replica (guaranteed consistency)
+	// 3. If no SYNC replica, fall back to timestamp-based selection
+	
+	var currentMain *PodInfo
+	var syncReplica *PodInfo
 	var latestPod *PodInfo
 	var latestTime time.Time
 
-	// Find the pod with the latest timestamp
+	// Analyze all pods for master selection
 	for _, podInfo := range clusterState.Pods {
+		// Priority 1: Existing MAIN node (prefer current master)
+		if podInfo.MemgraphRole == "main" {
+			currentMain = podInfo
+			log.Printf("Found existing MAIN node: %s", podInfo.Name)
+		}
+		
+		// Priority 2: SYNC replica (guaranteed data consistency)
+		if podInfo.IsSyncReplica {
+			syncReplica = podInfo
+			log.Printf("Found SYNC replica: %s", podInfo.Name)
+		}
+		
+		// Priority 3: Latest timestamp (fallback)
 		if latestPod == nil || podInfo.Timestamp.After(latestTime) {
 			latestPod = podInfo
 			latestTime = podInfo.Timestamp
 		}
 	}
 
-	if latestPod != nil {
-		clusterState.CurrentMaster = latestPod.Name
-		log.Printf("Selected master: %s (timestamp: %s)",
-			latestPod.Name,
-			latestPod.Timestamp.Format(time.RFC3339))
+	// Master selection decision tree
+	var selectedMaster *PodInfo
+	var selectionReason string
+	
+	if currentMain != nil {
+		// Prefer existing MAIN node (avoid unnecessary failover)
+		selectedMaster = currentMain
+		selectionReason = "existing MAIN node"
+	} else if syncReplica != nil {
+		// ONLY safe automatic promotion: SYNC replica has all committed data
+		selectedMaster = syncReplica
+		selectionReason = "SYNC replica (guaranteed consistency)"
+		log.Printf("PROMOTING SYNC REPLICA: %s has all committed transactions", syncReplica.Name)
+	} else {
+		// No SYNC replica available - use timestamp fallback but log warning
+		selectedMaster = latestPod
+		selectionReason = "latest timestamp (ASYNC replicas may be missing data)"
+		if len(clusterState.Pods) > 1 {
+			log.Printf("WARNING: No SYNC replica available for safe promotion")
+			log.Printf("WARNING: Selected master %s may be missing committed transactions", latestPod.Name)
+		}
+	}
+
+	if selectedMaster != nil {
+		clusterState.CurrentMaster = selectedMaster.Name
+		log.Printf("Selected master: %s (reason: %s, timestamp: %s)",
+			selectedMaster.Name,
+			selectionReason,
+			selectedMaster.Timestamp.Format(time.RFC3339))
+	} else {
+		log.Printf("No pods available for master selection")
 	}
 }
 

@@ -71,6 +71,203 @@ helm install memgraph-controller ./charts/memgraph-controller \
   --set env.STATEFULSET_NAME="my-production-memgraph"
 ```
 
+## Reconciliation Design Patterns
+
+### **When to Reconcile**
+
+The controller uses three reconciliation patterns for robust operation:
+
+#### **1. Event-Driven Reconciliation (Primary)**
+Triggered when actual state differs from desired state:
+
+```go
+// Pod state changes that require reconciliation
+func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
+    oldPod := oldObj.(*v1.Pod)
+    newPod := newObj.(*v1.Pod)
+    
+    // Only reconcile for meaningful changes
+    if oldPod.Status.Phase != newPod.Status.Phase ||
+       oldPod.Status.PodIP != newPod.Status.PodIP ||
+       oldPod.DeletionTimestamp != newPod.DeletionTimestamp {
+        c.enqueueReconciliation("pod-state-changed")
+    }
+}
+
+func (c *MemgraphController) onPodDelete(obj interface{}) {
+    // Pod deletion may require master failover
+    c.enqueueReconciliation("pod-deleted")
+}
+```
+
+**Event Triggers:**
+- Pod lifecycle changes (Pending → Running → Failed)
+- Pod IP address changes (network reassignment)
+- Pod deletion (potential master failure)
+- StatefulSet scaling events
+
+#### **2. Periodic Reconciliation (Safety Net)**
+Ensures system remains in desired state despite missed events:
+
+```go
+func (c *MemgraphController) Run(ctx context.Context) error {
+    // Event-driven + periodic reconciliation
+    ticker := time.NewTicker(c.config.ReconcileInterval) // Default: 30s
+    
+    for {
+        select {
+        case <-ticker.C:
+            c.enqueueReconciliation("periodic-safety-check")
+        case request := <-c.workQueue:
+            c.processReconcileRequest(ctx, request)
+        }
+    }
+}
+```
+
+**Why Periodic is Essential:**
+- **Missed events** - Network issues causing event loss
+- **External changes** - Manual Memgraph role modifications
+- **Configuration drift** - Gradual deviation from desired state
+- **Split-brain recovery** - Network partition resolution
+
+#### **3. On-Demand Reconciliation**
+User-initiated or startup reconciliation:
+
+```go
+func (c *MemgraphController) Bootstrap(ctx context.Context) error {
+    // Always reconcile on controller startup
+    c.enqueueReconciliation("controller-startup")
+    return c.reconcileWithBootstrap(ctx)
+}
+
+// Future: API endpoint for manual reconciliation
+func (c *MemgraphController) handleForceReconcile(w http.ResponseWriter, r *http.Request) {
+    c.enqueueReconciliation("user-requested")
+}
+```
+
+### **Memgraph-Specific Reconciliation Triggers**
+
+#### **Master Failure Scenarios:**
+```
+Event: Pod-0 (master) becomes unavailable
+Trigger: onPodUpdate (Phase: Running → Failed)
+Action: Promote pod-1 (SYNC replica) to master
+Result: Swap target master index (0 → 1)
+```
+
+#### **Split-Brain Detection:**
+```
+Event: Network partition recovery
+Trigger: Periodic reconciliation discovers multiple masters
+Action: Apply lower-index precedence rule
+Result: Demote higher-index master, restore replication
+```
+
+#### **Configuration Drift:**
+```
+Event: Someone manually changes Memgraph roles
+Trigger: Periodic reconciliation
+Action: Restore expected topology based on target master index
+Result: Re-configure replication to match controller state
+```
+
+### **Reconciliation Best Practices**
+
+#### **1. Idempotent Operations**
+```go
+func (c *MemgraphController) Reconcile(ctx context.Context) error {
+    // Safe to run multiple times - only make necessary changes
+    targetIndex, isBootstrapped := c.controllerState.GetTargetMaster()
+    if !isBootstrapped {
+        return c.Bootstrap(ctx)
+    }
+    
+    currentState := c.discoverCurrentState(ctx)
+    expectedState := c.calculateExpectedState(targetIndex)
+    
+    if currentState.matches(expectedState) {
+        return nil // No action needed
+    }
+    
+    return c.enforceExpectedState(ctx, currentState, expectedState)
+}
+```
+
+#### **2. Work Queue with Rate Limiting**
+```go
+func (c *MemgraphController) processReconcileRequest(ctx context.Context, request reconcileRequest) {
+    // Exponential backoff for failed reconciliations
+    err := c.reconcileWithBackoff(ctx)
+    
+    if err != nil {
+        c.failureCount++
+        if c.failureCount >= c.maxFailures {
+            log.Printf("Maximum failures reached - requiring manual intervention")
+        }
+    } else {
+        c.failureCount = 0 // Reset on success
+    }
+}
+```
+
+#### **3. Smart Event Filtering**
+```go
+func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
+    // Avoid unnecessary reconciliation
+    if oldPod.ResourceVersion == newPod.ResourceVersion {
+        return false // No actual change
+    }
+    
+    // Only reconcile for state changes that affect Memgraph topology
+    meaningfulChanges := []bool{
+        oldPod.Status.Phase != newPod.Status.Phase,           // Lifecycle change
+        oldPod.Status.PodIP != newPod.Status.PodIP,           // Network change
+        oldPod.DeletionTimestamp != newPod.DeletionTimestamp, // Deletion started
+        oldPod.Spec.NodeName != newPod.Spec.NodeName,         // Node migration
+    }
+    
+    for _, hasChange := range meaningfulChanges {
+        if hasChange {
+            return true
+        }
+    }
+    
+    return false // Ignore cosmetic changes
+}
+```
+
+### **Anti-Patterns to Avoid**
+
+#### **Over-Reconciliation:**
+```go
+// ❌ DON'T reconcile on every event
+func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
+    c.enqueueReconciliation("any-change") // Too aggressive
+}
+
+// ✅ DO filter for meaningful changes only
+func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
+    if c.shouldReconcile(oldPod, newPod) {
+        c.enqueueReconciliation("meaningful-change")
+    }
+}
+```
+
+#### **Blocking Event Handlers:**
+```go
+// ❌ DON'T perform heavy work in event handlers
+func (c *MemgraphController) onPodDelete(obj interface{}) {
+    c.Reconcile(context.TODO()) // Blocks Kubernetes informer
+}
+
+// ✅ DO enqueue work for background processing
+func (c *MemgraphController) onPodDelete(obj interface{}) {
+    c.enqueueReconciliation("pod-deleted") // Non-blocking
+}
+```
+
 ## Implementation Stages
 
 ---
@@ -352,15 +549,135 @@ func (c *MemgraphController) configureReplicationWithTargetTopology(ctx context.
 
 ---
 
-## **Stage 4: Testing and Validation**
+## **Stage 4: Enhanced Reconciliation**
 
-**Goal**: Comprehensive testing of bootstrap rules and operational enforcement
-**Success Criteria**: All scenarios properly tested, edge cases covered
-**Tests**: Bootstrap safety tests, failover tests, split-brain resolution tests
+**Goal**: Implement smart reconciliation patterns with event filtering and rate limiting
+**Success Criteria**: Efficient reconciliation that avoids unnecessary work while ensuring reliability
+**Tests**: Reconciliation trigger tests, rate limiting tests, event filtering tests
 
 ### Implementation Tasks
 
-#### 4.1 Bootstrap Rule Tests
+#### 4.1 Smart Event Filtering
+```go
+// Update existing event handlers in controller.go
+func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
+    oldPod := oldObj.(*v1.Pod)
+    newPod := newObj.(*v1.Pod)
+    
+    if !c.shouldReconcile(oldPod, newPod) {
+        return // Skip unnecessary reconciliation
+    }
+    
+    c.enqueuePodEvent("pod-state-changed")
+}
+
+func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
+    // Only reconcile for meaningful changes
+    meaningfulChanges := []bool{
+        oldPod.Status.Phase != newPod.Status.Phase,           // Lifecycle change
+        oldPod.Status.PodIP != newPod.Status.PodIP,           // Network change  
+        oldPod.DeletionTimestamp != newPod.DeletionTimestamp, // Deletion started
+        oldPod.Spec.NodeName != newPod.Spec.NodeName,         // Node migration
+    }
+    
+    for _, hasChange := range meaningfulChanges {
+        if hasChange {
+            return true
+        }
+    }
+    
+    return false
+}
+```
+
+#### 4.2 Enhanced Error Handling with Rate Limiting
+```go
+// Update existing reconcileWithBackoff method
+func (c *MemgraphController) reconcileWithBackoff(ctx context.Context) error {
+    const maxRetries = 3
+    const baseDelay = time.Second * 2
+    
+    for attempt := 0; attempt < maxRetries; attempt++ {
+        if attempt > 0 {
+            // Exponential backoff with jitter
+            delay := time.Duration(float64(baseDelay) * math.Pow(2, float64(attempt-1)))
+            jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
+            time.Sleep(delay + jitter)
+            
+            log.Printf("Reconciliation retry %d/%d after %s delay", attempt+1, maxRetries, delay)
+        }
+        
+        err := c.Reconcile(ctx)
+        if err == nil {
+            if attempt > 0 {
+                log.Printf("Reconciliation succeeded on attempt %d", attempt+1)
+            }
+            return nil
+        }
+        
+        log.Printf("Reconciliation attempt %d failed: %v", attempt+1, err)
+        
+        // Don't retry on certain types of errors
+        if isNonRetryableError(err) {
+            return err
+        }
+    }
+    
+    return fmt.Errorf("reconciliation failed after %d attempts", maxRetries)
+}
+
+func isNonRetryableError(err error) bool {
+    // Don't retry bootstrap safety failures - require manual intervention
+    return strings.Contains(err.Error(), "manual intervention required") ||
+           strings.Contains(err.Error(), "ambiguous cluster state")
+}
+```
+
+#### 4.3 Reconciliation Metrics and Monitoring
+```go
+// Add reconciliation metrics tracking
+type ReconciliationMetrics struct {
+    TotalReconciliations int64
+    SuccessfulReconciliations int64
+    FailedReconciliations int64
+    AverageReconciliationTime time.Duration
+    LastReconciliationTime time.Time
+    LastReconciliationReason string
+}
+
+func (c *MemgraphController) updateReconciliationMetrics(reason string, duration time.Duration, err error) {
+    c.mu.Lock()
+    defer c.mu.Unlock()
+    
+    c.metrics.TotalReconciliations++
+    c.metrics.LastReconciliationTime = time.Now()
+    c.metrics.LastReconciliationReason = reason
+    
+    if err == nil {
+        c.metrics.SuccessfulReconciliations++
+    } else {
+        c.metrics.FailedReconciliations++
+    }
+    
+    // Update running average
+    c.metrics.AverageReconciliationTime = 
+        (c.metrics.AverageReconciliationTime + duration) / 2
+}
+```
+
+**Status**: Not Started
+
+---
+
+## **Stage 5: Testing and Validation**
+
+**Goal**: Comprehensive testing of bootstrap rules, operational enforcement, and reconciliation patterns
+**Success Criteria**: All scenarios properly tested, edge cases covered, reconciliation efficiency verified
+**Tests**: Bootstrap safety tests, failover tests, split-brain resolution tests, reconciliation pattern tests
+
+### Implementation Tasks
+
+#### 5.1 Bootstrap Rule Tests
 ```go
 // pkg/controller/bootstrap_test.go
 func TestDetermineMasterIndex(t *testing.T) {
@@ -444,7 +761,7 @@ func TestDetermineMasterIndex(t *testing.T) {
 }
 ```
 
-#### 4.2 Operational Enforcement Tests
+#### 5.2 Operational Enforcement Tests
 ```go
 func TestFailoverHandling(t *testing.T) {
     tests := []struct {
@@ -494,7 +811,67 @@ func TestFailoverHandling(t *testing.T) {
 }
 ```
 
-#### 4.3 Integration Tests
+#### 5.3 Reconciliation Pattern Tests
+```go
+func TestSmartEventFiltering(t *testing.T) {
+    controller := &MemgraphController{
+        config: &Config{StatefulSetName: "test-memgraph"},
+    }
+    
+    tests := []struct {
+        name           string
+        oldPod         *v1.Pod
+        newPod         *v1.Pod
+        shouldReconcile bool
+    }{
+        {
+            name: "phase_change_should_reconcile",
+            oldPod: &v1.Pod{Status: v1.PodStatus{Phase: v1.PodPending}},
+            newPod: &v1.Pod{Status: v1.PodStatus{Phase: v1.PodRunning}},
+            shouldReconcile: true,
+        },
+        {
+            name: "ip_change_should_reconcile",
+            oldPod: &v1.Pod{Status: v1.PodStatus{PodIP: "10.0.0.1"}},
+            newPod: &v1.Pod{Status: v1.PodStatus{PodIP: "10.0.0.2"}},
+            shouldReconcile: true,
+        },
+        {
+            name: "resource_version_only_should_not_reconcile",
+            oldPod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{ResourceVersion: "1"}},
+            newPod: &v1.Pod{ObjectMeta: metav1.ObjectMeta{ResourceVersion: "2"}},
+            shouldReconcile: false,
+        },
+    }
+    
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            result := controller.shouldReconcile(tt.oldPod, tt.newPod)
+            assert.Equal(t, tt.shouldReconcile, result)
+        })
+    }
+}
+
+func TestReconciliationMetrics(t *testing.T) {
+    controller := &MemgraphController{
+        metrics: &ReconciliationMetrics{},
+    }
+    
+    // Test successful reconciliation
+    controller.updateReconciliationMetrics("test-success", time.Millisecond*100, nil)
+    assert.Equal(t, int64(1), controller.metrics.TotalReconciliations)
+    assert.Equal(t, int64(1), controller.metrics.SuccessfulReconciliations)
+    assert.Equal(t, int64(0), controller.metrics.FailedReconciliations)
+    
+    // Test failed reconciliation
+    controller.updateReconciliationMetrics("test-failure", time.Millisecond*50, fmt.Errorf("test error"))
+    assert.Equal(t, int64(2), controller.metrics.TotalReconciliations)
+    assert.Equal(t, int64(1), controller.metrics.SuccessfulReconciliations)
+    assert.Equal(t, int64(1), controller.metrics.FailedReconciliations)
+}
+```
+
+#### 5.4 Integration Tests
 ```go
 func TestBootstrapToOperationalFlow(t *testing.T) {
     // Test complete flow from bootstrap through operational enforcement
@@ -556,10 +933,11 @@ func TestBootstrapToOperationalFlow(t *testing.T) {
 | Stage 1: Controller State | 1 day | None | Low |
 | Stage 2: Bootstrap Logic | 2 days | Stage 1 | Low |
 | Stage 3: Operational Enforcement | 2 days | Stages 1-2 | Medium |
-| Stage 4: Testing & Validation | 1 day | Stages 1-3 | Low |
+| Stage 4: Enhanced Reconciliation | 1 day | Stages 1-3 | Low |
+| Stage 5: Testing & Validation | 1 day | Stages 1-4 | Low |
 
-**Total Duration**: 6 days  
-**Critical Path**: Stages 1→2→3 (core logic)
+**Total Duration**: 7 days  
+**Critical Path**: Stages 1→2→3→4 (core logic + reconciliation)
 
 ## Success Metrics
 

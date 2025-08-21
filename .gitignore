@@ -1,5 +1,6 @@
 # Binaries
 bin/
+memgraph-controller
 
 # Go build artifacts
 *.exe

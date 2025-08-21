@@ -221,7 +221,8 @@ func TestPodDiscovery_SelectMaster_LatestTimestamp(t *testing.T) {
 
 	discovery.selectMaster(clusterState)
 
-	if clusterState.CurrentMaster != "newer-pod" {
-		t.Errorf("CurrentMaster = %s, want newer-pod", clusterState.CurrentMaster)
+	// With SYNC replica strategy, no master should be selected when no SYNC replica available
+	if clusterState.CurrentMaster != "" {
+		t.Errorf("CurrentMaster = %s, want empty (no SYNC replica available)", clusterState.CurrentMaster)
 	}
 }

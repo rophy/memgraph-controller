@@ -109,12 +109,20 @@ func (pd *PodDiscovery) selectMaster(clusterState *ClusterState) {
 		selectionReason = "SYNC replica (guaranteed consistency)"
 		log.Printf("PROMOTING SYNC REPLICA: %s has all committed transactions", syncReplica.Name)
 	} else {
-		// No SYNC replica available - use timestamp fallback but log warning
-		selectedMaster = latestPod
-		selectionReason = "latest timestamp (ASYNC replicas may be missing data)"
+		// CRITICAL: No SYNC replica available - DO NOT auto-promote ASYNC replicas
+		// ASYNC replicas may be missing committed transactions, causing data loss
 		if len(clusterState.Pods) > 1 {
-			log.Printf("WARNING: No SYNC replica available for safe promotion")
-			log.Printf("WARNING: Selected master %s may be missing committed transactions", latestPod.Name)
+			log.Printf("CRITICAL: No SYNC replica available for safe automatic promotion")
+			log.Printf("CRITICAL: Cannot guarantee data consistency - manual intervention required")
+			log.Printf("CRITICAL: ASYNC replicas may be missing committed transactions")
+			
+			// Do NOT select any master - require manual intervention
+			selectedMaster = nil
+			selectionReason = "no safe automatic promotion possible (SYNC replica unavailable)"
+		} else {
+			// Single pod scenario - safe to promote (no replication risk)
+			selectedMaster = latestPod
+			selectionReason = "single pod cluster (no replication consistency risk)"
 		}
 	}
 

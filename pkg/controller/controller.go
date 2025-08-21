@@ -184,12 +184,21 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 	return clusterState, nil
 }
 
+// getPodNames returns a slice of pod names for logging purposes
+func getPodNames(pods map[string]*PodInfo) []string {
+	var names []string
+	for name := range pods {
+		names = append(names, name)
+	}
+	return names
+}
+
 // selectMasterAfterQuerying selects master based on actual Memgraph replication state
 func (c *MemgraphController) selectMasterAfterQuerying(clusterState *ClusterState) {
 	// Priority-based master selection using ACTUAL Memgraph state
 	// 1. Prefer existing MAIN node (avoid unnecessary failover)
 	// 2. If no MAIN, promote SYNC replica (guaranteed consistency)  
-	// 3. If no SYNC replica, use timestamp fallback (with warnings)
+	// 3. If no SYNC replica, REQUIRE MANUAL INTERVENTION (prevent data loss)
 	
 	var existingMain *PodInfo
 	var syncReplica *PodInfo
@@ -231,12 +240,21 @@ func (c *MemgraphController) selectMasterAfterQuerying(clusterState *ClusterStat
 		selectionReason = "SYNC replica promotion (guaranteed consistency)"
 		log.Printf("PROMOTING SYNC REPLICA: %s has all committed transactions", syncReplica.Name)
 	} else {
-		// No SYNC replica available - use timestamp fallback but log warning
-		selectedMaster = latestPod
-		selectionReason = "latest timestamp fallback (ASYNC replicas may be missing data)"
+		// CRITICAL: No SYNC replica available - DO NOT auto-promote ASYNC replicas
+		// ASYNC replicas may be missing committed transactions, causing data loss
 		if len(clusterState.Pods) > 1 {
-			log.Printf("WARNING: No SYNC replica available for safe promotion")
-			log.Printf("WARNING: Selected master %s may be missing committed transactions", latestPod.Name)
+			log.Printf("CRITICAL: No SYNC replica available for safe automatic promotion")
+			log.Printf("CRITICAL: Cannot guarantee data consistency - manual intervention required")
+			log.Printf("CRITICAL: ASYNC replicas may be missing committed transactions")
+			log.Printf("Available pods: %v", getPodNames(clusterState.Pods))
+			
+			// Do NOT select any master - require manual intervention
+			selectedMaster = nil
+			selectionReason = "no safe automatic promotion possible (SYNC replica unavailable)"
+		} else {
+			// Single pod scenario - safe to promote (no replication risk)
+			selectedMaster = latestPod
+			selectionReason = "single pod cluster (no replication consistency risk)"
 		}
 	}
 

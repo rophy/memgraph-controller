@@ -613,3 +613,272 @@ The SYNC replica strategy is now production-ready and provides:
 
 **Implementation Planned**: Stage 8 in IMPLEMENTATION_PLAN.md
 
+# Controller Design: Robust Master Selection and Failover Strategy
+
+## Overview
+
+This design provides deterministic, safe master selection that prevents data loss during disasters and ensures consistent cluster behavior across controller restarts and pod failures.
+
+## Core Design Principles
+
+### **Two-Pod Master/SYNC Strategy**
+- **pod-0 and pod-1**: Eligible for master OR SYNC replica roles
+- **pod-2, pod-3, ...**: ALWAYS ASYNC replicas only
+- **Controller Authority**: Maintains expected topology in-memory after bootstrap
+
+### **Bootstrap Safety vs. Operational Authority**
+- **Bootstrap**: Conservative - refuse to start on ambiguous states
+- **Operational**: Authoritative - enforce known topology against drift
+
+## Controller State Machine
+
+### **Cluster State Classification**
+
+```go
+type ClusterState int
+
+const (
+    INITIAL_STATE     ClusterState = iota  // All pods are "main" - fresh cluster
+    OPERATIONAL_STATE                      // Exactly one master - healthy state  
+    MIXED_STATE                           // Some main, some replica - conflicts
+    NO_MASTER_STATE                       // No main pods - requires promotion
+    SPLIT_BRAIN_STATE                     // Multiple masters - dangerous
+)
+```
+
+### **Bootstrap Phase: Safety First**
+
+During controller startup, **MIXED states are dangerous** and require manual intervention:
+
+```go
+func (c *Controller) bootstrapClusterDiscovery(pods []PodInfo) (ClusterState, error) {
+    state := c.classifyState(pods)
+    
+    switch state {
+    case INITIAL_STATE:
+        // ✅ SAFE: All pods are "main" - no data divergence risk
+        return c.initializeCluster(pods), nil
+        
+    case OPERATIONAL_STATE: 
+        // ✅ SAFE: Learn existing topology
+        return c.learnExistingTopology(pods), nil
+        
+    case MIXED_STATE:
+        // ❌ DANGER: Refuse to make decisions during bootstrap
+        log.Error("BOOTSTRAP BLOCKED: Mixed replication state detected")
+        log.Error("Manual intervention required - cannot determine safe master")
+        log.Error("Possible data divergence between pods")
+        return ClusterState{}, fmt.Errorf("unsafe mixed state during bootstrap")
+        
+    case NO_MASTER_STATE:
+        // ❌ DANGER: All replicas, unclear which has latest data
+        log.Error("BOOTSTRAP BLOCKED: No master found, unclear data freshness")
+        return ClusterState{}, fmt.Errorf("no master during bootstrap")
+    }
+}
+```
+
+### **Operational Phase: Authoritative Control**
+
+After successful bootstrap, **controller has authority** to enforce topology:
+
+```go
+func (c *Controller) operationalReconciliation(pods []PodInfo) error {
+    currentState := c.classifyState(pods)
+    expectedState := c.getExpectedState() // Controller's known good state
+    
+    switch currentState {
+    case MIXED_STATE:
+        // ✅ Controller has authority - enforce expected topology
+        log.Warn("Mixed state detected - enforcing known topology")
+        return c.enforceExpectedTopology(pods, expectedState)
+        
+    case SPLIT_BRAIN_STATE:
+        // ✅ Controller knows who should be master
+        log.Warn("Split-brain detected - demoting incorrect masters")
+        return c.resolveSplitBrain(pods, expectedState)
+    }
+}
+```
+
+## State Detection and Resolution Rules
+
+### **Rule 1: INITIAL State Detection**
+```
+All pods report SHOW REPLICATION ROLE = "main"
+```
+**Action**: Apply deterministic roles
+- **pod-0** → Master
+- **pod-1** → SYNC replica  
+- **pod-2, pod-3, ...** → ASYNC replicas
+
+### **Rule 2: OPERATIONAL State Learning**
+```
+Exactly one master exists among eligible pods (pod-0 or pod-1)
+```
+**Action**: Learn and track current topology
+- **Master**: whichever of pod-0/pod-1 has "main" role
+- **SYNC replica**: the other eligible pod (pod-0 or pod-1)
+- **ASYNC replicas**: all other pods (pod-2+)
+
+### **Rule 3: MIXED State Resolution**
+
+#### **Bootstrap Context (DANGEROUS)**
+```
+pod-0: "main", pod-1: "replica", pod-2: "main"  // Some main, some replica
+```
+**Action**: **REFUSE TO START** - manual intervention required
+**Reason**: Cannot determine which master has latest data
+
+#### **Operational Context (ENFORCEABLE)**
+```
+pod-0: "main", pod-1: "replica", pod-2: "main"  // Conflicts with known state
+```
+**Action**: Apply **lower-index precedence rule**
+- Keep **pod-0** as master (lower index than pod-2)
+- Demote **pod-2** to ASYNC replica
+- Register **pod-2** as ASYNC replica to pod-0
+
+### **Rule 4: NO_MASTER State Recovery**
+```
+All pods report SHOW REPLICATION ROLE = "replica"
+```
+**Action**: Promote known SYNC replica
+- **If controller knows SYNC replica**: Promote it to master
+- **If SYNC replica unknown**: Promote pod-0 (deterministic default)
+
+## Detailed Resolution Algorithms
+
+### **Lower-Index Precedence Rule**
+```go
+func (c *Controller) resolveSplitBrain(pods []PodInfo) error {
+    // Find all masters
+    masters := getPodsWithRole(pods, "main")
+    
+    // Determine which master to keep
+    keepMaster := findLowestIndexMaster(masters)
+    
+    // Demote all other masters
+    for _, master := range masters {
+        if master.Index > keepMaster.Index {
+            log.Printf("Demoting higher-index master %s to replica", master.Name)
+            c.demoteToReplica(master)
+            
+            // Register as appropriate replica type
+            if master.Index <= 1 {
+                c.registerAsSyncReplica(keepMaster, master)  // pod-0 or pod-1
+            } else {
+                c.registerAsAsyncReplica(keepMaster, master) // pod-2+
+            }
+        }
+    }
+}
+```
+
+### **Role Assignment Logic**
+```go
+func (c *Controller) determineExpectedRoles(pods []PodInfo) ExpectedState {
+    pod0 := findPod(pods, "memgraph-0")
+    pod1 := findPod(pods, "memgraph-1")
+    others := findPods(pods, "memgraph-2", "memgraph-3", ...)
+    
+    // Determine master/SYNC assignment from current state
+    var master, syncReplica string
+    
+    if pod0 != nil && pod0.Role == "main" {
+        master, syncReplica = "memgraph-0", "memgraph-1"
+    } else if pod1 != nil && pod1.Role == "main" {
+        master, syncReplica = "memgraph-1", "memgraph-0"  
+    } else {
+        // Default assignment for conflicts or initialization
+        master, syncReplica = "memgraph-0", "memgraph-1"
+    }
+    
+    return ExpectedState{
+        Master:        master,
+        SyncReplica:   syncReplica,
+        AsyncReplicas: getOtherPodNames(others),
+    }
+}
+```
+
+## Safety Scenarios
+
+### **✅ SAFE Bootstrap Scenarios**
+
+**Fresh Cluster:**
+```
+pod-0: "main", pod-1: "main", pod-2: "main"
+→ Apply deterministic roles: pod-0=master, pod-1=SYNC, pod-2=ASYNC
+```
+
+**Healthy Existing Cluster:**
+```
+pod-0: "main", pod-1: "replica", pod-2: "replica"  
+→ Learn topology: master=pod-0, SYNC=pod-1, ASYNC=[pod-2]
+```
+
+### **❌ UNSAFE Bootstrap Scenarios**
+
+**Data Divergence Risk:**
+```
+pod-0: "main", pod-1: "replica", pod-2: "main"
+→ REFUSE TO START - manual intervention required
+```
+
+**Unclear Data Freshness:**
+```
+pod-0: "replica", pod-1: "replica", pod-2: "replica"
+→ REFUSE TO START - manual intervention required
+```
+
+## Disaster Recovery Workflows
+
+### **Master Failure → SYNC Replica Promotion**
+
+**Initial State:**
+- pod-0: `main` (master), pod-1: `replica` (SYNC), pod-2: `replica` (ASYNC)
+
+**Master Failure:**
+- pod-0 deleted/unreachable
+
+**Recovery Steps:**
+1. **Detect master failure** (no reachable `main` role)
+2. **Promote SYNC replica**: pod-1 → `SET REPLICATION ROLE TO MAIN`
+3. **Rebuild topology**: Register pod-2 as ASYNC replica to pod-1
+4. **Update controller state**: master=pod-1, SYNC=pod-0 (when returns), ASYNC=[pod-2]
+
+### **Old Master Returns → Split-Brain Resolution**
+
+**Current State (After Recovery):**
+- pod-1: `main` (current master), pod-2: `replica` (ASYNC)
+
+**Old Master Returns:**
+- pod-0: `main` (persistent storage preserved old role)
+
+**Split-Brain Resolution:**
+1. **Detect split-brain** (both pod-0 and pod-1 are `main`)
+2. **Apply precedence rule**: pod-0 precedence over pod-1 (lower index)
+3. **Demote pod-1**: `main` → `replica` 
+4. **Register pod-1**: SYNC replica to pod-0
+5. **Final state**: pod-0=master, pod-1=SYNC, pod-2=ASYNC
+
+## Implementation Benefits
+
+### **Deterministic Behavior**
+- **Same inputs → same outputs** across controller restarts
+- **Predictable precedence rules** for conflict resolution
+- **No timestamp guessing** or external state dependencies
+
+### **Safety Guarantees**
+- **Bootstrap safety**: Refuse dangerous state transitions
+- **Data protection**: Never auto-promote without clear authority
+- **Split-brain prevention**: Clear resolution rules
+
+### **Operational Simplicity**
+- **Two-pod strategy**: Simplified state space (pod-0 ↔ pod-1 roles)
+- **Lower-index precedence**: Simple, understandable conflict resolution
+- **Self-healing**: Automatic recovery from common failure scenarios
+
+This design ensures **robust, predictable behavior** while preventing the critical bug where ASYNC replicas were incorrectly promoted over SYNC replicas during master failures.
+

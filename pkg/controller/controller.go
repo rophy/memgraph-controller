@@ -107,8 +107,24 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 		return clusterState, nil
 	}
 
-	// Mark this as bootstrap phase for safety validation
-	clusterState.IsBootstrapPhase = true
+	// Determine if this is truly a bootstrap phase or operational reconciliation
+	// Only mark as bootstrap if:
+	// 1. Controller has no last known master (first run)
+	// 2. Controller hasn't established operational state before
+	isBootstrap := c.lastKnownMaster == "" && c.targetMasterIndex < 0
+	
+	if isBootstrap {
+		log.Printf("First run detected - entering bootstrap phase for safety validation")
+		clusterState.IsBootstrapPhase = true
+	} else {
+		log.Printf("Operational reconciliation - maintaining authority over cluster state")
+		clusterState.IsBootstrapPhase = false
+		// Preserve target master index from controller state
+		if c.targetMasterIndex >= 0 {
+			clusterState.TargetMasterIndex = c.targetMasterIndex
+		}
+	}
+	
 	clusterState.LastStateChange = time.Now()
 	
 	log.Printf("Discovered %d pods, starting bootstrap discovery...", len(clusterState.Pods))
@@ -581,6 +597,13 @@ func (c *MemgraphController) isPodHealthyForMaster(podInfo *PodInfo) bool {
 	// Pod must have been successfully queried for Memgraph role
 	if podInfo.MemgraphRole == "" {
 		log.Printf("Pod %s not healthy for master: no Memgraph role info", podInfo.Name)
+		return false
+	}
+	
+	// Additional check: Pod must not be in a deleted/terminating state
+	// This is detected when we can't connect to query Memgraph role
+	if podInfo.State == INITIAL && podInfo.MemgraphRole == "" {
+		log.Printf("Pod %s appears to be deleted or terminating", podInfo.Name)
 		return false
 	}
 	
@@ -1088,6 +1111,13 @@ func (c *MemgraphController) ConfigureReplication(ctx context.Context, clusterSt
 		}
 
 		if podInfo.ShouldBecomeMaster(currentMaster) {
+			// Check if pod is healthy before attempting promotion
+			if !c.isPodHealthyForMaster(podInfo) {
+				log.Printf("Cannot promote unhealthy pod %s to MASTER (likely deleted or terminating)", podName)
+				configErrors = append(configErrors, fmt.Errorf("promote %s to MASTER: pod is unhealthy", podName))
+				continue
+			}
+			
 			log.Printf("Promoting pod %s to MASTER role", podName)
 			if err := c.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, podInfo.BoltAddress); err != nil {
 				log.Printf("Failed to promote pod %s to MASTER: %v", podName, err)
@@ -1098,6 +1128,12 @@ func (c *MemgraphController) ConfigureReplication(ctx context.Context, clusterSt
 		}
 
 		if podInfo.ShouldBecomeReplica(currentMaster) {
+			// Check if pod is healthy before attempting demotion
+			if !c.isPodHealthyForMaster(podInfo) {
+				log.Printf("Skipping demotion of unhealthy pod %s (likely deleted or terminating)", podName)
+				continue
+			}
+			
 			log.Printf("Demoting pod %s to REPLICA role", podName)
 			if err := c.memgraphClient.SetReplicationRoleToReplicaWithRetry(ctx, podInfo.BoltAddress); err != nil {
 				log.Printf("Failed to demote pod %s to REPLICA: %v", podName, err)

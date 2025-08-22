@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
@@ -36,6 +37,10 @@ type MemgraphController struct {
 	lastReconcile   time.Time
 	failureCount    int
 	maxFailures     int
+	
+	// Controller state tracking
+	lastKnownMaster   string
+	targetMasterIndex int
 	
 	// Event-driven reconciliation
 	podInformer     cache.SharedInformer
@@ -237,6 +242,9 @@ func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterSta
 	log.Printf("Pod role distribution: %d main pods %v, %d replica pods %v", 
 		len(mainPods), mainPods, len(replicaPods), replicaPods)
 	
+	// Check if this is controller startup (bootstrap) or operational reconciliation
+	isControllerStartup := c.lastKnownMaster == ""
+	
 	// Check if bootstrap is safe to proceed
 	isBootstrapSafe := clusterState.IsBootstrapSafe()
 	clusterState.BootstrapSafe = isBootstrapSafe
@@ -257,25 +265,35 @@ func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterSta
 			return fmt.Errorf("unsafe mixed state during bootstrap: main=%v, replica=%v", mainPods, replicaPods)
 			
 		case NO_MASTER_STATE:
-			log.Printf("❌ BOOTSTRAP BLOCKED: No master found, unclear data freshness")
-			log.Printf("❌ All pods are replicas - cannot determine which has latest data")
-			log.Printf("❌ Manual intervention required to select master")
-			log.Printf("🔧 Recovery options:")
-			log.Printf("  1. Identify pod with latest data (check STORAGE INFO)")
-			log.Printf("  2. Promote chosen pod: kubectl exec <pod> -- mgconsole -e 'SET REPLICATION ROLE TO MAIN;'")
-			log.Printf("  3. Restart controller after manual promotion")
-			return fmt.Errorf("no master during bootstrap: all %d pods are replicas", len(replicaPods))
+			if isControllerStartup {
+				log.Printf("❌ BOOTSTRAP BLOCKED: No master found, unclear data freshness")
+				log.Printf("❌ All pods are replicas - cannot determine which has latest data")
+				log.Printf("❌ Manual intervention required to select master")
+				log.Printf("🔧 Recovery options:")
+				log.Printf("  1. Identify pod with latest data (check STORAGE INFO)")
+				log.Printf("  2. Promote chosen pod: kubectl exec <pod> -- mgconsole -e 'SET REPLICATION ROLE TO MAIN;'")
+				log.Printf("  3. Restart controller after manual promotion")
+				return fmt.Errorf("no master during bootstrap: all %d pods are replicas", len(replicaPods))
+			} else {
+				log.Printf("🚨 OPERATIONAL: Master failure detected - promoting SYNC replica")
+				return c.handleMasterFailurePromotion(clusterState, replicaPods)
+			}
 			
 		case SPLIT_BRAIN_STATE:
-			log.Printf("❌ BOOTSTRAP BLOCKED: Multiple masters detected")
-			log.Printf("❌ Split-brain condition - potential data divergence")
-			log.Printf("❌ Manual intervention required to resolve conflicts")
-			log.Printf("🔧 Recovery options:")
-			log.Printf("  1. Compare data between masters using STORAGE INFO")
-			log.Printf("  2. Choose master with most recent data")
-			log.Printf("  3. Demote others: kubectl exec <pod> -- mgconsole -e 'SET REPLICATION ROLE TO REPLICA;'")
-			log.Printf("  4. Restart controller after resolving split-brain")
-			return fmt.Errorf("split-brain during bootstrap: multiple masters %v", mainPods)
+			if isControllerStartup {
+				log.Printf("❌ BOOTSTRAP BLOCKED: Multiple masters detected")
+				log.Printf("❌ Split-brain condition - potential data divergence")
+				log.Printf("❌ Manual intervention required to resolve conflicts")
+				log.Printf("🔧 Recovery options:")
+				log.Printf("  1. Compare data between masters using STORAGE INFO")
+				log.Printf("  2. Choose master with most recent data")
+				log.Printf("  3. Demote others: kubectl exec <pod> -- mgconsole -e 'SET REPLICATION ROLE TO REPLICA WITH PORT 10000;'")
+				log.Printf("  4. Restart controller after resolving split-brain")
+				return fmt.Errorf("split-brain during bootstrap: multiple masters %v", mainPods)
+			} else {
+				log.Printf("🔄 OPERATIONAL: Split-brain detected - enforcing current master authority")
+				return c.enforceMasterAuthority(clusterState, mainPods)
+			}
 			
 		default:
 			log.Printf("❌ BOOTSTRAP BLOCKED: Unknown unsafe state")
@@ -376,10 +394,14 @@ func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
 		clusterState.CurrentMaster = currentMaster
 		log.Printf("Learned existing master: %s", currentMaster)
 		
+		// Track last known master for operational phase detection
+		c.lastKnownMaster = currentMaster
+		
 		// Extract current master index for tracking
 		currentMasterIndex := c.config.ExtractPodIndex(currentMaster)
 		if currentMasterIndex >= 0 {
 			clusterState.TargetMasterIndex = currentMasterIndex
+			c.targetMasterIndex = currentMasterIndex
 			log.Printf("Updated target master index to match existing: %d", currentMasterIndex)
 		}
 		
@@ -2551,4 +2573,203 @@ func (c *MemgraphController) GetControllerStatus() map[string]interface{} {
 		"max_failures":     c.maxFailures,
 		"work_queue_size":  len(c.workQueue),
 	}
+}
+
+// handleMasterFailurePromotion promotes SYNC replica when master fails during operations
+func (c *MemgraphController) handleMasterFailurePromotion(clusterState *ClusterState, replicaPods []string) error {
+	// Find SYNC replica from current state
+	var syncReplica string
+	for podName, podInfo := range clusterState.Pods {
+		if podInfo.IsSyncReplica {
+			syncReplica = podName
+			break
+		}
+	}
+	
+	// If no SYNC replica found, use deterministic selection
+	if syncReplica == "" {
+		log.Printf("No SYNC replica identified, using deterministic selection")
+		if c.targetMasterIndex == 1 {
+			// Previous master was pod-1, promote pod-0 as SYNC
+			syncReplica = c.config.StatefulSetName + "-0"
+		} else {
+			// Previous master was pod-0, promote pod-1 as SYNC  
+			syncReplica = c.config.StatefulSetName + "-1"
+		}
+	}
+	
+	log.Printf("🔄 FAILOVER: Promoting SYNC replica %s to master", syncReplica)
+	
+	// Promote SYNC replica to master
+	if err := c.promoteToMaster(syncReplica); err != nil {
+		return fmt.Errorf("failed to promote SYNC replica %s: %w", syncReplica, err)
+	}
+	
+	// Update controller state
+	c.lastKnownMaster = syncReplica
+	if syncReplica == c.config.StatefulSetName + "-0" {
+		c.targetMasterIndex = 0
+	} else {
+		c.targetMasterIndex = 1
+	}
+	
+	log.Printf("✅ FAILOVER: Successfully promoted %s to master (target_index=%d)", 
+		syncReplica, c.targetMasterIndex)
+	
+	return nil
+}
+
+// promoteToMaster promotes a pod to master role
+func (c *MemgraphController) promoteToMaster(podName string) error {
+	log.Printf("Promoting pod %s to master role", podName)
+	
+	// Discover current cluster state to get pod information
+	ctx := context.Background()
+	clusterState, err := c.podDiscovery.DiscoverPods(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to discover pods: %w", err)
+	}
+	
+	// Get pod information from cluster state
+	podInfo, exists := clusterState.Pods[podName]
+	if !exists {
+		return fmt.Errorf("pod %s not found in cluster state", podName)
+	}
+	
+	// Use the bolt address from pod info
+	boltAddress := podInfo.BoltAddress
+	
+	// Execute promotion command using MemgraphClient pattern
+	err = WithRetry(ctx, func() error {
+		driver, err := c.memgraphClient.connectionPool.GetDriver(ctx, boltAddress)
+		if err != nil {
+			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
+		}
+
+		session := driver.NewSession(ctx, neo4j.SessionConfig{})
+		defer func() {
+			if closeErr := session.Close(ctx); closeErr != nil {
+				log.Printf("Warning: failed to close session for %s: %v", boltAddress, closeErr)
+			}
+		}()
+
+		// Execute promotion command
+		_, err = session.Run(ctx, "SET REPLICATION ROLE TO MAIN;", nil)
+		if err != nil {
+			return fmt.Errorf("failed to execute SET REPLICATION ROLE TO MAIN: %w", err)
+		}
+		
+		return nil
+	}, c.memgraphClient.retryConfig)
+	
+	if err != nil {
+		return fmt.Errorf("failed to promote %s to master: %w", podName, err)
+	}
+	
+	log.Printf("✅ Successfully promoted %s to master role", podName)
+	return nil
+}
+
+// enforceMasterAuthority enforces the current master and demotes incorrect masters
+func (c *MemgraphController) enforceMasterAuthority(clusterState *ClusterState, mainPods []string) error {
+	// Determine which master to keep (controller authority)
+	correctMaster := c.lastKnownMaster
+	if correctMaster == "" {
+		// Fallback: use lower-index precedence if no known master
+		correctMaster = c.selectLowestIndexMaster(mainPods)
+	}
+	
+	log.Printf("Enforcing master authority: correct_master=%s, current_masters=%v", correctMaster, mainPods)
+	
+	// Demote all incorrect masters
+	var demotedPods []string
+	for _, masterPod := range mainPods {
+		if masterPod != correctMaster {
+			log.Printf("Demoting incorrect master %s to replica", masterPod)
+			if err := c.demoteToReplica(masterPod); err != nil {
+				log.Printf("Warning: failed to demote %s: %v", masterPod, err)
+				continue
+			}
+			demotedPods = append(demotedPods, masterPod)
+		}
+	}
+	
+	// Update controller state tracking
+	c.lastKnownMaster = correctMaster
+	c.targetMasterIndex = c.config.ExtractPodIndex(correctMaster)
+	
+	log.Printf("✅ Split-brain resolved: master=%s, demoted=%v", correctMaster, demotedPods)
+	return nil
+}
+
+// selectLowestIndexMaster selects the master with the lowest pod index
+func (c *MemgraphController) selectLowestIndexMaster(mainPods []string) string {
+	if len(mainPods) == 0 {
+		return ""
+	}
+	
+	lowestMaster := mainPods[0]
+	lowestIndex := c.config.ExtractPodIndex(lowestMaster)
+	
+	for _, master := range mainPods[1:] {
+		index := c.config.ExtractPodIndex(master)
+		if index >= 0 && index < lowestIndex {
+			lowestMaster = master
+			lowestIndex = index
+		}
+	}
+	
+	log.Printf("Lower-index precedence: selected %s (index=%d) from %v", lowestMaster, lowestIndex, mainPods)
+	return lowestMaster
+}
+
+// demoteToReplica demotes a pod from master to replica role
+func (c *MemgraphController) demoteToReplica(podName string) error {
+	log.Printf("Demoting pod %s from master to replica", podName)
+	
+	// Discover current cluster state to get pod information  
+	ctx := context.Background()
+	clusterState, err := c.podDiscovery.DiscoverPods(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to discover pods: %w", err)
+	}
+	
+	// Get pod information from cluster state
+	podInfo, exists := clusterState.Pods[podName]
+	if !exists {
+		return fmt.Errorf("pod %s not found in cluster state", podName)
+	}
+	
+	// Use the bolt address from pod info
+	boltAddress := podInfo.BoltAddress
+	
+	// Execute demotion command
+	err = WithRetry(ctx, func() error {
+		driver, err := c.memgraphClient.connectionPool.GetDriver(ctx, boltAddress)
+		if err != nil {
+			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
+		}
+
+		session := driver.NewSession(ctx, neo4j.SessionConfig{})
+		defer func() {
+			if closeErr := session.Close(ctx); closeErr != nil {
+				log.Printf("Warning: failed to close session for %s: %v", boltAddress, closeErr)
+			}
+		}()
+
+		// Execute demotion command with required port for Memgraph Community Edition
+		_, err = session.Run(ctx, "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;", nil)
+		if err != nil {
+			return fmt.Errorf("failed to execute SET REPLICATION ROLE TO REPLICA: %w", err)
+		}
+		
+		return nil
+	}, c.memgraphClient.retryConfig)
+	
+	if err != nil {
+		return fmt.Errorf("failed to demote %s to replica: %w", podName, err)
+	}
+	
+	log.Printf("✅ Successfully demoted %s to replica role", podName)
+	return nil
 }

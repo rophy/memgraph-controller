@@ -13,15 +13,14 @@ spec:
   ports:
   {{- if .Values.statusApi.enabled }}
   - port: {{ .Values.statusApi.port }}
-    targetPort: status-api
+    targetPort: http
     protocol: TCP
-    name: status-api
-  {{- end }}
-  {{- if .Values.health.port }}
+    name: http
+  {{- else if .Values.health.port }}
   - port: {{ .Values.health.port }}
-    targetPort: health
+    targetPort: http
     protocol: TCP
-    name: health
+    name: http
   {{- end }}
   {{- if and .Values.metrics.enabled .Values.metrics.port }}
   - port: {{ .Values.metrics.port }}

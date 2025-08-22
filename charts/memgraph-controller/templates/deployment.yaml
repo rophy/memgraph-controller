@@ -56,12 +56,11 @@ spec:
           value: {{ .Values.env.STATEFULSET_NAME | default "memgraph" | quote }}
         ports:
         {{- if .Values.statusApi.enabled }}
-        - name: status-api
+        - name: http
           containerPort: {{ .Values.statusApi.port }}
           protocol: TCP
-        {{- end }}
-        {{- if .Values.health.port }}
-        - name: health
+        {{- else if .Values.health.port }}
+        - name: http
           containerPort: {{ .Values.health.port }}
           protocol: TCP
         {{- end }}
@@ -74,7 +73,7 @@ spec:
         livenessProbe:
           httpGet:
             path: {{ .Values.health.path }}
-            port: health
+            port: http
           initialDelaySeconds: 30
           periodSeconds: 10
           timeoutSeconds: 5
@@ -82,7 +81,7 @@ spec:
         readinessProbe:
           httpGet:
             path: {{ .Values.health.path }}
-            port: health
+            port: http
           initialDelaySeconds: 5
           periodSeconds: 5
           timeoutSeconds: 3

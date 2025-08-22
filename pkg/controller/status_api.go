@@ -13,12 +13,13 @@ type StatusResponse struct {
 
 // ClusterStatus represents high-level cluster state summary
 type ClusterStatus struct {
-	CurrentMaster     string `json:"current_master"`
-	CurrentSyncReplica string `json:"current_sync_replica"`
-	TotalPods         int    `json:"total_pods"`
-	HealthyPods       int    `json:"healthy_pods"`
-	UnhealthyPods     int    `json:"unhealthy_pods"`
-	SyncReplicaHealthy bool   `json:"sync_replica_healthy"`
+	CurrentMaster       string                `json:"current_master"`
+	CurrentSyncReplica  string                `json:"current_sync_replica"`
+	TotalPods           int                   `json:"total_pods"`
+	HealthyPods         int                   `json:"healthy_pods"`
+	UnhealthyPods       int                   `json:"unhealthy_pods"`
+	SyncReplicaHealthy  bool                  `json:"sync_replica_healthy"`
+	ReconciliationMetrics ReconciliationMetrics `json:"reconciliation_metrics"`
 }
 
 // PodStatus represents the status of a single pod for API response

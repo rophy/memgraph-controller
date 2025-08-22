@@ -612,7 +612,7 @@ func (c *MemgraphController) updateReconciliationMetrics(reason string, duration
 }
 ```
 
-**Status**: Not Started
+**Status**: Complete
 
 ---
 

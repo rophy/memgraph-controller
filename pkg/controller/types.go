@@ -497,3 +497,14 @@ func (cs *ClusterState) GetClusterHealthSummary() map[string]interface{} {
 		"last_change":       cs.LastStateChange,
 	}
 }
+
+// ReconciliationMetrics tracks reconciliation performance and behavior
+type ReconciliationMetrics struct {
+	TotalReconciliations      int64         `json:"total_reconciliations"`
+	SuccessfulReconciliations int64         `json:"successful_reconciliations"`
+	FailedReconciliations     int64         `json:"failed_reconciliations"`
+	AverageReconciliationTime time.Duration `json:"average_reconciliation_time"`
+	LastReconciliationTime    time.Time     `json:"last_reconciliation_time"`
+	LastReconciliationReason  string        `json:"last_reconciliation_reason"`
+	LastReconciliationError   string        `json:"last_reconciliation_error,omitempty"`
+}

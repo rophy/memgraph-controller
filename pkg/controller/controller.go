@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"log"
 	"math"
+	"math/rand"
 	"strings"
 	"sync"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -40,6 +42,9 @@ type MemgraphController struct {
 	informerFactory informers.SharedInformerFactory
 	workQueue       chan reconcileRequest
 	stopCh          chan struct{}
+	
+	// Reconciliation metrics
+	metrics         *ReconciliationMetrics
 }
 
 func NewMemgraphController(clientset kubernetes.Interface, config *Config) *MemgraphController {
@@ -57,6 +62,9 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	controller.maxFailures = 5
 	controller.workQueue = make(chan reconcileRequest, 100)
 	controller.stopCh = make(chan struct{})
+	
+	// Initialize reconciliation metrics
+	controller.metrics = &ReconciliationMetrics{}
 	
 	// Set up pod informer for event-driven reconciliation
 	controller.setupInformers()
@@ -2203,12 +2211,13 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	response := &StatusResponse{
 		Timestamp: time.Now(),
 		ClusterState: ClusterStatus{
-			CurrentMaster:      clusterState.CurrentMaster,
-			CurrentSyncReplica: currentSyncReplica,
-			TotalPods:          totalPods,
-			HealthyPods:        healthyPods,
-			UnhealthyPods:      unhealthyPods,
-			SyncReplicaHealthy: syncReplicaHealthy,
+			CurrentMaster:         clusterState.CurrentMaster,
+			CurrentSyncReplica:    currentSyncReplica,
+			TotalPods:             totalPods,
+			HealthyPods:           healthyPods,
+			UnhealthyPods:         unhealthyPods,
+			SyncReplicaHealthy:    syncReplicaHealthy,
+			ReconciliationMetrics: c.GetReconciliationMetrics(),
 		},
 		Pods: podStatuses,
 	}
@@ -2262,12 +2271,38 @@ func (c *MemgraphController) onPodAdd(obj interface{}) {
 
 // onPodUpdate handles pod update events
 func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
-	c.enqueuePodEvent("pod-updated")
+	oldPod := oldObj.(*v1.Pod)
+	newPod := newObj.(*v1.Pod)
+	
+	if !c.shouldReconcile(oldPod, newPod) {
+		return // Skip unnecessary reconciliation
+	}
+	
+	c.enqueuePodEvent("pod-state-changed")
 }
 
 // onPodDelete handles pod deletion events
 func (c *MemgraphController) onPodDelete(obj interface{}) {
 	c.enqueuePodEvent("pod-deleted")
+}
+
+// shouldReconcile determines if a pod update requires reconciliation
+func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
+	// Only reconcile for meaningful changes
+	meaningfulChanges := []bool{
+		oldPod.Status.Phase != newPod.Status.Phase,           // Lifecycle change
+		oldPod.Status.PodIP != newPod.Status.PodIP,           // Network change  
+		oldPod.DeletionTimestamp != newPod.DeletionTimestamp, // Deletion started
+		oldPod.Spec.NodeName != newPod.Spec.NodeName,         // Node migration
+	}
+	
+	for _, hasChange := range meaningfulChanges {
+		if hasChange {
+			return true
+		}
+	}
+	
+	return false
 }
 
 // enqueuePodEvent adds a reconcile request to the work queue
@@ -2367,6 +2402,10 @@ func (c *MemgraphController) processReconcileRequest(ctx context.Context, reques
 	
 	// Execute reconciliation with retry logic
 	err := c.reconcileWithBackoff(ctx)
+	duration := time.Since(startTime)
+	
+	// Update reconciliation metrics
+	c.updateReconciliationMetrics(request.reason, duration, err)
 	
 	c.mu.Lock()
 	c.lastReconcile = time.Now()
@@ -2383,7 +2422,7 @@ func (c *MemgraphController) processReconcileRequest(ctx context.Context, reques
 	} else {
 		c.failureCount = 0 // Reset failure count on success
 		log.Printf("Worker %d reconciliation completed successfully in %s", 
-			workerID, time.Since(startTime))
+			workerID, duration)
 	}
 	c.mu.Unlock()
 }
@@ -2395,14 +2434,17 @@ func (c *MemgraphController) reconcileWithBackoff(ctx context.Context) error {
 	
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if attempt > 0 {
-			// Calculate exponential backoff delay
+			// Exponential backoff with jitter
 			delay := time.Duration(float64(baseDelay) * math.Pow(2, float64(attempt-1)))
-			log.Printf("Reconciliation attempt %d failed, retrying in %s", attempt, delay)
+			jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
+			totalDelay := delay + jitter
+			
+			log.Printf("Reconciliation retry %d/%d after %s delay", attempt+1, maxRetries, totalDelay)
 			
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
-			case <-time.After(delay):
+			case <-time.After(totalDelay):
 				// Continue to retry
 			}
 		}
@@ -2416,9 +2458,56 @@ func (c *MemgraphController) reconcileWithBackoff(ctx context.Context) error {
 		}
 		
 		log.Printf("Reconciliation attempt %d failed: %v", attempt+1, err)
+		
+		// Don't retry on certain types of errors
+		if c.isNonRetryableError(err) {
+			return err
+		}
 	}
 	
 	return fmt.Errorf("reconciliation failed after %d attempts", maxRetries)
+}
+
+// isNonRetryableError determines if an error should not be retried
+func (c *MemgraphController) isNonRetryableError(err error) bool {
+	// Don't retry bootstrap safety failures - require manual intervention
+	return strings.Contains(err.Error(), "manual intervention required") ||
+		   strings.Contains(err.Error(), "ambiguous cluster state")
+}
+
+// updateReconciliationMetrics updates the reconciliation metrics
+func (c *MemgraphController) updateReconciliationMetrics(reason string, duration time.Duration, err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	
+	c.metrics.TotalReconciliations++
+	c.metrics.LastReconciliationTime = time.Now()
+	c.metrics.LastReconciliationReason = reason
+	
+	if err == nil {
+		c.metrics.SuccessfulReconciliations++
+		c.metrics.LastReconciliationError = ""
+	} else {
+		c.metrics.FailedReconciliations++
+		c.metrics.LastReconciliationError = err.Error()
+	}
+	
+	// Update running average (simple moving average)
+	if c.metrics.TotalReconciliations == 1 {
+		c.metrics.AverageReconciliationTime = duration
+	} else {
+		c.metrics.AverageReconciliationTime = 
+			(c.metrics.AverageReconciliationTime + duration) / 2
+	}
+}
+
+// GetReconciliationMetrics returns a copy of the current reconciliation metrics
+func (c *MemgraphController) GetReconciliationMetrics() ReconciliationMetrics {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	
+	// Return a copy to avoid race conditions
+	return *c.metrics
 }
 
 // enqueueReconcile adds a reconcile request to the work queue

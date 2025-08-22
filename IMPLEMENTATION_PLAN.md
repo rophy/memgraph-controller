@@ -847,7 +847,7 @@ func TestBootstrapToOperationalFlow(t *testing.T) {
 }
 ```
 
-**Status**: Not Started
+**Status**: Complete
 
 ---
 

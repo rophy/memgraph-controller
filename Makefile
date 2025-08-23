@@ -3,7 +3,7 @@ REGISTRY ?= ghcr.io/rophy
 TAG ?= latest
 IMAGE_NAME ?= memgraph-controller
 
-.PHONY: build test test-e2e clean up run down docker-build docker-push
+.PHONY: build test test-e2e clean up run down docker-build docker-push check
 
 # Build targets
 build:
@@ -28,11 +28,14 @@ up:
 	skaffold run --profile memgraph-only
 
 run:
-	skaffold run --tail
+	skaffold run --tail --port-forward
 
 down:
 	skaffold delete
 	kubectl delete pvc --all -n memgraph
+
+check:
+	scripts/check.sh
 
 # Docker targets
 docker-build:

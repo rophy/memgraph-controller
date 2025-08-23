@@ -209,9 +209,33 @@ func (pi *PodInfo) GetReplicaName() string {
 	return strings.ReplaceAll(pi.Name, "-", "_")
 }
 
-// GetReplicationAddress returns the replication address for this pod
+// GetReplicationAddress returns the replication address for this pod using DNS name
 func (pi *PodInfo) GetReplicationAddress(serviceName string) string {
 	return fmt.Sprintf("%s.%s:10000", pi.Name, serviceName)
+}
+
+// GetReplicationAddressByIP returns the replication address using pod IP for reliable connectivity
+func (pi *PodInfo) GetReplicationAddressByIP() string {
+	if pi.Pod != nil && pi.Pod.Status.PodIP != "" {
+		return fmt.Sprintf("%s:10000", pi.Pod.Status.PodIP)
+	}
+	return "" // Pod IP not available
+}
+
+// IsReadyForReplication checks if pod is ready for replication (has IP and passes readiness checks)
+func (pi *PodInfo) IsReadyForReplication() bool {
+	if pi.Pod == nil || pi.Pod.Status.PodIP == "" {
+		return false
+	}
+	
+	// Check Kubernetes readiness conditions
+	for _, condition := range pi.Pod.Status.Conditions {
+		if condition.Type == v1.PodReady {
+			return condition.Status == v1.ConditionTrue
+		}
+	}
+	
+	return false
 }
 
 // ShouldBecomeMaster determines if this pod should be promoted to master

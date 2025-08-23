@@ -1399,7 +1399,13 @@ func (c *MemgraphController) configureAsyncReplicas(ctx context.Context, cluster
 // configurePodAsAsyncReplica configures a specific pod as ASYNC replica
 func (c *MemgraphController) configurePodAsAsyncReplica(ctx context.Context, masterPod, replicaPod *PodInfo) error {
 	replicaName := replicaPod.GetReplicaName()
-	replicaAddress := replicaPod.GetReplicationAddress(c.config.ServiceName)
+	replicaAddress := replicaPod.GetReplicationAddressByIP()
+	
+	// Check if replica pod is ready for replication
+	if replicaAddress == "" || !replicaPod.IsReadyForReplication() {
+		return fmt.Errorf("replica pod %s not ready for replication (IP: %s, Ready: %v)", 
+			replicaPod.Name, replicaAddress, replicaPod.IsReadyForReplication())
+	}
 	
 	// Check if already configured correctly as ASYNC
 	for _, replica := range masterPod.ReplicasInfo {
@@ -1436,7 +1442,13 @@ func (c *MemgraphController) demoteSyncToAsync(ctx context.Context, clusterState
 	
 	masterPod := clusterState.Pods[clusterState.CurrentMaster]
 	replicaName := syncPod.GetReplicaName()
-	replicaAddress := syncPod.GetReplicationAddress(c.config.ServiceName)
+	replicaAddress := syncPod.GetReplicationAddressByIP()
+	
+	// Check if replica pod is ready for replication
+	if replicaAddress == "" || !syncPod.IsReadyForReplication() {
+		return fmt.Errorf("replica pod %s not ready for replication (IP: %s, Ready: %v)", 
+			syncPod.Name, replicaAddress, syncPod.IsReadyForReplication())
+	}
 	
 	// Drop SYNC registration
 	if err := c.memgraphClient.DropReplicaWithRetry(ctx, masterPod.BoltAddress, replicaName); err != nil {
@@ -1541,7 +1553,13 @@ func (c *MemgraphController) configureReplicationWithSyncStrategy(ctx context.Co
 		}
 		
 		replicaName := targetPod.GetReplicaName()
-		replicaAddress := targetPod.GetReplicationAddress(c.config.ServiceName)
+		replicaAddress := targetPod.GetReplicationAddressByIP()
+		
+		// Check if replica pod is ready for replication
+		if replicaAddress == "" || !targetPod.IsReadyForReplication() {
+			return fmt.Errorf("target SYNC replica pod %s not ready for replication (IP: %s, Ready: %v)", 
+				targetPod.Name, replicaAddress, targetPod.IsReadyForReplication())
+		}
 		
 		// Check if already configured as SYNC
 		isAlreadySyncReplica := false
@@ -1596,7 +1614,14 @@ func (c *MemgraphController) configureReplicationWithSyncStrategy(ctx context.Co
 		}
 		
 		replicaName := podInfo.GetReplicaName()
-		replicaAddress := podInfo.GetReplicationAddress(c.config.ServiceName)
+		replicaAddress := podInfo.GetReplicationAddressByIP()
+		
+		// Skip if pod not ready for replication
+		if replicaAddress == "" || !podInfo.IsReadyForReplication() {
+			log.Printf("Skipping ASYNC replica %s: not ready for replication (IP: %s, Ready: %v)", 
+				podInfo.Name, replicaAddress, podInfo.IsReadyForReplication())
+			continue
+		}
 		
 		// Check if replica is already registered with correct mode
 		isAlreadyConfigured := false
@@ -1677,7 +1702,13 @@ func (c *MemgraphController) promoteAsyncToSync(ctx context.Context, clusterStat
 	}
 	
 	replicaName := targetPod.GetReplicaName()
-	replicaAddress := targetPod.GetReplicationAddress(c.config.ServiceName)
+	replicaAddress := targetPod.GetReplicationAddressByIP()
+	
+	// Check if replica pod is ready for replication
+	if replicaAddress == "" || !targetPod.IsReadyForReplication() {
+		return fmt.Errorf("target replica pod %s not ready for replication (IP: %s, Ready: %v)", 
+			targetPod.Name, replicaAddress, targetPod.IsReadyForReplication())
+	}
 	
 	// Step 1: Check if replica is caught up
 	log.Printf("Checking if %s is caught up with master...", replicaName)
@@ -2113,7 +2144,13 @@ func (c *MemgraphController) recoverSyncReplica(ctx context.Context, clusterStat
 	
 	// Attempt to re-register as SYNC replica
 	replicaName := syncPod.GetReplicaName()
-	replicaAddress := syncPod.GetReplicationAddress(c.config.ServiceName)
+	replicaAddress := syncPod.GetReplicationAddressByIP()
+	
+	// Check if replica pod is ready for replication
+	if replicaAddress == "" || !syncPod.IsReadyForReplication() {
+		return fmt.Errorf("SYNC replica pod %s not ready for replication (IP: %s, Ready: %v)", 
+			syncPod.Name, replicaAddress, syncPod.IsReadyForReplication())
+	}
 	
 	log.Printf("Re-registering %s as SYNC replica", replicaName)
 	
@@ -2153,7 +2190,13 @@ func (c *MemgraphController) configurePodAsSyncReplica(ctx context.Context, clus
 	
 	// Register as SYNC replica
 	replicaName := targetPod.GetReplicaName()
-	replicaAddress := targetPod.GetReplicationAddress(c.config.ServiceName)
+	replicaAddress := targetPod.GetReplicationAddressByIP()
+	
+	// Check if replica pod is ready for replication
+	if replicaAddress == "" || !targetPod.IsReadyForReplication() {
+		return fmt.Errorf("target pod %s not ready for replication (IP: %s, Ready: %v)", 
+			targetPod.Name, replicaAddress, targetPod.IsReadyForReplication())
+	}
 	
 	log.Printf("Registering %s as SYNC replica", podName)
 	if err := c.memgraphClient.RegisterReplicaWithModeAndRetry(ctx, masterPod.BoltAddress, replicaName, replicaAddress, "SYNC"); err != nil {

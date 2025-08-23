@@ -169,6 +169,52 @@ The controller implements a **SYNC replica strategy** for zero data loss failove
 
 This design ensures **robust, predictable behavior** while preventing data loss during master failures through guaranteed SYNC replica consistency.
 
+## Testing
+
+### Unit Tests
+
+```bash
+make test
+```
+
+### E2E TEsts
+
+This should be run by human:
+
+```
+make run
+```
+
+Once skaffold is up and running with port-forward enabled, this can be run by either human or AI:
+
+```bash
+make test-e2e
+```
+
+### Manual Verify
+
+To send data to a specific pod using kubectl exec with mgconsole, use this format:
+
+  kubectl exec <pod-name> -n memgraph -c memgraph -- bash -c 'echo "<CYPHER_QUERY>" | mgconsole'
+
+  Examples:
+
+  Send to master (memgraph-ha-0):
+  kubectl exec memgraph-ha-0 -n memgraph -c memgraph -- bash -c 'echo "CREATE (n:TestNode {id: \"test-123\", value: \"my-test\"});" | mgconsole'
+
+  Send to SYNC replica (memgraph-ha-1):
+  kubectl exec memgraph-ha-1 -n memgraph -c memgraph -- bash -c 'echo "CREATE (n:TestNode {id: \"test-456\", value: \"direct-to-replica\"});" | mgconsole'
+
+  Query data from any pod:
+  kubectl exec memgraph-ha-0 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n:TestNode) RETURN n.id, n.value;" | mgconsole'
+
+  Check count:
+  kubectl exec memgraph-ha-1 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n) RETURN count(n);" | mgconsole'
+
+
+
+
+
 ## Known Issues
 
 ### SYNC Replication Not Functioning Properly

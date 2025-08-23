@@ -607,6 +607,11 @@ func (c *MemgraphController) buildDecisionFactors(targetMaster, existingMain, sy
 
 // isPodHealthyForMaster checks if a pod is healthy enough to be master
 func (c *MemgraphController) isPodHealthyForMaster(podInfo *PodInfo) bool {
+	// Check for nil pod info
+	if podInfo == nil {
+		return false
+	}
+	
 	// Pod must have a bolt address (IP assigned)
 	if podInfo.BoltAddress == "" {
 		log.Printf("Pod %s not healthy for master: no bolt address", podInfo.Name)

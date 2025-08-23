@@ -116,6 +116,7 @@ func TestIsBootstrapSafe(t *testing.T) {
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main"},
 					"memgraph-1": {MemgraphRole: "main"},
+					"memgraph-2": {MemgraphRole: "replica"},
 				},
 			},
 			expectedSafe: false,

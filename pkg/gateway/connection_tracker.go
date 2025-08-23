@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -23,12 +24,17 @@ type ProxySession struct {
 	ClientAddr   string
 	BackendConn  net.Conn
 	StartTime    time.Time
+	LastActivity time.Time
 	BytesSent    int64
 	BytesReceived int64
 	
 	// Connection state
 	isActive     bool
 	mu           sync.RWMutex
+	
+	// Enhanced metrics
+	MaxBytesLimit int64
+	ConnectionErrors int64
 }
 
 // NewConnectionTracker creates a new connection tracker
@@ -49,13 +55,16 @@ func (ct *ConnectionTracker) CanAccept() bool {
 // Track adds a new connection to the tracker and returns its session
 func (ct *ConnectionTracker) Track(clientConn net.Conn) *ProxySession {
 	sessionID := ct.generateSessionID()
+	now := time.Now()
 	
 	session := &ProxySession{
-		ID:         sessionID,
-		ClientConn: clientConn,
-		ClientAddr: clientConn.RemoteAddr().String(),
-		StartTime:  time.Now(),
-		isActive:   true,
+		ID:           sessionID,
+		ClientConn:   clientConn,
+		ClientAddr:   clientConn.RemoteAddr().String(),
+		StartTime:    now,
+		LastActivity: now,
+		isActive:     true,
+		MaxBytesLimit: 1048576000, // 1GB default, will be configured later
 	}
 	
 	ct.mu.Lock()
@@ -134,6 +143,41 @@ func (ct *ConnectionTracker) CleanupStale(maxAge time.Duration) int {
 	return cleaned
 }
 
+// CleanupIdle removes sessions that have been idle for too long
+func (ct *ConnectionTracker) CleanupIdle(idleTimeout time.Duration) int {
+	ct.mu.Lock()
+	defer ct.mu.Unlock()
+	
+	now := time.Now()
+	cleaned := 0
+	
+	for sessionID, session := range ct.sessions {
+		if session.IsActive() && now.Sub(session.GetLastActivity()) > idleTimeout {
+			log.Printf("Gateway: Closing idle session %s after %v", sessionID, now.Sub(session.GetLastActivity()))
+			session.Close()
+			delete(ct.sessions, sessionID)
+			cleaned++
+		}
+	}
+	
+	return cleaned
+}
+
+// GetTotalBytes returns the total bytes transferred across all sessions
+func (ct *ConnectionTracker) GetTotalBytes() (int64, int64) {
+	ct.mu.RLock()
+	defer ct.mu.RUnlock()
+	
+	var totalSent, totalReceived int64
+	
+	for _, session := range ct.sessions {
+		totalSent += session.GetBytesSent()
+		totalReceived += session.GetBytesReceived()
+	}
+	
+	return totalSent, totalReceived
+}
+
 // generateSessionID generates a unique session ID
 func (ct *ConnectionTracker) generateSessionID() string {
 	id := atomic.AddUint64(&ct.nextID, 1)
@@ -166,11 +210,53 @@ func (ps *ProxySession) IsActive() bool {
 // AddBytesSent atomically adds to the bytes sent counter
 func (ps *ProxySession) AddBytesSent(bytes int64) {
 	atomic.AddInt64(&ps.BytesSent, bytes)
+	ps.updateLastActivity()
 }
 
 // AddBytesReceived atomically adds to the bytes received counter
 func (ps *ProxySession) AddBytesReceived(bytes int64) {
 	atomic.AddInt64(&ps.BytesReceived, bytes)
+	ps.updateLastActivity()
+}
+
+// updateLastActivity updates the last activity timestamp
+func (ps *ProxySession) updateLastActivity() {
+	ps.mu.Lock()
+	ps.LastActivity = time.Now()
+	ps.mu.Unlock()
+}
+
+// GetLastActivity returns the last activity time
+func (ps *ProxySession) GetLastActivity() time.Time {
+	ps.mu.RLock()
+	defer ps.mu.RUnlock()
+	return ps.LastActivity
+}
+
+// SetMaxBytesLimit sets the maximum bytes limit for this session
+func (ps *ProxySession) SetMaxBytesLimit(limit int64) {
+	ps.mu.Lock()
+	ps.MaxBytesLimit = limit
+	ps.mu.Unlock()
+}
+
+// CheckBytesLimit returns true if the session has exceeded its byte limit
+func (ps *ProxySession) CheckBytesLimit() bool {
+	totalBytes := ps.GetBytesSent() + ps.GetBytesReceived()
+	ps.mu.RLock()
+	limit := ps.MaxBytesLimit
+	ps.mu.RUnlock()
+	return totalBytes > limit
+}
+
+// AddConnectionError increments the connection error count
+func (ps *ProxySession) AddConnectionError() {
+	atomic.AddInt64(&ps.ConnectionErrors, 1)
+}
+
+// GetConnectionErrors returns the connection error count
+func (ps *ProxySession) GetConnectionErrors() int64 {
+	return atomic.LoadInt64(&ps.ConnectionErrors)
 }
 
 // GetBytesSent returns the total bytes sent
@@ -211,23 +297,29 @@ func (ps *ProxySession) GetDuration() time.Duration {
 // GetStats returns session statistics
 func (ps *ProxySession) GetStats() SessionStats {
 	return SessionStats{
-		ID:            ps.ID,
-		ClientAddr:    ps.ClientAddr,
-		StartTime:     ps.StartTime,
-		Duration:      ps.GetDuration(),
-		BytesSent:     ps.GetBytesSent(),
-		BytesReceived: ps.GetBytesReceived(),
-		IsActive:      ps.IsActive(),
+		ID:               ps.ID,
+		ClientAddr:       ps.ClientAddr,
+		StartTime:        ps.StartTime,
+		LastActivity:     ps.GetLastActivity(),
+		Duration:         ps.GetDuration(),
+		BytesSent:        ps.GetBytesSent(),
+		BytesReceived:    ps.GetBytesReceived(),
+		TotalBytes:       ps.GetBytesSent() + ps.GetBytesReceived(),
+		ConnectionErrors: ps.GetConnectionErrors(),
+		IsActive:         ps.IsActive(),
 	}
 }
 
 // SessionStats holds statistics for a single session
 type SessionStats struct {
-	ID            string        `json:"id"`
-	ClientAddr    string        `json:"clientAddr"`
-	StartTime     time.Time     `json:"startTime"`
-	Duration      time.Duration `json:"duration"`
-	BytesSent     int64         `json:"bytesSent"`
-	BytesReceived int64         `json:"bytesReceived"`
-	IsActive      bool          `json:"isActive"`
+	ID               string        `json:"id"`
+	ClientAddr       string        `json:"clientAddr"`
+	StartTime        time.Time     `json:"startTime"`
+	LastActivity     time.Time     `json:"lastActivity"`
+	Duration         time.Duration `json:"duration"`
+	BytesSent        int64         `json:"bytesSent"`
+	BytesReceived    int64         `json:"bytesReceived"`
+	TotalBytes       int64         `json:"totalBytes"`
+	ConnectionErrors int64         `json:"connectionErrors"`
+	IsActive         bool          `json:"isActive"`
 }

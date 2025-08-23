@@ -54,6 +54,47 @@ spec:
           value: {{ .Values.env.HTTP_PORT | quote }}
         - name: STATEFULSET_NAME
           value: {{ .Values.env.STATEFULSET_NAME | default "memgraph" | quote }}
+        {{- if .Values.gateway.enabled }}
+        # Gateway configuration
+        - name: GATEWAY_ENABLED
+          value: {{ .Values.gateway.enabled | quote }}
+        - name: GATEWAY_BIND_ADDRESS
+          value: {{ .Values.gateway.bindAddress | quote }}
+        - name: GATEWAY_MAX_CONNECTIONS
+          value: {{ .Values.gateway.maxConnections | quote }}
+        - name: GATEWAY_TIMEOUT
+          value: {{ .Values.gateway.timeout | quote }}
+        - name: GATEWAY_BUFFER_SIZE
+          value: {{ .Values.gateway.bufferSize | quote }}
+        - name: GATEWAY_HEALTH_CHECK_INTERVAL
+          value: {{ .Values.gateway.healthCheckInterval | quote }}
+        - name: GATEWAY_CONNECTION_TIMEOUT
+          value: {{ .Values.gateway.connectionTimeout | quote }}
+        - name: GATEWAY_IDLE_TIMEOUT
+          value: {{ .Values.gateway.idleTimeout | quote }}
+        - name: GATEWAY_MAX_BYTES_PER_CONNECTION
+          value: {{ .Values.gateway.maxBytesPerConnection | quote }}
+        - name: GATEWAY_CLEANUP_INTERVAL
+          value: {{ .Values.gateway.cleanupInterval | quote }}
+        - name: GATEWAY_TLS_ENABLED
+          value: {{ .Values.gateway.tls.enabled | quote }}
+        - name: GATEWAY_TLS_CERT_PATH
+          value: {{ .Values.gateway.tls.certPath | quote }}
+        - name: GATEWAY_TLS_KEY_PATH
+          value: {{ .Values.gateway.tls.keyPath | quote }}
+        - name: GATEWAY_RATE_LIMIT_ENABLED
+          value: {{ .Values.gateway.rateLimit.enabled | quote }}
+        - name: GATEWAY_RATE_LIMIT_RPS
+          value: {{ .Values.gateway.rateLimit.rps | quote }}
+        - name: GATEWAY_RATE_LIMIT_BURST
+          value: {{ .Values.gateway.rateLimit.burst | quote }}
+        - name: GATEWAY_RATE_LIMIT_WINDOW
+          value: {{ .Values.gateway.rateLimit.window | quote }}
+        - name: GATEWAY_LOG_LEVEL
+          value: {{ .Values.gateway.logLevel | quote }}
+        - name: GATEWAY_TRACE_ENABLED
+          value: {{ .Values.gateway.traceEnabled | quote }}
+        {{- end }}
         ports:
         {{- if .Values.statusApi.enabled }}
         - name: http
@@ -67,6 +108,11 @@ spec:
         {{- if and .Values.metrics.enabled .Values.metrics.port }}
         - name: metrics
           containerPort: {{ .Values.metrics.port }}
+          protocol: TCP
+        {{- end }}
+        {{- if .Values.gateway.enabled }}
+        - name: gateway
+          containerPort: 7687
           protocol: TCP
         {{- end }}
         {{- if .Values.health.port }}
@@ -92,6 +138,17 @@ spec:
         volumeMounts:
         - name: tmp
           mountPath: /tmp
+        {{- if and .Values.gateway.enabled .Values.gateway.tls.enabled .Values.gateway.tls.secretName }}
+        - name: tls-certs
+          mountPath: /etc/certs
+          readOnly: true
+        {{- end }}
       volumes:
       - name: tmp
         emptyDir: {}
+      {{- if and .Values.gateway.enabled .Values.gateway.tls.enabled .Values.gateway.tls.secretName }}
+      - name: tls-certs
+        secret:
+          secretName: {{ .Values.gateway.tls.secretName }}
+          defaultMode: 0444
+      {{- end }}

@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
 	"log"
@@ -41,16 +42,34 @@ type Server struct {
 	lastHealthCheck     time.Time
 	healthStatus        string
 	healthMu            sync.RWMutex
+	
+	// Production features
+	rateLimiter         *RateLimiter
+	logger              *Logger
+	rateLimitRejections int64
 }
 
 // NewServer creates a new gateway server with the given configuration
 func NewServer(config *Config, masterProvider MasterEndpointProvider) *Server {
+	// Create rate limiter
+	rateLimiter := NewRateLimiter(
+		config.RateLimitEnabled,
+		config.RateLimitRPS,
+		config.RateLimitBurst,
+		config.RateLimitWindow,
+	)
+	
+	// Create structured logger
+	logger := NewLogger(config.LogLevel, config.TraceEnabled)
+	
 	return &Server{
 		config:         config,
 		connections:    NewConnectionTracker(config.MaxConnections),
 		masterProvider: masterProvider,
 		shutdownCh:     make(chan struct{}),
 		healthStatus:   "unknown",
+		rateLimiter:    rateLimiter,
+		logger:         logger,
 	}
 }
 
@@ -127,18 +146,52 @@ func (s *Server) Start(ctx context.Context) error {
 		return fmt.Errorf("gateway server is already running")
 	}
 	
-	listener, err := net.Listen("tcp", s.config.BindAddress)
-	if err != nil {
-		atomic.StoreInt32(&s.isRunning, 0)
-		return fmt.Errorf("failed to listen on %s: %w", s.config.BindAddress, err)
+	var listener net.Listener
+	var err error
+	
+	// Set up listener with optional TLS
+	if s.config.TLSEnabled {
+		cert, err := tls.LoadX509KeyPair(s.config.TLSCertPath, s.config.TLSKeyPath)
+		if err != nil {
+			atomic.StoreInt32(&s.isRunning, 0)
+			return fmt.Errorf("failed to load TLS certificates: %w", err)
+		}
+		
+		tlsConfig := &tls.Config{
+			Certificates: []tls.Certificate{cert},
+			MinVersion:   tls.VersionTLS12,
+		}
+		
+		listener, err = tls.Listen("tcp", s.config.BindAddress, tlsConfig)
+		if err != nil {
+			atomic.StoreInt32(&s.isRunning, 0)
+			return fmt.Errorf("failed to listen with TLS on %s: %w", s.config.BindAddress, err)
+		}
+		
+		s.logger.Info("Gateway server listening with TLS", map[string]interface{}{
+			"address": s.config.BindAddress,
+			"cert_path": s.config.TLSCertPath,
+		})
+	} else {
+		listener, err = net.Listen("tcp", s.config.BindAddress)
+		if err != nil {
+			atomic.StoreInt32(&s.isRunning, 0)
+			return fmt.Errorf("failed to listen on %s: %w", s.config.BindAddress, err)
+		}
+		
+		s.logger.Info("Gateway server listening", map[string]interface{}{
+			"address": s.config.BindAddress,
+			"tls": false,
+		})
 	}
 	
 	s.listener = listener
-	log.Printf("Gateway: Server listening on %s", s.config.BindAddress)
 	
-	// Start accepting connections in a goroutine
-	s.wg.Add(1)
+	// Start background goroutines
+	s.wg.Add(3)
 	go s.acceptConnections()
+	go s.periodicCleanup()
+	go s.periodicHealthCheck()
 	
 	return nil
 }
@@ -175,13 +228,16 @@ func (s *Server) Stop(ctx context.Context) error {
 		close(done)
 	}()
 	
+	// Clean up rate limiter
+	s.rateLimiter.Close()
+	
 	// Wait for graceful shutdown or timeout
 	select {
 	case <-done:
-		log.Println("Gateway: Server shutdown complete")
+		s.logger.Info("Gateway server shutdown complete")
 		return nil
 	case <-ctx.Done():
-		log.Println("Gateway: Shutdown timeout, forcing termination")
+		s.logger.Warn("Gateway shutdown timeout, forcing termination")
 		return ctx.Err()
 	}
 }
@@ -221,11 +277,27 @@ func (s *Server) acceptConnections() {
 			}
 		}
 		
+		clientIP := extractClientIP(conn)
+		
+		// Check rate limiting
+		if !s.rateLimiter.Allow(clientIP) {
+			atomic.AddInt64(&s.rateLimitRejections, 1)
+			s.logger.Warn("Connection rate limited", map[string]interface{}{
+				"client_ip": clientIP,
+				"client_addr": conn.RemoteAddr().String(),
+			})
+			conn.Close()
+			continue
+		}
+		
 		// Check if we can accept more connections
 		if !s.connections.CanAccept() {
 			atomic.AddInt64(&s.rejectedConnections, 1)
-			log.Printf("Gateway: Rejected connection from %s - max connections reached (%d)",
-				conn.RemoteAddr(), s.config.MaxConnections)
+			s.rateLimiter.Release(clientIP) // Release rate limit token
+			s.logger.Warn("Connection rejected - max connections reached", map[string]interface{}{
+				"client_addr": conn.RemoteAddr().String(),
+				"max_connections": s.config.MaxConnections,
+			})
 			conn.Close()
 			continue
 		}
@@ -243,29 +315,47 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	defer s.wg.Done()
 	defer clientConn.Close()
 	
+	clientAddr := clientConn.RemoteAddr().String()
+	clientIP := extractClientIP(clientConn)
+	
+	// Release rate limiter token when connection ends
+	defer s.rateLimiter.Release(clientIP)
+	
 	atomic.AddInt64(&s.activeConnections, 1)
 	defer atomic.AddInt64(&s.activeConnections, -1)
 	
-	clientAddr := clientConn.RemoteAddr().String()
-	log.Printf("Gateway: New connection from %s", clientAddr)
+	s.logger.LogConnectionEvent("established", clientAddr, map[string]interface{}{
+		"client_ip": clientIP,
+	})
 	
 	// Track the connection
 	session := s.connections.Track(clientConn)
+	session.SetMaxBytesLimit(s.config.MaxBytesPerConnection)
 	defer s.connections.Untrack(session.ID)
 	
 	// Get current master endpoint with retries for edge cases
 	masterEndpoint, err := s.getMasterEndpointWithRetry(3)
 	if err != nil {
-		log.Printf("Gateway: Failed to get master endpoint for %s after retries: %v", clientAddr, err)
+		s.logger.Error("Failed to get master endpoint", map[string]interface{}{
+			"client_addr": clientAddr,
+			"error": err.Error(),
+			"retries": 3,
+		})
 		atomic.AddInt64(&s.errors, 1)
 		return
 	}
 	
 	// Connect to master with timeout
-	backendConn, err := net.DialTimeout("tcp", masterEndpoint, s.config.Timeout)
+	backendConn, err := net.DialTimeout("tcp", masterEndpoint, s.config.ConnectionTimeout)
 	if err != nil {
-		log.Printf("Gateway: Failed to connect to master %s for client %s: %v", masterEndpoint, clientAddr, err)
+		s.logger.Error("Failed to connect to master", map[string]interface{}{
+			"client_addr": clientAddr,
+			"master_endpoint": masterEndpoint,
+			"error": err.Error(),
+			"timeout": s.config.ConnectionTimeout,
+		})
 		atomic.AddInt64(&s.errors, 1)
+		session.AddConnectionError()
 		
 		// If connection to master fails, update health status
 		s.healthMu.Lock()
@@ -278,7 +368,11 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	defer backendConn.Close()
 	
 	session.SetBackendConnection(backendConn)
-	log.Printf("Gateway: Proxying %s -> %s", clientAddr, masterEndpoint)
+	s.logger.Info("Connection established to master", map[string]interface{}{
+		"client_addr": clientAddr,
+		"master_endpoint": masterEndpoint,
+		"session_id": session.ID,
+	})
 	
 	// Start bidirectional proxy
 	s.proxyConnections(clientConn, backendConn, session)
@@ -376,7 +470,7 @@ func (s *Server) CheckHealth(ctx context.Context) string {
 	}
 	
 	// Quick connectivity test to master
-	conn, err := net.DialTimeout("tcp", endpoint, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", endpoint, s.config.ConnectionTimeout)
 	if err != nil {
 		s.healthStatus = fmt.Sprintf("master-unreachable: %s (%v)", endpoint, err)
 		return s.healthStatus
@@ -419,6 +513,70 @@ func (s *Server) getMasterEndpointWithRetry(maxRetries int) (string, error) {
 	return "", fmt.Errorf("failed to get master endpoint after %d attempts", maxRetries)
 }
 
+// periodicCleanup runs periodic cleanup tasks for connections
+func (s *Server) periodicCleanup() {
+	defer s.wg.Done()
+	
+	ticker := time.NewTicker(s.config.CleanupInterval)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-s.shutdownCh:
+			return
+		case <-ticker.C:
+			// Clean up idle connections
+			idleCleanup := s.connections.CleanupIdle(s.config.IdleTimeout)
+			if idleCleanup > 0 {
+				log.Printf("Gateway: Cleaned up %d idle connections", idleCleanup)
+			}
+			
+			// Clean up stale connections (fallback)
+			staleCleanup := s.connections.CleanupStale(s.config.IdleTimeout * 2)
+			if staleCleanup > 0 {
+				log.Printf("Gateway: Cleaned up %d stale connections", staleCleanup)
+			}
+			
+			// Log connection statistics
+			activeCount := s.connections.GetCount()
+			totalSent, totalReceived := s.connections.GetTotalBytes()
+			
+			if activeCount > 0 {
+				log.Printf("Gateway: Active connections: %d, Total bytes: sent=%d, received=%d", 
+					activeCount, totalSent, totalReceived)
+			}
+		}
+	}
+}
+
+// periodicHealthCheck runs periodic health checks
+func (s *Server) periodicHealthCheck() {
+	defer s.wg.Done()
+	
+	ticker := time.NewTicker(s.config.HealthCheckInterval)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-s.shutdownCh:
+			return
+		case <-ticker.C:
+			ctx, cancel := context.WithTimeout(context.Background(), s.config.ConnectionTimeout)
+			status := s.CheckHealth(ctx)
+			cancel()
+			
+			// Log health status changes
+			s.healthMu.RLock()
+			lastStatus := s.healthStatus
+			s.healthMu.RUnlock()
+			
+			if status != lastStatus {
+				log.Printf("Gateway: Health status changed: %s -> %s", lastStatus, status)
+			}
+		}
+	}
+}
+
 // GetStats returns current gateway statistics
 func (s *Server) GetStats() GatewayStats {
 	s.healthMu.RLock()
@@ -426,28 +584,47 @@ func (s *Server) GetStats() GatewayStats {
 	lastHealthCheck := s.lastHealthCheck.Format(time.RFC3339)
 	s.healthMu.RUnlock()
 	
+	// Get connection statistics
+	activeConnections := s.connections.GetCount()
+	totalBytesSent, totalBytesReceived := s.connections.GetTotalBytes()
+	
+	// Get rate limiter statistics
+	rateLimiterStats := s.rateLimiter.GetStats()
+	
 	return GatewayStats{
 		IsRunning:           atomic.LoadInt32(&s.isRunning) == 1,
-		ActiveConnections:   atomic.LoadInt64(&s.activeConnections),
+		ActiveConnections:   int64(activeConnections),
 		TotalConnections:    atomic.LoadInt64(&s.totalConnections),
 		RejectedConnections: atomic.LoadInt64(&s.rejectedConnections),
+		RateLimitRejections: atomic.LoadInt64(&s.rateLimitRejections),
 		Errors:              atomic.LoadInt64(&s.errors),
 		Failovers:           atomic.LoadInt64(&s.failovers),
 		CurrentMaster:       s.GetCurrentMaster(),
 		HealthStatus:        healthStatus,
 		LastHealthCheck:     lastHealthCheck,
+		TotalBytesSent:      totalBytesSent,
+		TotalBytesReceived:  totalBytesReceived,
+		TotalBytes:          totalBytesSent + totalBytesReceived,
+		TLSEnabled:          s.config.TLSEnabled,
+		RateLimiter:         rateLimiterStats,
 	}
 }
 
 // GatewayStats holds gateway server statistics
 type GatewayStats struct {
-	IsRunning           bool   `json:"isRunning"`
-	ActiveConnections   int64  `json:"activeConnections"`
-	TotalConnections    int64  `json:"totalConnections"`
-	RejectedConnections int64  `json:"rejectedConnections"`
-	Errors              int64  `json:"errors"`
-	Failovers           int64  `json:"failovers"`
-	CurrentMaster       string `json:"currentMaster"`
-	HealthStatus        string `json:"healthStatus"`
-	LastHealthCheck     string `json:"lastHealthCheck"`
+	IsRunning           bool              `json:"isRunning"`
+	ActiveConnections   int64             `json:"activeConnections"`
+	TotalConnections    int64             `json:"totalConnections"`
+	RejectedConnections int64             `json:"rejectedConnections"`
+	RateLimitRejections int64             `json:"rateLimitRejections"`
+	Errors              int64             `json:"errors"`
+	Failovers           int64             `json:"failovers"`
+	CurrentMaster       string            `json:"currentMaster"`
+	HealthStatus        string            `json:"healthStatus"`
+	LastHealthCheck     string            `json:"lastHealthCheck"`
+	TotalBytesSent      int64             `json:"totalBytesSent"`
+	TotalBytesReceived  int64             `json:"totalBytesReceived"`
+	TotalBytes          int64             `json:"totalBytes"`
+	TLSEnabled          bool              `json:"tlsEnabled"`
+	RateLimiter         RateLimiterStats  `json:"rateLimiter"`
 }

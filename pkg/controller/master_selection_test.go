@@ -84,6 +84,13 @@ func TestValidateControllerState(t *testing.T) {
 			clusterState: &ClusterState{
 				TargetMasterIndex: 0,
 				CurrentMaster:     "memgraph-0",
+				Pods: map[string]*PodInfo{
+					"memgraph-0": {
+						Name: "memgraph-0",
+						BoltAddress: "10.0.0.1:7687",
+						MemgraphRole: "main",
+					},
+				},
 			},
 			wantWarnings: false,
 		},

@@ -76,3 +76,50 @@ metrics:
   enabled: false
   port: 8081
   path: /metrics
+
+# Gateway configuration
+gateway:
+  enabled: true
+  bindAddress: "0.0.0.0:7687"
+  maxConnections: 1000
+  timeout: 30s
+  bufferSize: 32768
+  
+  # Connection management
+  healthCheckInterval: 30s
+  connectionTimeout: 10s
+  idleTimeout: 5m
+  maxBytesPerConnection: 1073741824  # 1GB
+  cleanupInterval: 1m
+  
+  # TLS configuration
+  tls:
+    enabled: false
+    certPath: /etc/certs/tls.crt
+    keyPath: /etc/certs/tls.key
+    # When enabled, mount certificates from a secret
+    secretName: ""  # Set to secret name to enable TLS certificate mounting
+  
+  # Rate limiting
+  rateLimit:
+    enabled: true
+    rps: 100
+    burst: 200
+    window: 1m
+  
+  # Logging
+  logLevel: info
+  traceEnabled: false
+  
+  # Service configuration for gateway
+  service:
+    type: LoadBalancer
+    port: 7687
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: "nlb"
+      service.beta.kubernetes.io/aws-load-balancer-scheme: "internal"
+      service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    # For production with TLS:
+    # annotations:
+    #   service.beta.kubernetes.io/aws-load-balancer-ssl-cert: "arn:aws:acm:region:account:certificate/cert-id"
+    #   service.beta.kubernetes.io/aws-load-balancer-backend-protocol: "tcp"

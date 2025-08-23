@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"time"
 	
 	"memgraph-controller/pkg/gateway"
 )
@@ -28,13 +27,11 @@ func (g *GatewayAdapter) InitializeWithMasterProvider(masterProvider gateway.Mas
 		return nil // Gateway is disabled
 	}
 	
-	gatewayConfig := &gateway.Config{
-		Enabled:        g.config.GatewayEnabled,
-		BindAddress:    g.config.GatewayBindAddress,
-		MaxConnections: 1000, // Default value, could be made configurable
-		Timeout:        30 * time.Second, // 30 second timeout, could be made configurable
-		BufferSize:     32768, // 32KB buffer, could be made configurable
-	}
+	gatewayConfig := gateway.LoadGatewayConfig()
+	
+	// Override with controller configuration
+	gatewayConfig.Enabled = g.config.GatewayEnabled
+	gatewayConfig.BindAddress = g.config.GatewayBindAddress
 	
 	g.server = gateway.NewServer(gatewayConfig, masterProvider)
 	return nil
@@ -86,4 +83,31 @@ func (g *GatewayAdapter) CheckHealth(ctx context.Context) string {
 		return "disabled"
 	}
 	return g.server.CheckHealth(ctx)
+}
+
+// GetConnectionCount returns the current number of active connections
+func (g *GatewayAdapter) GetConnectionCount() int {
+	if g.server == nil {
+		return 0
+	}
+	stats := g.server.GetStats()
+	return int(stats.ActiveConnections)
+}
+
+// GetTotalBytes returns total bytes transferred (sent, received)
+func (g *GatewayAdapter) GetTotalBytes() (int64, int64) {
+	if g.server == nil {
+		return 0, 0
+	}
+	stats := g.server.GetStats()
+	return stats.TotalBytesSent, stats.TotalBytesReceived
+}
+
+// IsHealthy returns true if the gateway is healthy
+func (g *GatewayAdapter) IsHealthy(ctx context.Context) bool {
+	if g.server == nil {
+		return false // Disabled is considered unhealthy for monitoring
+	}
+	status := g.server.CheckHealth(ctx)
+	return status == "healthy"
 }

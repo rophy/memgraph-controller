@@ -18,10 +18,7 @@ test:
 	go test -v ./...
 
 test-e2e:
-	cd tests && go mod tidy && go test -v ./...
-
-test-failover:
-	cd tests && go mod tidy && go test -v -run TestE2E_FailoverReliability
+	cd tests && go mod tidy && go test -count=1 -v ./...
 
 # Development targets
 up:

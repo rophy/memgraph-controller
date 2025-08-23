@@ -301,6 +301,33 @@ func TestE2E_FailoverReliability(t *testing.T) {
 	currentMaster := status.ClusterState.CurrentMaster
 	t.Logf("📋 Current master: %s", currentMaster)
 	
+	// Check data in all 3 pods before failover
+	t.Log("🔍 Checking pre-failover data exists in all pods BEFORE killing master...")
+	for _, pod := range status.Pods {
+		if !pod.Healthy {
+			continue
+		}
+		
+		query := fmt.Sprintf("MATCH (n:FailoverTest {id: '%s'}) RETURN count(n);", preFailoverID)
+		cmd := exec.CommandContext(ctx, "kubectl", "exec", pod.Name, "-n", "memgraph", "-c", "memgraph", "--", 
+			"bash", "-c", fmt.Sprintf("echo \"%s\" | mgconsole --output-format csv", query))
+		
+		output, err := cmd.Output()
+		if err != nil {
+			t.Logf("❌ Pod %s: Failed to query - %v", pod.Name, err)
+			continue
+		}
+		
+		outputStr := strings.TrimSpace(string(output))
+		if strings.Contains(outputStr, "\"1\"") {
+			t.Logf("✅ Pod %s: Pre-failover data EXISTS", pod.Name)
+		} else if strings.Contains(outputStr, "\"0\"") {
+			t.Logf("❌ Pod %s: Pre-failover data MISSING", pod.Name)
+		} else {
+			t.Logf("⚠️ Pod %s: Unexpected output: %s", pod.Name, outputStr)
+		}
+	}
+	
 	// Step 3: Kill the master pod
 	t.Logf("💥 Step 3: Kill the master pod %s", currentMaster)
 	err = deletePod(ctx, currentMaster)

@@ -47,7 +47,8 @@ docs/
 charts/
 manifests/
 
-# Test data
+# Test data and e2e tests
+tests/
 testdata/
 
 # Temporary files

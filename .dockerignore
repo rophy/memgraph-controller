@@ -35,9 +35,10 @@ go.work.sum
 ehthumbs.db
 Thumbs.db
 
-# Git
+# Git and Claude
 .git/
 .gitignore
+.claude/
 
 # Documentation
 *.md

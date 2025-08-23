@@ -17,6 +17,10 @@ type Config struct {
 	ServiceName        string
 	HTTPPort           string
 	StatefulSetName    string
+	
+	// Gateway configuration
+	GatewayEnabled     bool
+	GatewayBindAddress string
 }
 
 func LoadConfig() *Config {
@@ -34,6 +38,10 @@ func LoadConfig() *Config {
 		ServiceName:        getEnvOrDefault("SERVICE_NAME", "memgraph"),
 		HTTPPort:           getEnvOrDefault("HTTP_PORT", "8080"),
 		StatefulSetName:    getEnvOrDefault("STATEFULSET_NAME", "memgraph"),
+		
+		// Gateway configuration
+		GatewayEnabled:     getEnvOrDefaultBool("GATEWAY_ENABLED", false),
+		GatewayBindAddress: getEnvOrDefault("GATEWAY_BIND_ADDRESS", "0.0.0.0:7687"),
 	}
 }
 
@@ -47,6 +55,15 @@ func getEnvOrDefault(key, defaultValue string) string {
 func getEnvOrDefaultInt(key string, defaultValue int) int {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.Atoi(value); err == nil {
+			return parsed
+		}
+	}
+	return defaultValue
+}
+
+func getEnvOrDefaultBool(key string, defaultValue bool) bool {
+	if value := os.Getenv(key); value != "" {
+		if parsed, err := strconv.ParseBool(value); err == nil {
 			return parsed
 		}
 	}

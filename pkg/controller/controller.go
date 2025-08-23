@@ -30,6 +30,7 @@ type MemgraphController struct {
 	podDiscovery    *PodDiscovery
 	memgraphClient  *MemgraphClient
 	httpServer      *HTTPServer
+	gatewayServer   GatewayServerInterface
 	
 	// Controller loop state
 	isRunning       bool
@@ -52,6 +53,14 @@ type MemgraphController struct {
 	metrics         *ReconciliationMetrics
 }
 
+// GatewayServerInterface defines the interface for the gateway server
+type GatewayServerInterface interface {
+	Start(ctx context.Context) error
+	Stop(ctx context.Context) error
+	SetCurrentMaster(endpoint string)
+	GetCurrentMaster() string
+}
+
 func NewMemgraphController(clientset kubernetes.Interface, config *Config) *MemgraphController {
 	controller := &MemgraphController{
 		clientset:      clientset,
@@ -62,6 +71,13 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	
 	// Initialize HTTP server
 	controller.httpServer = NewHTTPServer(controller, config)
+	
+	// Initialize gateway server
+	gatewayAdapter := NewGatewayAdapter(config)
+	if err := gatewayAdapter.InitializeWithMasterProvider(controller.GetCurrentMasterEndpoint); err != nil {
+		log.Printf("Failed to initialize gateway adapter: %v", err)
+	}
+	controller.gatewayServer = gatewayAdapter
 	
 	// Initialize controller state
 	controller.maxFailures = 5
@@ -412,6 +428,9 @@ func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
 		
 		// Track last known master for operational phase detection
 		c.lastKnownMaster = currentMaster
+		
+		// Notify gateway of master endpoint (async to avoid blocking reconciliation)
+		go c.updateGatewayMaster()
 		
 		// Extract current master index for tracking
 		currentMasterIndex := c.config.ExtractPodIndex(currentMaster)
@@ -2396,6 +2415,14 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	}
 	log.Println("Informer caches synced successfully")
 	
+	// Start gateway server
+	log.Println("Starting gateway server...")
+	if err := c.gatewayServer.Start(ctx); err != nil {
+		log.Printf("Failed to start gateway server: %v", err)
+		c.stop()
+		return fmt.Errorf("failed to start gateway server: %w", err)
+	}
+	
 	// Initial reconciliation
 	c.enqueueReconcile("initial-reconciliation")
 	
@@ -2590,6 +2617,14 @@ func (c *MemgraphController) stop() {
 	log.Println("Stopping controller...")
 	c.isRunning = false
 	
+	// Stop gateway server
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	
+	if err := c.gatewayServer.Stop(shutdownCtx); err != nil {
+		log.Printf("Error stopping gateway server: %v", err)
+	}
+	
 	// Signal stop to all components
 	close(c.stopCh)
 	close(c.workQueue)
@@ -2609,6 +2644,45 @@ func (c *MemgraphController) GetControllerStatus() map[string]interface{} {
 		"max_failures":     c.maxFailures,
 		"work_queue_size":  len(c.workQueue),
 	}
+}
+
+// GetCurrentMasterEndpoint returns the current master endpoint for gateway connections
+func (c *MemgraphController) GetCurrentMasterEndpoint(ctx context.Context) (string, error) {
+	c.mu.RLock()
+	currentMaster := c.lastKnownMaster
+	c.mu.RUnlock()
+	
+	if currentMaster == "" {
+		return "", fmt.Errorf("no current master known")
+	}
+	
+	// Get the pod to find its IP address
+	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, currentMaster, metav1.GetOptions{})
+	if err != nil {
+		return "", fmt.Errorf("failed to get master pod %s: %w", currentMaster, err)
+	}
+	
+	if pod.Status.PodIP == "" {
+		return "", fmt.Errorf("master pod %s has no IP address", currentMaster)
+	}
+	
+	endpoint := fmt.Sprintf("%s:%s", pod.Status.PodIP, c.config.BoltPort)
+	return endpoint, nil
+}
+
+// updateGatewayMaster notifies the gateway of master changes
+func (c *MemgraphController) updateGatewayMaster() {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	
+	endpoint, err := c.GetCurrentMasterEndpoint(ctx)
+	if err != nil {
+		log.Printf("Gateway: Failed to get master endpoint for notification: %v", err)
+		return
+	}
+	
+	// Update the gateway's master endpoint
+	c.gatewayServer.SetCurrentMaster(endpoint)
 }
 
 // handleMasterFailurePromotion promotes SYNC replica when master fails during operations
@@ -2648,6 +2722,9 @@ func (c *MemgraphController) handleMasterFailurePromotion(clusterState *ClusterS
 	} else {
 		c.targetMasterIndex = 1
 	}
+	
+	// Notify gateway of master change (async to avoid blocking reconciliation)
+	go c.updateGatewayMaster()
 	
 	log.Printf("✅ FAILOVER: Successfully promoted %s to master (target_index=%d)", 
 		syncReplica, c.targetMasterIndex)
@@ -2733,6 +2810,9 @@ func (c *MemgraphController) enforceMasterAuthority(clusterState *ClusterState, 
 	// Update controller state tracking
 	c.lastKnownMaster = correctMaster
 	c.targetMasterIndex = c.config.ExtractPodIndex(correctMaster)
+	
+	// Notify gateway of master change (async to avoid blocking reconciliation)
+	go c.updateGatewayMaster()
 	
 	log.Printf("✅ Split-brain resolved: master=%s, demoted=%v", correctMaster, demotedPods)
 	return nil

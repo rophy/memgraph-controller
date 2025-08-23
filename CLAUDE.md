@@ -217,3 +217,43 @@ kubectl exec <master-pod> -n memgraph -c memgraph -- bash -c 'echo "SHOW REPLICA
 5. Log/alert when replicas show unhealthy data_info status
 
 **Status**: **INVESTIGATING** - Root cause of SYNC replication failure still unknown, but monitoring improvements identified
+
+### data_info Field Values Documentation
+
+This section documents observed `data_info` values from `SHOW REPLICAS` during testing to help implement proper parsing logic.
+
+**Format**: `data_info` appears to be a JSON-like string containing replication health metrics.
+
+#### Observed Values
+
+**Healthy ASYNC Replica**:
+```
+"{memgraph: {behind: 0, status: \"ready\", ts: 2}}"
+```
+- `behind: 0` = replica is caught up
+- `status: "ready"` = replica is functioning normally  
+- `ts: 2` = timestamp/sequence number
+
+**Unhealthy ASYNC Replica**:
+```
+"{memgraph: {behind: -20, status: \"invalid\", ts: 0}}"
+```
+- `behind: -20` = negative value indicates replication error
+- `status: "invalid"` = replica has failed/broken replication
+- `ts: 0` = timestamp reset to zero
+
+**SYNC Replica (Empty)**:
+```
+"{}"
+```
+- Empty object - unclear if this indicates healthy or problematic state
+- May require different parsing logic than ASYNC replicas
+
+#### Notes for Implementation
+- Values appear to be JSON strings that need parsing
+- Negative `behind` values seem to indicate errors
+- `status: "invalid"` is a clear failure indicator
+- Empty `{}` values need investigation (healthy vs unhealthy)
+- Different replica types (SYNC vs ASYNC) may have different data_info formats
+
+*This section will be updated with additional values found during testing*

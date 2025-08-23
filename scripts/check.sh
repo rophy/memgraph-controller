@@ -17,7 +17,7 @@ run_memgraph_query() {
     local description=$3
     
     echo -e "\n${BLUE}📊 ${description} for ${pod_name}:${NC}"
-    kubectl exec "$pod_name" -n memgraph -- bash -c "echo \"$query\" | mgconsole" 2>/dev/null || echo "❌ Failed to query $pod_name"
+    kubectl exec "$pod_name" -n memgraph -c memgraph -- bash -c "echo \"$query\" | mgconsole --username=\"\" --password=\"\"" 2>/dev/null || echo "❌ Failed to query $pod_name"
 }
 
 # Check if pods exist
@@ -35,7 +35,7 @@ for pod in "${pods[@]}"; do
         run_memgraph_query "$pod" "SHOW REPLICATION ROLE;" "Replication Role"
         
         # If it's a master, show registered replicas
-        role=$(kubectl exec "$pod" -n memgraph -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole' 2>/dev/null | grep -o '"[^"]*"' | tr -d '"')
+        role=$(kubectl exec "$pod" -n memgraph -c memgraph -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --username="" --password=""' 2>/dev/null | grep -o '"[^"]*"' | tr -d '"')
         
         if [[ "$role" == "main" ]]; then
             run_memgraph_query "$pod" "SHOW REPLICAS;" "Registered Replicas"

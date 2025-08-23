@@ -20,6 +20,9 @@ test:
 test-e2e:
 	cd tests && go mod tidy && go test -v ./...
 
+test-failover:
+	cd tests && go mod tidy && go test -v -run TestE2E_FailoverReliability
+
 # Development targets
 up:
 	skaffold run --profile memgraph-only

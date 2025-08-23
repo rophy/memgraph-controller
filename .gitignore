@@ -40,3 +40,6 @@ Thumbs.db
 # Git and Claude directories
 .git/
 .claude/
+
+# Helm dependency charts
+charts/memgraph-ha/charts/

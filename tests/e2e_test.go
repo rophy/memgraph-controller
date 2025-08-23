@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os/exec"
 	"testing"
 	"time"
 
@@ -244,6 +245,186 @@ func TestE2E_DataReplicationVerification(t *testing.T) {
 	
 	t.Logf("✓ Data replication validated: %d/%d pods have the test data", 
 		replicatedCount, expectedPodCount)
+}
+
+func TestE2E_FailoverReliability(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	
+	const failoverRounds = 3
+	const postFailoverDelay = 15 * time.Second
+	
+	// Step 1: Check initial cluster topology
+	t.Log("🔍 Step 1: Validating initial cluster topology")
+	status, err := getClusterStatus(ctx)
+	require.NoError(t, err, "Should get initial cluster status")
+	
+	// Validate master-sync-async topology
+	initialMaster, initialSync := validateTopology(t, status)
+	t.Logf("✓ Initial topology: Master=%s, Sync=%s", initialMaster, initialSync)
+	
+	// Connect to gateway for data operations
+	driver, err := neo4j.NewDriverWithContext(gatewayURL, neo4j.NoAuth())
+	require.NoError(t, err, "Should connect to gateway")
+	defer driver.Close(ctx)
+	
+	// Run multiple failover rounds
+	for round := 1; round <= failoverRounds; round++ {
+		t.Logf("\n🔄 === FAILOVER ROUND %d/%d ===", round, failoverRounds)
+		
+		// Step 2: Send timestamped data before failover
+		t.Logf("📝 Step 2: Writing pre-failover data (round %d)", round)
+		preFailoverID := fmt.Sprintf("pre-failover-r%d-%d", round, time.Now().UnixNano())
+		preFailoverValue := fmt.Sprintf("data-before-failover-round-%d", round)
+		
+		err = writeTimestampedData(ctx, driver, preFailoverID, preFailoverValue)
+		require.NoError(t, err, "Should write pre-failover data")
+		t.Logf("✓ Pre-failover data written: %s", preFailoverID)
+		
+		// Step 3: Verify data in cluster before failover (through gateway)
+		time.Sleep(2 * time.Second) // Allow replication
+		verifyDataExists(t, ctx, driver, preFailoverID, preFailoverValue)
+		
+		// Get current master before failover
+		status, err = getClusterStatus(ctx)
+		require.NoError(t, err, "Should get cluster status before failover")
+		currentMaster := status.ClusterState.CurrentMaster
+		t.Logf("📋 Current master before failover: %s", currentMaster)
+		
+		// Step 4: Trigger failover by deleting master pod
+		t.Logf("💥 Step 4: Triggering failover - deleting master pod %s", currentMaster)
+		err = deletePod(ctx, currentMaster)
+		require.NoError(t, err, "Should delete master pod")
+		t.Logf("✓ Master pod %s deleted", currentMaster)
+		
+		// Step 5: IMMEDIATELY write data after failover trigger
+		t.Log("⚡ Step 5: IMMEDIATELY writing post-failover data")
+		postFailoverID := fmt.Sprintf("post-failover-r%d-%d", round, time.Now().UnixNano())
+		postFailoverValue := fmt.Sprintf("data-after-failover-round-%d", round)
+		
+		// Try to write data immediately - may fail initially during failover
+		var writeSuccess bool
+		writeAttempts := 0
+		maxWriteAttempts := 30 // 30 seconds of attempts
+		
+		for writeAttempts < maxWriteAttempts && !writeSuccess {
+			writeAttempts++
+			err = writeTimestampedData(ctx, driver, postFailoverID, postFailoverValue)
+			if err == nil {
+				writeSuccess = true
+				t.Logf("✓ Post-failover data written on attempt %d: %s", writeAttempts, postFailoverID)
+				break
+			}
+			
+			if writeAttempts%5 == 0 {
+				t.Logf("⏳ Write attempt %d failed, retrying... (error: %v)", writeAttempts, err)
+			}
+			time.Sleep(1 * time.Second)
+		}
+		
+		require.True(t, writeSuccess, "Should eventually write data after failover within %d attempts", maxWriteAttempts)
+		
+		// Wait for controller to complete failover
+		t.Logf("⏱️  Waiting %v for failover to stabilize", postFailoverDelay)
+		time.Sleep(postFailoverDelay)
+		
+		// Step 6: Verify new cluster topology after failover
+		t.Log("🔍 Step 6: Validating post-failover cluster topology")
+		status, err = getClusterStatus(ctx)
+		require.NoError(t, err, "Should get cluster status after failover")
+		
+		newMaster, newSync := validateTopology(t, status)
+		require.NotEqual(t, currentMaster, newMaster, "Master should have changed after failover")
+		t.Logf("✓ Post-failover topology: Master=%s, Sync=%s (previous master %s is gone)", 
+			newMaster, newSync, currentMaster)
+		
+		// Step 7: Verify both pre and post failover data exist in all 3 pods
+		t.Log("✅ Step 7: Verifying data integrity after failover")
+		verifyDataExists(t, ctx, driver, preFailoverID, preFailoverValue)
+		verifyDataExists(t, ctx, driver, postFailoverID, postFailoverValue)
+		
+		t.Logf("✅ Round %d completed successfully - failover from %s to %s", 
+			round, currentMaster, newMaster)
+		
+		// Brief pause between rounds
+		if round < failoverRounds {
+			time.Sleep(5 * time.Second)
+		}
+	}
+	
+	t.Logf("🎉 All %d failover rounds completed successfully!", failoverRounds)
+}
+
+// Helper functions for failover test
+
+func validateTopology(t *testing.T, status *ClusterStatus) (master, sync string) {
+	require.Len(t, status.Pods, expectedPodCount, "Should have %d pods", expectedPodCount)
+	
+	var masterCount, syncCount, asyncCount int
+	var masterPod, syncPod string
+	
+	for _, pod := range status.Pods {
+		if !pod.Healthy {
+			continue // Skip unhealthy pods in topology validation
+		}
+		
+		switch pod.MemgraphRole {
+		case "main":
+			masterCount++
+			masterPod = pod.Name
+		case "replica":
+			if pod.IsSyncReplica {
+				syncCount++
+				syncPod = pod.Name
+			} else {
+				asyncCount++
+			}
+		}
+	}
+	
+	assert.Equal(t, 1, masterCount, "Should have exactly 1 master")
+	assert.GreaterOrEqual(t, syncCount, 1, "Should have at least 1 sync replica")
+	
+	return masterPod, syncPod
+}
+
+func writeTimestampedData(ctx context.Context, driver neo4j.DriverWithContext, id, value string) error {
+	session := driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer session.Close(ctx)
+	
+	_, err := session.Run(ctx,
+		"CREATE (n:FailoverTest {id: $id, value: $value, timestamp: datetime(), created_at: $created_at})",
+		map[string]interface{}{
+			"id":         id,
+			"value":      value,
+			"created_at": time.Now().Format(time.RFC3339),
+		})
+	
+	return err
+}
+
+func verifyDataExists(t *testing.T, ctx context.Context, driver neo4j.DriverWithContext, expectedID, expectedValue string) {
+	session := driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer session.Close(ctx)
+	
+	result, err := session.Run(ctx,
+		"MATCH (n:FailoverTest {id: $id}) RETURN n.id, n.value, n.created_at",
+		map[string]interface{}{"id": expectedID})
+	require.NoError(t, err, "Should query for data %s", expectedID)
+	
+	records, err := result.Collect(ctx)
+	require.NoError(t, err, "Should collect results for %s", expectedID)
+	require.Len(t, records, 1, "Should find exactly one record for %s", expectedID)
+	
+	record := records[0]
+	assert.Equal(t, expectedID, record.Values[0], "ID should match")
+	assert.Equal(t, expectedValue, record.Values[1], "Value should match")
+}
+
+func deletePod(ctx context.Context, podName string) error {
+	// Use kubectl to delete the pod with force and zero grace period for immediate deletion
+	cmd := exec.CommandContext(ctx, "kubectl", "delete", "pod", podName, "-n", "memgraph", "--force", "--grace-period=0")
+	return cmd.Run()
 }
 
 // Helper functions

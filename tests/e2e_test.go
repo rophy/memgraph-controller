@@ -512,6 +512,10 @@ func verifyDataInAllPods(ctx context.Context, status *ClusterStatus, expectedID,
 		actualID := dataRecord[0]
 		actualValue := dataRecord[1]
 		
+		// Remove surrounding quotes from CSV values if present
+		actualID = strings.Trim(actualID, `"`)
+		actualValue = strings.Trim(actualValue, `"`)
+		
 		if actualID != expectedID {
 			return fmt.Errorf("pod %s: expected ID '%s', got '%s'", pod.Name, expectedID, actualID)
 		}

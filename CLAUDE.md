@@ -168,3 +168,50 @@ The controller implements a **SYNC replica strategy** for zero data loss failove
 3. **Deterministic selection** (pod-0 default) with warnings about potential data loss
 
 This design ensures **robust, predictable behavior** while preventing data loss during master failures through guaranteed SYNC replica consistency.
+
+## Known Issues
+
+### SYNC Replication Not Functioning Properly
+
+**Issue**: SYNC replication configuration appears correct in controller logs, but actual data synchronization is failing.
+
+**Symptoms**:
+- Controller reports "✅ Enhanced SYNC replication configuration completed"
+- `SHOW REPLICAS` shows SYNC replica with `sync_mode: sync`
+- However, data written to master does NOT replicate to SYNC replica
+- ASYNC replicas receive data correctly
+- Writes proceed without waiting for SYNC confirmation (should block until SYNC replica confirms)
+
+**Impact**:
+- **Data loss during failover**: When master fails, SYNC replica becomes new master but lacks recent data
+- **False sense of security**: Controller believes SYNC replication is working, but it's not
+- **Test failures**: E2E failover tests fail because expected data doesn't exist in failover target
+
+**Debugging Steps**:
+```bash
+# 1. Write test data to master via gateway
+# 2. Check data exists in all pods individually
+kubectl exec memgraph-ha-0 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n:TestNode) RETURN count(n);" | mgconsole --output-format csv'
+kubectl exec memgraph-ha-1 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n:TestNode) RETURN count(n);" | mgconsole --output-format csv'
+kubectl exec memgraph-ha-2 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n:TestNode) RETURN count(n);" | mgconsole --output-format csv'
+
+# 3. Verify replication topology
+kubectl exec <master-pod> -n memgraph -c memgraph -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv'
+```
+
+**Expected**: Data should exist in master and SYNC replica, may be missing from ASYNC replica  
+**Actual**: Data exists in master and ASYNC replica, missing from SYNC replica
+
+**Root Cause**: Controller ignores `data_info` field from `SHOW REPLICAS` command
+- `ReplicaInfo` struct in `pkg/controller/memgraph_client.go:22-28` missing `DataInfo` field
+- Parsing logic at `memgraph_client.go:175-215` skips `data_info` field entirely
+- Controller only checks `SystemTimestamp` but this field appears unused/incorrect
+- Critical replication health indicators like `behind: -20, status: "invalid"` are ignored
+
+**Required Fix**:
+1. Add `DataInfo string` field to `ReplicaInfo` struct
+2. Parse `data_info` field in replica parsing logic
+3. Add replication health validation that fails on `status: "invalid"` 
+4. Use `behind` metric to detect replication lag issues
+
+**Status**: **IDENTIFIED** - Controller code changes required to parse and act on data_info

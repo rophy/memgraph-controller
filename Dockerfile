@@ -1,9 +1,6 @@
 # Build stage
 FROM golang:1.24-alpine AS builder
 
-# Install git for go mod download
-RUN apk add --no-cache git
-
 # Set working directory
 WORKDIR /workspace
 

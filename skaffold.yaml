@@ -12,7 +12,7 @@ build:
     docker:
       dockerfile: Dockerfile
 
-# Deploy configuration
+# Default deploy configuration (memgraph + controller)
 deploy:
   helm:
     releases:
@@ -40,10 +40,28 @@ deploy:
         replicas: 1
       wait: true
 
-# Port forwarding for development
+# Port forwarding for development (default profile - memgraph + controller)
 portForward:
 - resourceType: service
-  resourceName: memgraph
+  resourceName: memgraph-controller
   namespace: memgraph
   port: 7687
   localPort: 7687
+- resourceType: service
+  resourceName: memgraph-controller
+  namespace: memgraph
+  port: 8080
+  localPort: 8080
+
+# Profiles for different deployment scenarios
+profiles:
+# Profile for deploying only Memgraph cluster (no controller, no port forwarding)
+- name: memgraph-only
+  deploy:
+    helm:
+      releases:
+      - name: memgraph
+        chartPath: charts/memgraph
+        namespace: memgraph
+        createNamespace: true
+        wait: true

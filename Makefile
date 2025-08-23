@@ -3,7 +3,7 @@ REGISTRY ?= ghcr.io/rophy
 TAG ?= latest
 IMAGE_NAME ?= memgraph-controller
 
-.PHONY: build test test-e2e clean up down docker-build docker-push
+.PHONY: build test test-e2e clean up run down docker-build docker-push
 
 # Build targets
 build:
@@ -22,11 +22,14 @@ test-e2e:
 
 # Development targets
 up:
-	kubectl create namespace memgraph --dry-run=client -o yaml | kubectl apply -f -
-	helm upgrade --install memgraph ./charts/memgraph --namespace memgraph
+	skaffold run --profile memgraph-only
+
+run:
+	skaffold run
 
 down:
-	kubectl delete namespace memgraph --ignore-not-found=true
+	skaffold delete
+	kubectl delete pvcs --all
 
 # Docker targets
 docker-build:

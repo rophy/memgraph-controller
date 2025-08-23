@@ -4,12 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"regexp"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"gopkg.in/yaml.v3"
 )
 
 type MemgraphClient struct {
@@ -110,8 +109,8 @@ func (ri *ReplicaInfo) GetRecoveryAction() string {
 	}
 }
 
-// parseDataInfo parses the data_info field from SHOW REPLICAS output
-// Expected formats:
+// parseDataInfo parses the data_info field from SHOW REPLICAS output using YAML
+// Expected formats (valid YAML flow syntax):
 // - Healthy ASYNC: "{memgraph: {behind: 0, status: \"ready\", ts: 2}}"  
 // - Unhealthy ASYNC: "{memgraph: {behind: -20, status: \"invalid\", ts: 0}}"
 // - SYNC replica: "{}" (empty)
@@ -129,7 +128,7 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 		return status, nil
 	}
 	
-	// Handle empty JSON object (common for SYNC replicas)
+	// Handle empty YAML object (common for SYNC replicas)
 	if dataInfoStr == "{}" {
 		status.Status = "empty"
 		status.Behind = 0
@@ -138,47 +137,64 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 		return status, nil
 	}
 	
-	// Parse JSON-like structure: "{memgraph: {behind: 0, status: \"ready\", ts: 2}}"
-	// This is not valid JSON, so we need custom parsing
-	
-	// Extract the inner memgraph object using regex
-	re := regexp.MustCompile(`\{memgraph:\s*\{([^}]+)\}\}`)
-	matches := re.FindStringSubmatch(dataInfoStr)
-	if len(matches) < 2 {
+	// Parse YAML flow syntax: {memgraph: {behind: 0, status: "ready", ts: 2}}
+	var yamlData map[string]interface{}
+	if err := yaml.Unmarshal([]byte(dataInfoStr), &yamlData); err != nil {
 		status.Status = "malformed"
 		status.Behind = -1
 		status.IsHealthy = false
-		status.ErrorReason = fmt.Sprintf("Unable to parse data_info format: %s", dataInfoStr)
+		status.ErrorReason = fmt.Sprintf("Unable to parse data_info YAML: %v", err)
 		return status, nil
 	}
 	
-	// Parse the inner content: "behind: 0, status: \"ready\", ts: 2"
-	innerContent := matches[1]
-	
-	// Extract behind value
-	behindRe := regexp.MustCompile(`behind:\s*(-?\d+)`)
-	if behindMatches := behindRe.FindStringSubmatch(innerContent); len(behindMatches) >= 2 {
-		if behind, err := strconv.Atoi(behindMatches[1]); err == nil {
-			status.Behind = behind
-		}
-	} else {
-		status.Behind = -1 // Default to error state
+	// Extract memgraph object
+	memgraphData, exists := yamlData["memgraph"]
+	if !exists {
+		status.Status = "malformed"
+		status.Behind = -1
+		status.IsHealthy = false
+		status.ErrorReason = "Missing 'memgraph' key in data_info"
+		return status, nil
 	}
 	
-	// Extract status value  
-	statusRe := regexp.MustCompile(`status:\s*"([^"]+)"`)
-	if statusMatches := statusRe.FindStringSubmatch(innerContent); len(statusMatches) >= 2 {
-		status.Status = statusMatches[1]
+	// Convert to map for field access
+	memgraphMap, ok := memgraphData.(map[string]interface{})
+	if !ok {
+		status.Status = "malformed"
+		status.Behind = -1
+		status.IsHealthy = false
+		status.ErrorReason = "Invalid memgraph data structure"
+		return status, nil
+	}
+	
+	// Extract behind value
+	if behindVal, exists := memgraphMap["behind"]; exists {
+		if behind, ok := behindVal.(int); ok {
+			status.Behind = behind
+		} else {
+			status.Behind = -1 // Default to error state
+		}
+	} else {
+		status.Behind = -1
+	}
+	
+	// Extract status value
+	if statusVal, exists := memgraphMap["status"]; exists {
+		if statusStr, ok := statusVal.(string); ok {
+			status.Status = statusStr
+		} else {
+			status.Status = "unknown"
+		}
 	} else {
 		status.Status = "unknown"
 	}
 	
 	// Extract timestamp value
-	tsRe := regexp.MustCompile(`ts:\s*(\d+)`)
-	if tsMatches := tsRe.FindStringSubmatch(innerContent); len(tsMatches) >= 2 {
-		if ts, err := strconv.Atoi(tsMatches[1]); err == nil {
+	if tsVal, exists := memgraphMap["ts"]; exists {
+		if ts, ok := tsVal.(int); ok {
 			status.Timestamp = ts
 		}
+		// If timestamp is missing or invalid, leave as 0 (default)
 	}
 	
 	// Determine health status based on parsed values

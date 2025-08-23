@@ -1,0 +1,6 @@
+dependencies:
+- name: memgraph
+  repository: file://../memgraph
+  version: 0.2.5
+digest: sha256:f73a70ae196d7ccb44d859c6c6106ff921fe63a1eb68bb4f484f18d774244295
+generated: "2025-08-23T05:44:15.026071818Z"

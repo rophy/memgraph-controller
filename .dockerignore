@@ -47,6 +47,8 @@ docs/
 # Charts and manifests
 charts/
 manifests/
+Dockerfile
+*.yaml
 
 # Test data and e2e tests
 tests/

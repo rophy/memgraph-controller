@@ -1,0 +1,11 @@
+apiVersion: v2
+name: memgraph-ha
+description: A Helm chart for Memgraph high availability cluster with controller
+type: application
+version: 0.1.0
+appVersion: "2.21.1"
+
+dependencies:
+- name: memgraph
+  version: "*"
+  repository: "file://../memgraph"

@@ -1,0 +1,78 @@
+# Values for memgraph-ha chart - Memgraph HA with controller
+# All memgraph values are predefined for HA deployment
+
+memgraph:
+  image:
+    repository: memgraph/memgraph
+    tag: ""  # Uses chart appVersion
+    pullPolicy: IfNotPresent
+
+  replicaCount: 3
+
+  # Configure for HA deployment
+  service:
+    enableBolt: true
+    boltPort: 7687
+    enableWebsocketMonitoring: false
+    enableHttpMonitoring: false
+
+  # Persistent storage configuration
+  persistentVolumeClaim:
+    createStorageClaim: true
+    storageClassName: ""  # Use cluster default
+    storageSize: 10Gi
+    createLogStorage: true
+    logStorageSize: 1Gi
+
+  # Memgraph configuration for replication
+  memgraphConfig:
+  - "--data-directory=/var/lib/memgraph/mg_data"
+  - "--also-log-to-stderr=true"
+  - "--replication-restore-state-on-startup=true"
+
+  # Resource configuration
+  resources:
+    limits:
+      cpu: 1000m
+      memory: 2Gi
+    requests:
+      cpu: 500m
+      memory: 1Gi
+
+  # Service account
+  serviceAccount:
+    create: true
+    annotations: {}
+    name: ""
+
+  # Container probes
+  container:
+    terminationGracePeriodSeconds: 1800
+    readinessProbe:
+      tcpSocket:
+        port: 7687
+      failureThreshold: 20
+      timeoutSeconds: 10
+      periodSeconds: 5
+    livenessProbe:
+      tcpSocket:
+        port: 7687
+      failureThreshold: 20
+      timeoutSeconds: 10
+      periodSeconds: 5
+    startupProbe:
+      tcpSocket:
+        port: 7687
+      failureThreshold: 1440
+      periodSeconds: 5
+
+  # Init container for system configuration
+  sysctlInitContainer:
+    enabled: true
+    maxMapCount: 262144
+    image:
+      repository: library/busybox
+      tag: latest
+      pullPolicy: IfNotPresent
+
+# No additional values needed for controller - it uses static manifests

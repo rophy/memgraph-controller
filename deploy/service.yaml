@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: memgraph-controller
+  namespace: memgraph
+  labels:
+    app.kubernetes.io/name: memgraph-controller
+    app.kubernetes.io/instance: memgraph-controller
+    app.kubernetes.io/version: "latest"
+    app.kubernetes.io/component: controller
+    app.kubernetes.io/part-of: memgraph
+    app.kubernetes.io/managed-by: skaffold
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8080
+    targetPort: http
+    protocol: TCP
+    name: http
+  - port: 7687
+    targetPort: gateway
+    protocol: TCP
+    name: bolt
+  selector:
+    app.kubernetes.io/name: memgraph-controller
+    app.kubernetes.io/instance: memgraph-controller

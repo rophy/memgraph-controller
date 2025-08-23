@@ -118,6 +118,13 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 		return nil, fmt.Errorf("failed to discover pods: %w", err)
 	}
 
+	// Update connection pool with fresh pod IPs
+	for _, podInfo := range clusterState.Pods {
+		if podInfo.Pod != nil && podInfo.Pod.Status.PodIP != "" {
+			c.memgraphClient.connectionPool.UpdatePodIP(podInfo.Name, podInfo.Pod.Status.PodIP)
+		}
+	}
+
 	if len(clusterState.Pods) == 0 {
 		log.Println("No pods found in cluster")
 		return clusterState, nil
@@ -2356,6 +2363,12 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 	
+	// Check for IP changes and update connection pool
+	if oldPod.Status.PodIP != newPod.Status.PodIP && newPod.Status.PodIP != "" {
+		c.memgraphClient.connectionPool.UpdatePodIP(newPod.Name, newPod.Status.PodIP)
+		log.Printf("Pod %s IP changed: %s -> %s", newPod.Name, oldPod.Status.PodIP, newPod.Status.PodIP)
+	}
+	
 	if !c.shouldReconcile(oldPod, newPod) {
 		return // Skip unnecessary reconciliation
 	}
@@ -2365,7 +2378,28 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 
 // onPodDelete handles pod deletion events
 func (c *MemgraphController) onPodDelete(obj interface{}) {
+	pod := obj.(*v1.Pod)
+	// Invalidate connection for deleted pod
+	c.memgraphClient.connectionPool.InvalidatePodConnection(pod.Name)
+	log.Printf("Pod %s deleted, invalidated connection", pod.Name)
+	
 	c.enqueuePodEvent("pod-deleted")
+}
+
+// RefreshPodInfo gets fresh pod information from Kubernetes API and updates connection pool
+func (c *MemgraphController) RefreshPodInfo(ctx context.Context, podName string) (*PodInfo, error) {
+	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get fresh pod info for %s: %w", podName, err)
+	}
+	
+	// Update connection pool with fresh IP
+	if pod.Status.PodIP != "" {
+		c.memgraphClient.connectionPool.UpdatePodIP(podName, pod.Status.PodIP)
+		log.Printf("Refreshed pod %s IP: %s", podName, pod.Status.PodIP)
+	}
+	
+	return NewPodInfo(pod, c.config.ServiceName), nil
 }
 
 // shouldReconcile determines if a pod update requires reconciliation

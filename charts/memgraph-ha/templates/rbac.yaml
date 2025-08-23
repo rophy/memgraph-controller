@@ -1,0 +1,39 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: memgraph-controller
+  labels:
+    app: memgraph-controller
+    component: controller
+rules:
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get", "list", "watch", "update", "patch"]
+- apiGroups: [""]
+  resources: ["pods/status"]
+  verbs: ["get", "update", "patch"]
+- apiGroups: ["apps"]
+  resources: ["statefulsets"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["services"]
+  verbs: ["get", "list", "watch"]
+- apiGroups: [""]
+  resources: ["events"]
+  verbs: ["create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: memgraph-controller
+  labels:
+    app: memgraph-controller
+    component: controller
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: memgraph-controller
+subjects:
+- kind: ServiceAccount
+  name: memgraph-controller
+  namespace: memgraph

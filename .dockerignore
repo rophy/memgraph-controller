@@ -51,6 +51,7 @@ Dockerfile
 *.yaml
 
 # Test data and e2e tests
+scripts/
 tests/
 testdata/
 

@@ -57,8 +57,6 @@ const (
 	
 	// Expected cluster topology
 	expectedPodCount = 3
-	expectedMaster   = "memgraph-ha-0"
-	expectedSyncReplica = "memgraph-ha-1"
 )
 
 func TestE2E_ClusterTopology(t *testing.T) {
@@ -72,18 +70,22 @@ func TestE2E_ClusterTopology(t *testing.T) {
 	status, err := getClusterStatus(ctx)
 	require.NoError(t, err, "Should get cluster status")
 	
-	// Validate basic cluster structure
-	assert.Len(t, status.Pods, expectedPodCount, "Should have 3 pods")
-	assert.Equal(t, expectedMaster, status.ClusterState.CurrentMaster, "Master should be memgraph-0")
-	assert.Equal(t, expectedPodCount, status.ClusterState.TotalPods, "Total pods should match expected count")
+	// Validate basic cluster structure - CRITICAL: crash if these fail
+	require.Len(t, status.Pods, expectedPodCount, "CRITICAL: Should have 3 pods")
+	require.Equal(t, expectedPodCount, status.ClusterState.TotalPods, "CRITICAL: Total pods should match expected count")
+	
+	// Validate that master is one of the eligible pods (pod-0 or pod-1) - CRITICAL
+	eligibleMasters := []string{"memgraph-ha-0", "memgraph-ha-1"}
+	require.Contains(t, eligibleMasters, status.ClusterState.CurrentMaster, 
+		"CRITICAL: Master should be either pod-0 or pod-1 (eligible for master role)")
 	
 	// Validate master-sync-async topology
 	var masterCount, syncCount, asyncCount int
 	var masterPod, syncPod string
 	
 	for _, pod := range status.Pods {
-		assert.NotEmpty(t, pod.BoltAddress, "Pod %s should have bolt address", pod.Name)
-		assert.True(t, pod.Healthy, "Pod %s should be healthy", pod.Name)
+		require.NotEmpty(t, pod.BoltAddress, "CRITICAL: Pod %s should have bolt address", pod.Name)
+		require.True(t, pod.Healthy, "CRITICAL: Pod %s should be healthy", pod.Name)
 		
 		switch pod.MemgraphRole {
 		case "main":
@@ -100,14 +102,25 @@ func TestE2E_ClusterTopology(t *testing.T) {
 		}
 	}
 	
-	// Validate topology counts
-	assert.Equal(t, 1, masterCount, "Should have exactly 1 master")
-	assert.Equal(t, 1, syncCount, "Should have exactly 1 sync replica")
-	assert.Equal(t, 1, asyncCount, "Should have exactly 1 async replica")
+	// Validate topology counts - CRITICAL: crash if these fail
+	require.Equal(t, 1, masterCount, "CRITICAL: Should have exactly 1 master")
+	require.Equal(t, 1, syncCount, "CRITICAL: Should have exactly 1 sync replica")
+	require.Equal(t, 1, asyncCount, "CRITICAL: Should have exactly 1 async replica")
 	
-	// Validate specific roles
-	assert.Equal(t, expectedMaster, masterPod, "memgraph-0 should be master")
-	assert.Equal(t, expectedSyncReplica, syncPod, "memgraph-1 should be sync replica")
+	// Validate that master and sync replica are complementary eligible pods - CRITICAL
+	require.Contains(t, eligibleMasters, masterPod, "CRITICAL: Master should be pod-0 or pod-1")
+	require.Contains(t, eligibleMasters, syncPod, "CRITICAL: SYNC replica should be pod-0 or pod-1")
+	require.NotEqual(t, masterPod, syncPod, "CRITICAL: Master and SYNC replica should be different pods")
+	
+	// Validate that pod-2 is always ASYNC (not eligible for master/SYNC roles) - CRITICAL
+	asyncPodName := ""
+	for _, pod := range status.Pods {
+		if pod.MemgraphRole == "replica" && !pod.IsSyncReplica {
+			asyncPodName = pod.Name
+			break
+		}
+	}
+	require.Equal(t, "memgraph-ha-2", asyncPodName, "CRITICAL: Pod-2 should always be ASYNC replica")
 	
 	t.Logf("✓ Cluster topology validated: Master=%s, Sync=%s, Total pods=%d", 
 		masterPod, syncPod, len(status.Pods))

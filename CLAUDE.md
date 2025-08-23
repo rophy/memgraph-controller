@@ -45,13 +45,13 @@ This ensures you stay informed about all modifications and maintains control ove
 
 ```bash
 # Check replication role of a pod
-kubectl exec <pod-name> -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <pod-name> -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole'
 
 # Check registered replicas from master pod
-kubectl exec <master-pod-name> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <master-pod-name> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole'
 
 # Check storage info
-kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole'
 ```
 
 **Do NOT rely on the memgraph-controller status API for debugging** - always verify the actual Memgraph state directly using the above commands.
@@ -64,26 +64,26 @@ kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --host
 
 ```bash
 # Promote pod to master
-kubectl exec <pod-name> -- bash -c 'echo "SET REPLICATION ROLE TO MAIN;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <pod-name> -- bash -c 'echo "SET REPLICATION ROLE TO MAIN;" | mgconsole'
 
 # Demote pod to replica (Community Edition requires WITH PORT)
-kubectl exec <pod-name> -- bash -c 'echo "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <pod-name> -- bash -c 'echo "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;" | mgconsole'
 ```
 
 ### Managing Replicas
 
 ```bash
 # Register SYNC replica (guaranteed consistency - blocks master until confirmed)
-kubectl exec <master-pod> -- bash -c 'echo "REGISTER REPLICA <replica_name> SYNC TO \"<replica_ip>:10000\";" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <master-pod> -- bash -c 'echo "REGISTER REPLICA <replica_name> SYNC TO \"<replica_ip>:10000\";" | mgconsole'
 
 # Register ASYNC replica (eventual consistency - non-blocking)
-kubectl exec <master-pod> -- bash -c 'echo "REGISTER REPLICA <replica_name> ASYNC TO \"<replica_ip>:10000\";" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <master-pod> -- bash -c 'echo "REGISTER REPLICA <replica_name> ASYNC TO \"<replica_ip>:10000\";" | mgconsole'
 
 # Drop replica registration
-kubectl exec <master-pod> -- bash -c 'echo "DROP REPLICA <replica_name>;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <master-pod> -- bash -c 'echo "DROP REPLICA <replica_name>;" | mgconsole'
 
 # Check replica status and sync modes
-kubectl exec <master-pod> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <master-pod> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole'
 ```
 
 ### Emergency Recovery Procedures
@@ -100,14 +100,14 @@ kubectl delete pod <sync-replica-pod>
 **Option 2: Promote ASYNC Replica to SYNC (Emergency)**
 ```bash
 # Step 1: Drop the failed SYNC replica
-kubectl exec <master-pod> -- bash -c 'echo "DROP REPLICA <failed_sync_replica_name>;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <master-pod> -- bash -c 'echo "DROP REPLICA <failed_sync_replica_name>;" | mgconsole'
 
 # Step 2: Promote healthy ASYNC replica to SYNC
-kubectl exec <master-pod> -- bash -c 'echo "DROP REPLICA <async_replica_name>;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
-kubectl exec <master-pod> -- bash -c 'echo "REGISTER REPLICA <async_replica_name> SYNC TO \"<replica_ip>:10000\";" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <master-pod> -- bash -c 'echo "DROP REPLICA <async_replica_name>;" | mgconsole'
+kubectl exec <master-pod> -- bash -c 'echo "REGISTER REPLICA <async_replica_name> SYNC TO \"<replica_ip>:10000\";" | mgconsole'
 
 # Step 3: Verify new SYNC replica
-kubectl exec <master-pod> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <master-pod> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole'
 ```
 
 #### Scenario: Split-Brain Resolution
@@ -115,14 +115,14 @@ kubectl exec <master-pod> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --host=1
 **Manual Split-Brain Resolution (if controller fails to resolve automatically):**
 ```bash
 # Step 1: Identify all masters
-kubectl exec memgraph-0 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
-kubectl exec memgraph-1 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec memgraph-ha-0 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole'
+kubectl exec memgraph-ha-1 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole'
 
 # Step 2: Choose master with most recent data (check storage info)
-kubectl exec <pod> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <pod> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole'
 
 # Step 3: Demote incorrect masters (keep lowest index pod as master by convention)
-kubectl exec <incorrect-master-pod> -- bash -c 'echo "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;" | mgconsole --host=127.0.0.1 --port=7687 --username="" --password=""'
+kubectl exec <incorrect-master-pod> -- bash -c 'echo "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;" | mgconsole'
 
 # Step 4: Restart controller after manual resolution
 kubectl rollout restart deployment/memgraph-controller -n memgraph

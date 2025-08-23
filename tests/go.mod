@@ -4,7 +4,7 @@ go 1.21
 
 require (
 	github.com/neo4j/neo4j-go-driver/v5 v5.14.0
-	github.com/stretchr/testify v1.8.4
+	github.com/stretchr/testify v1.10.0
 )
 
 require (

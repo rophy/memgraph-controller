@@ -2,11 +2,13 @@ package tests
 
 import (
 	"context"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
+	"strings"
 	"testing"
 	"time"
 
@@ -264,108 +266,113 @@ func TestE2E_FailoverReliability(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	
-	const failoverRounds = 3
 	const postFailoverDelay = 15 * time.Second
 	
 	// Step 1: Check initial cluster topology
-	t.Log("🔍 Step 1: Validating initial cluster topology")
+	t.Log("🔍 Step 1: Check cluster topology")
 	status, err := getClusterStatus(ctx)
 	require.NoError(t, err, "Should get initial cluster status")
 	
 	// Validate master-sync-async topology
 	initialMaster, initialSync := validateTopology(t, status)
-	t.Logf("✓ Initial topology: Master=%s, Sync=%s", initialMaster, initialSync)
+	t.Logf("✓ Cluster topology: Master=%s, Sync=%s", initialMaster, initialSync)
 	
 	// Connect to gateway for data operations
 	driver, err := neo4j.NewDriverWithContext(gatewayURL, neo4j.NoAuth())
 	require.NoError(t, err, "Should connect to gateway")
 	defer driver.Close(ctx)
 	
-	// Run multiple failover rounds
-	for round := 1; round <= failoverRounds; round++ {
-		t.Logf("\n🔄 === FAILOVER ROUND %d/%d ===", round, failoverRounds)
-		
-		// Step 2: Send timestamped data before failover
-		t.Logf("📝 Step 2: Writing pre-failover data (round %d)", round)
-		preFailoverID := fmt.Sprintf("pre-failover-r%d-%d", round, time.Now().UnixNano())
-		preFailoverValue := fmt.Sprintf("data-before-failover-round-%d", round)
-		
-		err = writeTimestampedData(ctx, driver, preFailoverID, preFailoverValue)
-		require.NoError(t, err, "Should write pre-failover data")
-		t.Logf("✓ Pre-failover data written: %s", preFailoverID)
-		
-		// Step 3: Verify data in cluster before failover (through gateway)
-		time.Sleep(2 * time.Second) // Allow replication
-		verifyDataExists(t, ctx, driver, preFailoverID, preFailoverValue)
-		
-		// Get current master before failover
-		status, err = getClusterStatus(ctx)
-		require.NoError(t, err, "Should get cluster status before failover")
-		currentMaster := status.ClusterState.CurrentMaster
-		t.Logf("📋 Current master before failover: %s", currentMaster)
-		
-		// Step 4: Trigger failover by deleting master pod
-		t.Logf("💥 Step 4: Triggering failover - deleting master pod %s", currentMaster)
-		err = deletePod(ctx, currentMaster)
-		require.NoError(t, err, "Should delete master pod")
-		t.Logf("✓ Master pod %s deleted", currentMaster)
-		
-		// Step 5: IMMEDIATELY write data after failover trigger
-		t.Log("⚡ Step 5: IMMEDIATELY writing post-failover data")
-		postFailoverID := fmt.Sprintf("post-failover-r%d-%d", round, time.Now().UnixNano())
-		postFailoverValue := fmt.Sprintf("data-after-failover-round-%d", round)
-		
-		// Try to write data immediately - may fail initially during failover
-		var writeSuccess bool
-		writeAttempts := 0
-		maxWriteAttempts := 30 // 30 seconds of attempts
-		
-		for writeAttempts < maxWriteAttempts && !writeSuccess {
-			writeAttempts++
-			err = writeTimestampedData(ctx, driver, postFailoverID, postFailoverValue)
-			if err == nil {
-				writeSuccess = true
-				t.Logf("✓ Post-failover data written on attempt %d: %s", writeAttempts, postFailoverID)
-				break
-			}
-			
-			if writeAttempts%5 == 0 {
-				t.Logf("⏳ Write attempt %d failed, retrying... (error: %v)", writeAttempts, err)
-			}
-			time.Sleep(1 * time.Second)
+	// Step 2: Send timestamped data, query data, verify query returns the data
+	t.Log("📝 Step 2: Send timestamped data and verify")
+	preFailoverID := fmt.Sprintf("pre-failover-%d", time.Now().UnixNano())
+	preFailoverValue := "data-before-failover"
+	
+	err = writeTimestampedData(ctx, driver, preFailoverID, preFailoverValue)
+	require.NoError(t, err, "Should write pre-failover data")
+	t.Logf("✓ Pre-failover data written: %s", preFailoverID)
+	
+	// Query and verify the data immediately
+	verifyDataExists(t, ctx, driver, preFailoverID, preFailoverValue)
+	t.Log("✓ Pre-failover data verified via query")
+	
+	// Get current master before failover
+	status, err = getClusterStatus(ctx)
+	require.NoError(t, err, "Should get cluster status before failover")
+	currentMaster := status.ClusterState.CurrentMaster
+	t.Logf("📋 Current master: %s", currentMaster)
+	
+	// Step 3: Kill the master pod
+	t.Logf("💥 Step 3: Kill the master pod %s", currentMaster)
+	err = deletePod(ctx, currentMaster)
+	require.NoError(t, err, "Should delete master pod")
+	t.Logf("✓ Master pod %s deleted", currentMaster)
+	
+	// Step 4: Immediately send timestamped data, query data, verify query returns the data
+	t.Log("⚡ Step 4: Immediately send timestamped data and verify")
+	postFailoverID := fmt.Sprintf("post-failover-%d", time.Now().UnixNano())
+	postFailoverValue := "data-after-failover"
+	
+	// Try to write data immediately - may fail initially during failover
+	var writeSuccess bool
+	writeAttempts := 0
+	maxWriteAttempts := 30 // 30 seconds of attempts
+	
+	for writeAttempts < maxWriteAttempts && !writeSuccess {
+		writeAttempts++
+		err = writeTimestampedData(ctx, driver, postFailoverID, postFailoverValue)
+		if err == nil {
+			writeSuccess = true
+			t.Logf("✓ Post-failover data written on attempt %d: %s", writeAttempts, postFailoverID)
+			break
 		}
 		
-		require.True(t, writeSuccess, "Should eventually write data after failover within %d attempts", maxWriteAttempts)
-		
-		// Wait for controller to complete failover
-		t.Logf("⏱️  Waiting %v for failover to stabilize", postFailoverDelay)
-		time.Sleep(postFailoverDelay)
-		
-		// Step 6: Verify new cluster topology after failover
-		t.Log("🔍 Step 6: Validating post-failover cluster topology")
-		status, err = getClusterStatus(ctx)
-		require.NoError(t, err, "Should get cluster status after failover")
-		
-		newMaster, newSync := validateTopology(t, status)
-		require.NotEqual(t, currentMaster, newMaster, "Master should have changed after failover")
-		t.Logf("✓ Post-failover topology: Master=%s, Sync=%s (previous master %s is gone)", 
-			newMaster, newSync, currentMaster)
-		
-		// Step 7: Verify both pre and post failover data exist in all 3 pods
-		t.Log("✅ Step 7: Verifying data integrity after failover")
-		verifyDataExists(t, ctx, driver, preFailoverID, preFailoverValue)
-		verifyDataExists(t, ctx, driver, postFailoverID, postFailoverValue)
-		
-		t.Logf("✅ Round %d completed successfully - failover from %s to %s", 
-			round, currentMaster, newMaster)
-		
-		// Brief pause between rounds
-		if round < failoverRounds {
-			time.Sleep(5 * time.Second)
+		if writeAttempts%5 == 0 {
+			t.Logf("⏳ Write attempt %d failed, retrying... (error: %v)", writeAttempts, err)
 		}
+		time.Sleep(1 * time.Second)
 	}
 	
-	t.Logf("🎉 All %d failover rounds completed successfully!", failoverRounds)
+	require.True(t, writeSuccess, "Should eventually write data after failover within %d attempts", maxWriteAttempts)
+	
+	// Immediately verify the post-failover data
+	verifyDataExists(t, ctx, driver, postFailoverID, postFailoverValue)
+	t.Log("✓ Post-failover data verified via query")
+	
+	// Step 5: Wait until failover stabilizes
+	t.Logf("⏱️  Step 5: Wait %v for failover to stabilize", postFailoverDelay)
+	time.Sleep(postFailoverDelay)
+	
+	// Verify new cluster topology after failover
+	status, err = getClusterStatus(ctx)
+	require.NoError(t, err, "Should get cluster status after failover")
+	
+	newMaster, newSync := validateTopology(t, status)
+	require.NotEqual(t, currentMaster, newMaster, "Master should have changed after failover")
+	t.Logf("✓ Post-failover topology: Master=%s, Sync=%s (previous master %s is gone)", 
+		newMaster, newSync, currentMaster)
+	
+	// Step 6: Verify the timestamped data in [2] and [4] exist in all 3 pods
+	t.Log("✅ Step 6: Verify timestamped data exists in all 3 pods")
+	
+	// Allow some time for data to replicate to all replicas after failover
+	t.Log("⏳ Waiting 5 seconds for data replication to complete...")
+	time.Sleep(5 * time.Second)
+	
+	// Get fresh cluster status after replication delay
+	status, err = getClusterStatus(ctx)
+	require.NoError(t, err, "Should get cluster status after replication delay")
+	
+	t.Logf("Looking for pre-failover data: ID=%s, Value=%s", preFailoverID, preFailoverValue)
+	err = verifyDataInAllPods(ctx, status, preFailoverID, preFailoverValue)
+	require.NoError(t, err, "Pre-failover data should exist in all pods")
+	
+	t.Logf("Looking for post-failover data: ID=%s, Value=%s", postFailoverID, postFailoverValue)
+	err = verifyDataInAllPods(ctx, status, postFailoverID, postFailoverValue)
+	require.NoError(t, err, "Post-failover data should exist in all pods")
+	
+	t.Log("🎉 Failover test completed successfully!")
+	t.Logf("✓ Both pre-failover (%s) and post-failover (%s) data verified in all 3 pods", 
+		preFailoverID, postFailoverID)
 }
 
 // Helper functions for failover test
@@ -438,6 +445,83 @@ func deletePod(ctx context.Context, podName string) error {
 	// Use kubectl to delete the pod with force and zero grace period for immediate deletion
 	cmd := exec.CommandContext(ctx, "kubectl", "delete", "pod", podName, "-n", "memgraph", "--force", "--grace-period=0")
 	return cmd.Run()
+}
+
+func verifyDataInAllPods(ctx context.Context, status *ClusterStatus, expectedID, expectedValue string) error {
+	for _, pod := range status.Pods {
+		if !pod.Healthy {
+			continue // Skip unhealthy pods
+		}
+		
+		// Use kubectl exec to query data directly from the pod using mgconsole with CSV output
+		query := fmt.Sprintf("MATCH (n:FailoverTest {id: '%s'}) RETURN n.id, n.value;", expectedID)
+		cmd := exec.CommandContext(ctx, "kubectl", "exec", pod.Name, "-n", "memgraph", "-c", "memgraph", "--", 
+			"bash", "-c", fmt.Sprintf("echo \"%s\" | mgconsole --output-format csv", query))
+		
+		output, err := cmd.Output()
+		if err != nil {
+			return fmt.Errorf("failed to query pod %s via kubectl: %w", pod.Name, err)
+		}
+		
+		outputStr := string(output)
+		
+		// Filter out Kubernetes messages to get clean CSV
+		lines := strings.Split(outputStr, "\n")
+		var csvContent strings.Builder
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			// Skip empty lines and kubernetes messages
+			if line != "" && !strings.Contains(line, "Defaulted container") {
+				csvContent.WriteString(line + "\n")
+			}
+		}
+		
+		csvStr := csvContent.String()
+		
+		// Check if we have any CSV content (when no results, mgconsole outputs nothing)
+		if strings.TrimSpace(csvStr) == "" {
+			return fmt.Errorf("pod %s: no data found for ID '%s' - query returned empty result", 
+				pod.Name, expectedID)
+		}
+		
+		// Parse CSV using proper CSV reader
+		csvReader := csv.NewReader(strings.NewReader(csvStr))
+		records, err := csvReader.ReadAll()
+		if err != nil {
+			return fmt.Errorf("pod %s: failed to parse CSV: %w\nRaw output: %s", pod.Name, err, outputStr)
+		}
+		
+		if len(records) < 2 {
+			return fmt.Errorf("pod %s: expected at least 2 CSV records (header + data), got %d\nFiltered CSV: %s\nRaw output: %s", 
+				pod.Name, len(records), csvStr, outputStr)
+		}
+		
+		// Validate header
+		header := records[0]
+		if len(header) != 2 || header[0] != "n.id" || header[1] != "n.value" {
+			return fmt.Errorf("pod %s: unexpected CSV header: %v", pod.Name, header)
+		}
+		
+		// Validate data record
+		dataRecord := records[1]
+		if len(dataRecord) != 2 {
+			return fmt.Errorf("pod %s: expected 2 columns in data record, got %d: %v", 
+				pod.Name, len(dataRecord), dataRecord)
+		}
+		
+		actualID := dataRecord[0]
+		actualValue := dataRecord[1]
+		
+		if actualID != expectedID {
+			return fmt.Errorf("pod %s: expected ID '%s', got '%s'", pod.Name, expectedID, actualID)
+		}
+		
+		if actualValue != expectedValue {
+			return fmt.Errorf("pod %s: expected value '%s', got '%s'", pod.Name, expectedValue, actualValue)
+		}
+	}
+	
+	return nil
 }
 
 // Helper functions

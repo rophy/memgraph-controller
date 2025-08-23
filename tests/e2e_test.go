@@ -310,7 +310,7 @@ func TestE2E_FailoverReliability(t *testing.T) {
 		
 		query := fmt.Sprintf("MATCH (n:FailoverTest {id: '%s'}) RETURN count(n);", preFailoverID)
 		cmd := exec.CommandContext(ctx, "kubectl", "exec", pod.Name, "-n", "memgraph", "-c", "memgraph", "--", 
-			"bash", "-c", fmt.Sprintf("echo \"%s\" | mgconsole --output-format csv --username=\"\" --password=\"\"", query))
+			"bash", "-c", fmt.Sprintf("echo \"%s\" | mgconsole --output-format csv --username=memgraph", query))
 		
 		output, err := cmd.Output()
 		if err != nil {
@@ -483,7 +483,7 @@ func verifyDataInAllPods(ctx context.Context, status *ClusterStatus, expectedID,
 		// Use kubectl exec to query data directly from the pod using mgconsole with CSV output
 		query := fmt.Sprintf("MATCH (n:FailoverTest {id: '%s'}) RETURN n.id, n.value;", expectedID)
 		cmd := exec.CommandContext(ctx, "kubectl", "exec", pod.Name, "-n", "memgraph", "-c", "memgraph", "--", 
-			"bash", "-c", fmt.Sprintf("echo \"%s\" | mgconsole --output-format csv --username=\"\" --password=\"\"", query))
+			"bash", "-c", fmt.Sprintf("echo \"%s\" | mgconsole --output-format csv --username=memgraph", query))
 		
 		output, err := cmd.Output()
 		if err != nil {

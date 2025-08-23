@@ -202,16 +202,18 @@ kubectl exec <master-pod> -n memgraph -c memgraph -- bash -c 'echo "SHOW REPLICA
 **Expected**: Data should exist in master and SYNC replica, may be missing from ASYNC replica  
 **Actual**: Data exists in master and ASYNC replica, missing from SYNC replica
 
-**Root Cause**: Controller ignores `data_info` field from `SHOW REPLICAS` command
+**Investigation Finding**: Controller ignores `data_info` field from `SHOW REPLICAS` command
 - `ReplicaInfo` struct in `pkg/controller/memgraph_client.go:22-28` missing `DataInfo` field
-- Parsing logic at `memgraph_client.go:175-215` skips `data_info` field entirely
+- Parsing logic at `memgraph_client.go:175-215` skips `data_info` field entirely  
 - Controller only checks `SystemTimestamp` but this field appears unused/incorrect
 - Critical replication health indicators like `behind: -20, status: "invalid"` are ignored
+- This prevents early detection and diagnosis of replication failures
 
-**Required Fix**:
+**Potential Improvement**:
 1. Add `DataInfo string` field to `ReplicaInfo` struct
 2. Parse `data_info` field in replica parsing logic
-3. Add replication health validation that fails on `status: "invalid"` 
-4. Use `behind` metric to detect replication lag issues
+3. Add replication health validation that detects `status: "invalid"` 
+4. Use `behind` metric to monitor replication lag
+5. Log/alert when replicas show unhealthy data_info status
 
-**Status**: **IDENTIFIED** - Controller code changes required to parse and act on data_info
+**Status**: **INVESTIGATING** - Root cause of SYNC replication failure still unknown, but monitoring improvements identified

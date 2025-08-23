@@ -25,7 +25,7 @@ up:
 	skaffold run --profile memgraph-only
 
 run:
-	skaffold run
+	skaffold run --tail
 
 down:
 	skaffold delete

@@ -2778,15 +2778,19 @@ func (c *MemgraphController) handleMasterFailurePromotion(clusterState *ClusterS
 		}
 	}
 	
-	// If no SYNC replica found, use deterministic selection
+	// If no SYNC replica found, use deterministic selection based on failed master
 	if syncReplica == "" {
 		log.Printf("No SYNC replica identified, using deterministic selection")
-		if c.targetMasterIndex == 1 {
-			// Previous master was pod-1, promote pod-0 as SYNC
-			syncReplica = c.config.StatefulSetName + "-0"
-		} else {
-			// Previous master was pod-0, promote pod-1 as SYNC  
+		// Determine which pod failed and promote the other one (the SYNC replica)
+		failedMasterIndex := c.identifyFailedMasterIndex(clusterState)
+		if failedMasterIndex == 0 {
+			// pod-0 failed, so pod-1 must be the SYNC replica
 			syncReplica = c.config.StatefulSetName + "-1"
+			log.Printf("Failed master was pod-0, promoting SYNC replica pod-1")
+		} else {
+			// pod-1 failed, so pod-0 must be the SYNC replica  
+			syncReplica = c.config.StatefulSetName + "-0"
+			log.Printf("Failed master was pod-1, promoting SYNC replica pod-0")
 		}
 	}
 	
@@ -2812,6 +2816,41 @@ func (c *MemgraphController) handleMasterFailurePromotion(clusterState *ClusterS
 		syncReplica, c.targetMasterIndex)
 	
 	return nil
+}
+
+// identifyFailedMasterIndex determines which pod (0 or 1) was the failed master
+func (c *MemgraphController) identifyFailedMasterIndex(clusterState *ClusterState) int {
+	pod0Name := c.config.StatefulSetName + "-0"
+	pod1Name := c.config.StatefulSetName + "-1"
+	
+	// Check which pod has the most recent restart (indicating it was the failed master)
+	pod0Info, pod0Exists := clusterState.Pods[pod0Name]
+	pod1Info, pod1Exists := clusterState.Pods[pod1Name]
+	
+	if !pod0Exists && !pod1Exists {
+		log.Printf("Warning: Neither pod-0 nor pod-1 found, defaulting to pod-0 as failed master")
+		return 0
+	}
+	
+	if !pod0Exists {
+		return 0 // pod-0 doesn't exist, so it failed
+	}
+	
+	if !pod1Exists {
+		return 1 // pod-1 doesn't exist, so it failed
+	}
+	
+	// Both exist - check which has newer timestamp (more recent restart)
+	// The pod that restarted more recently is likely the failed master
+	if pod0Info.Timestamp.After(pod1Info.Timestamp) {
+		log.Printf("pod-0 has newer timestamp (%v vs %v) - likely the failed master", 
+			pod0Info.Timestamp, pod1Info.Timestamp)
+		return 0
+	} else {
+		log.Printf("pod-1 has newer timestamp (%v vs %v) - likely the failed master", 
+			pod1Info.Timestamp, pod0Info.Timestamp)
+		return 1
+	}
 }
 
 // promoteToMaster promotes a pod to master role

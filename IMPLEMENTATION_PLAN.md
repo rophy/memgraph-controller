@@ -16,7 +16,7 @@ Add support for parsing and utilizing the `data_info` field from `SHOW REPLICAS`
 - Test parsing empty data_info: `{}`
 - Test malformed data_info handling
 
-**Status**: Not Started
+**Status**: ✅ Complete
 
 ### Implementation Details:
 1. **Update ReplicaInfo struct** in `pkg/controller/memgraph_client.go`:
@@ -68,7 +68,7 @@ Add support for parsing and utilizing the `data_info` field from `SHOW REPLICAS`
 - Test unknown/ambiguous states (empty data_info)
 - Test edge cases (high lag, unknown status values)
 
-**Status**: Not Started
+**Status**: ✅ Complete
 
 ### Implementation Details:
 1. **Health assessment rules**:

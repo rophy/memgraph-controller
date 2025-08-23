@@ -29,7 +29,7 @@ run:
 
 down:
 	skaffold delete
-	kubectl delete pvcs --all
+	kubectl delete pvc --all -n memgraph
 
 # Docker targets
 docker-build:

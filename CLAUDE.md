@@ -246,21 +246,24 @@ kubectl exec <master-pod> -n memgraph -c memgraph -- bash -c 'echo "SHOW REPLICA
 **Expected**: Data should exist in master and SYNC replica, may be missing from ASYNC replica  
 **Actual**: Data exists in master and ASYNC replica, missing from SYNC replica
 
-**Investigation Finding**: Controller ignores `data_info` field from `SHOW REPLICAS` command
-- `ReplicaInfo` struct in `pkg/controller/memgraph_client.go:22-28` missing `DataInfo` field
-- Parsing logic at `memgraph_client.go:175-215` skips `data_info` field entirely  
-- Controller only checks `SystemTimestamp` but this field appears unused/incorrect
-- Critical replication health indicators like `behind: -20, status: "invalid"` are ignored
-- This prevents early detection and diagnosis of replication failures
+**Investigation Finding**: Controller NOW PARSES `data_info` field but not used for operational decisions
+- `ReplicaInfo` struct in `pkg/controller/memgraph_client.go:30-31` includes `DataInfo` and `ParsedDataInfo` fields
+- Parsing logic at `memgraph_client.go:406-433` captures and parses `data_info` field correctly
+- Health assessment functions `IsHealthy()`, `RequiresRecovery()`, and `GetHealthReason()` are implemented
+- Parsed data is logged for display purposes in `memgraph_client.go:454-461`
+- **HOWEVER**: Main controller logic does NOT use health checks for operational decisions
+- No calls to `IsHealthy()` or `RequiresRecovery()` in main controller reconciliation loops
 
-**Potential Improvement**:
-1. Add `DataInfo string` field to `ReplicaInfo` struct
-2. Parse `data_info` field in replica parsing logic
-3. Add replication health validation that detects `status: "invalid"` 
-4. Use `behind` metric to monitor replication lag
-5. Log/alert when replicas show unhealthy data_info status
+**Current Implementation Status**:
+1. ✅ `DataInfo string` field exists in `ReplicaInfo` struct
+2. ✅ Parsing logic extracts and parses `data_info` field
+3. ✅ Health validation functions detect `status: "invalid"` and other issues
+4. ✅ `behind` metric is monitored and parsed
+5. ✅ Unhealthy replicas are logged with health status
+6. ❌ **Missing**: Integration with controller decision-making logic
+7. ❌ **Missing**: Automatic recovery actions based on health status
 
-**Status**: **INVESTIGATING** - Root cause of SYNC replication failure still unknown, but monitoring improvements identified
+**Status**: **PARTIALLY IMPLEMENTED** - Infrastructure exists but not integrated into operational decisions
 
 ### data_info Field Values Documentation
 

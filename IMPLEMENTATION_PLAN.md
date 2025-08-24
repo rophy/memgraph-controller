@@ -1,250 +1,209 @@
-# Implementation Plan: data_info Field Support
+# Controller Refactoring Implementation Plan
 
 ## Overview
-Add support for parsing and utilizing the `data_info` field from `SHOW REPLICAS` to enable early detection of replication failures and automatic recovery mechanisms.
 
-## Stage 1: Data Structure Enhancement
-**Goal**: Extend ReplicaInfo struct to capture data_info field
-**Success Criteria**: 
-- ReplicaInfo struct includes DataInfo field
-- Parsing logic extracts data_info from SHOW REPLICAS output
-- Unit tests validate data_info parsing with known good/bad values
+Break down the monolithic `pkg/controller/controller.go` (3,011 lines, 64 methods) into focused, testable modules with clear separation of concerns.
 
-**Tests**: 
-- Test parsing healthy data_info: `{memgraph: {behind: 0, status: "ready", ts: 2}}`
-- Test parsing unhealthy data_info: `{memgraph: {behind: -20, status: "invalid", ts: 0}}`
-- Test parsing empty data_info: `{}`
-- Test malformed data_info handling
+**Goal**: Improve maintainability while preserving all existing functionality and ensuring E2E tests continue to pass.
 
-**Status**: ✅ Complete
+## Strategy
 
-### Implementation Details:
-1. **Update ReplicaInfo struct** in `pkg/controller/memgraph_client.go`:
-   ```go
-   type ReplicaInfo struct {
-       Name           string
-       Address        string
-       SyncMode       string
-       SystemTimestamp string
-       DataInfo       string  // NEW: Raw data_info field
-       ParsedDataInfo *DataInfoStatus  // NEW: Parsed structure
-   }
-   
-   type DataInfoStatus struct {
-       Behind int    `json:"behind"`
-       Status string `json:"status"`  
-       Timestamp int `json:"ts"`
-       IsHealthy bool
-       ErrorReason string
-   }
-   ```
+- **Incremental approach**: One module at a time with thorough testing
+- **Preserve behavior**: No functional changes, only structural reorganization  
+- **Test-driven**: Unit tests pass after each stage, E2E validation before next stage
+- **Clean interfaces**: Public methods remain accessible, private implementation details stay private
 
-2. **Update parsing logic** in `parseShowReplicasResult()`:
-   - Extract data_info field from CSV output (column index to be determined)
-   - Parse JSON-like structure within data_info string
-   - Handle parsing errors gracefully with detailed logging
+## Refactoring Stages
 
-3. **Add parsing helper**:
-   ```go
-   func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
-       // Parse JSON-like structure: "{memgraph: {behind: 0, status: \"ready\", ts: 2}}"
-       // Handle special cases: empty "{}", malformed strings
-       // Return structured data with health assessment
-   }
-   ```
+### Stage 1: Discovery and Bootstrap Logic
+**Goal**: Extract cluster discovery and bootstrap validation  
+**Target size**: ~400-500 lines → `discovery.go`
 
----
+**Functions to extract**:
+- `DiscoverCluster()` - Main cluster discovery orchestration
+- `performBootstrapValidation()` - Safety validation for initial startup
+- `selectMasterAfterQuerying()` - Master selection based on Memgraph state
+- `applyDeterministicRoles()` - Fresh cluster role assignment
+- `learnExistingTopology()` - Operational topology learning
 
-## Stage 2: Health Assessment Logic
-**Goal**: Implement health assessment based on parsed data_info
 **Success Criteria**:
-- IsHealthy logic correctly identifies healthy vs unhealthy replicas
-- Clear error reasons provided for unhealthy states
-- Health status available in controller decision-making
+- All discovery-related unit tests pass
+- Controller can successfully discover cluster state
+- Bootstrap validation prevents unsafe startups
+- Master selection works correctly
 
-**Tests**:
-- Test healthy replica identification (behind=0, status="ready")
-- Test unhealthy replica identification (behind<0, status="invalid") 
-- Test unknown/ambiguous states (empty data_info)
-- Test edge cases (high lag, unknown status values)
-
-**Status**: ✅ Complete
-
-### Implementation Details:
-1. **Health assessment rules**:
-   - `status: "ready" && behind >= 0` → Healthy
-   - `status: "invalid"` → Connection/registration failure
-   - `behind < 0` → Replication error condition
-   - Empty `{}` → Connection establishment failure
-   - Missing/malformed data_info → Unknown health
-
-2. **Add methods to ReplicaInfo**:
-   ```go
-   func (ri *ReplicaInfo) IsHealthy() bool
-   func (ri *ReplicaInfo) GetHealthReason() string
-   func (ri *ReplicaInfo) RequiresRecovery() bool
-   ```
-
-3. **Integration with controller logic**:
-   - Update replication configuration functions to check replica health
-   - Log health status changes for monitoring
-   - Use health status in SYNC replica selection
-
----
-
-## Stage 3: Automatic Recovery Mechanisms  
-**Goal**: Implement automatic recovery for failed replicas based on data_info
-**Success Criteria**:
-- Failed replicas are automatically detected and recovered
-- Recovery attempts logged with success/failure status
-- Graceful degradation when recovery fails repeatedly
-
-**Tests**:
-- Test recovery of replica with status="invalid" 
-- Test recovery of replica with empty data_info
-- Test recovery failure handling and retry limits
-- Test recovery of SYNC replica vs ASYNC replica prioritization
+**Tests to update/create**:
+- `TestDiscoverCluster_*` - Cluster discovery scenarios
+- `TestBootstrapValidation_*` - Safety validation logic
+- `TestSelectMasterAfterQuerying_*` - Master selection from Memgraph state
 
 **Status**: Not Started
 
-### Implementation Details:
-1. **Recovery strategies by failure type**:
-   - `status: "invalid"` → Drop and re-register replica
-   - Empty `{}` → Check master logs, potentially restart pod or re-register
-   - High `behind` values → Monitor and alert, potential manual intervention flag
-
-2. **Add recovery functions**:
-   ```go
-   func (c *MemgraphController) recoverFailedReplica(ctx context.Context, masterPod *PodInfo, replicaInfo *ReplicaInfo) error
-   func (c *MemgraphController) assessReplicaRecoveryNeeds(clusterState *ClusterState) []ReplicaRecoveryAction
-   ```
-
-3. **Recovery action types**:
-   ```go
-   type ReplicaRecoveryAction struct {
-       ReplicaName string
-       ActionType  string // "re-register", "restart-pod", "manual-intervention"
-       Priority    int    // SYNC replicas = high priority
-       Reason      string
-   }
-   ```
-
-4. **Integration points**:
-   - Add recovery assessment to main reconciliation loop
-   - Execute recovery actions during replication configuration phase
-   - Implement exponential backoff for failed recovery attempts
-
 ---
 
-## Stage 4: Enhanced Monitoring and Alerting
-**Goal**: Provide comprehensive monitoring of replication health via data_info
-**Success Criteria**: 
-- Health metrics exposed via HTTP status endpoint
-- Detailed logging of replication health changes
-- Early warning system for degraded replication
+### Stage 2: Master Selection and Topology Management  
+**Goal**: Extract master selection algorithms and topology enforcement  
+**Target size**: ~500-600 lines → `topology.go`
 
-**Tests**:
-- Test HTTP endpoint includes replica health summary
-- Test health transition logging (healthy→unhealthy, recovery events)
-- Test alert conditions (SYNC replica failures, high lag warnings)
+**Functions to extract**:
+- `enhancedMasterSelection()` - Priority-based master selection
+- `countHealthyPods()`, `buildDecisionFactors()`, `isPodHealthyForMaster()` - Health assessment
+- `handleNoSafePromotion()`, `validateMasterSelection()` - Selection validation
+- `enforceExpectedTopology()`, `resolveSplitBrain()`, `enforceKnownTopology()` - Topology enforcement
+- `promoteExpectedMaster()` - Master promotion logic
 
-**Status**: Not Started
-
-### Implementation Details:
-1. **Extend status API** in `pkg/controller/status_api.go`:
-   ```go
-   type ReplicaStatus struct {
-       Name        string `json:"name"`
-       Address     string `json:"address"`
-       SyncMode    string `json:"sync_mode"`
-       IsHealthy   bool   `json:"is_healthy"`
-       Behind      int    `json:"behind,omitempty"`
-       Status      string `json:"status,omitempty"`
-       LastChecked string `json:"last_checked"`
-       ErrorReason string `json:"error_reason,omitempty"`
-   }
-   ```
-
-2. **Add health transition logging**:
-   ```go
-   func (c *MemgraphController) logReplicaHealthTransition(replicaName string, oldHealth, newHealth *DataInfoStatus)
-   ```
-
-3. **Alerting conditions**:
-   - SYNC replica becomes unhealthy → Critical alert
-   - Multiple ASYNC replicas unhealthy → Warning alert  
-   - Replica lag exceeds threshold → Info alert
-   - Recovery actions succeeding/failing → Status updates
-
----
-
-## Stage 5: Integration Testing and Documentation
-**Goal**: Comprehensive testing and documentation of data_info functionality
 **Success Criteria**:
-- E2E tests validate data_info parsing in real cluster scenarios
-- Documentation updated with replication health monitoring capabilities
-- Known data_info values documented from testing
+- Master selection algorithms work correctly
+- Split-brain resolution functions properly  
+- Topology enforcement maintains expected state
+- All selection criteria and priorities preserved
 
-**Tests**:
-- E2E test that intentionally breaks replication and verifies detection
-- E2E test of automatic recovery mechanisms
-- Performance test of health monitoring overhead
-- Integration test with existing controller functionality
+**Tests to update/create**:
+- `TestEnhancedMasterSelection_*` - Master selection priority logic
+- `TestTopologyEnforcement_*` - Split-brain and drift correction
+- `TestMasterValidation_*` - Selection validation and safety checks
 
 **Status**: Not Started
 
-### Implementation Details:
-1. **E2E test scenarios**:
-   - Simulate network partitions causing replication failures
-   - Test pod restarts and recovery
-   - Test SYNC replica failure and automatic replacement
+---
 
-2. **Documentation updates**:
-   - Update CLAUDE.md with data_info monitoring capabilities
-   - Document health assessment rules and recovery strategies
-   - Expand data_info values section with findings from testing
+### Stage 3: Failover Detection and Handling
+**Goal**: Extract failover detection and promotion logic  
+**Target size**: ~300-400 lines → `failover.go`
 
-3. **Performance considerations**:
-   - Measure overhead of data_info parsing on reconciliation cycles
-   - Implement caching if health checks become expensive
-   - Consider rate limiting for recovery attempts
+**Functions to extract**:
+- `detectMasterFailover()` - Failover condition detection
+- `handleMasterFailover()` - Failover orchestration  
+- `selectBestAsyncReplica()` - Replica selection for promotion
+- `handleMasterFailurePromotion()` - Master failure promotion logic
+- `identifyFailedMasterIndex()` - Failed master identification
+
+**Success Criteria**:
+- Failover detection accurately identifies master failures
+- SYNC replica promotion works correctly (critical for zero data loss)
+- Failover completes within acceptable time bounds
+- No split-brain scenarios introduced
+
+**Tests to update/create**:
+- `TestMasterFailoverDetection_*` - Failover condition detection
+- `TestFailoverPromotion_*` - SYNC replica promotion logic
+- `TestFailoverTiming_*` - Failover completion timing
+
+**Status**: Not Started
 
 ---
 
-## Dependencies and Risks
+### Stage 4: Replication Configuration
+**Goal**: Extract replication setup and management  
+**Target size**: ~700-800 lines → `replication.go`
 
-### Dependencies:
-- Current connectivity fix (Pod IP addressing) should be working
-- Understanding of all possible data_info field values from real testing
-- Access to cluster scenarios that generate unhealthy replication states
+**Functions to extract**:
+- `ConfigureReplication()` - Main replication configuration orchestration
+- `selectSyncReplica()`, `identifySyncReplica()` - SYNC replica selection
+- `configureReplicationWithEnhancedSyncStrategy()` - Enhanced replication setup
+- `ensureCorrectSyncReplica()` - SYNC replica enforcement  
+- `configureAsyncReplicas()`, `configurePodAsAsyncReplica()` - ASYNC replica setup
+- `promoteAsyncToSync()`, `demoteSyncToAsync()` - Replica mode transitions
+- SYNC replica health monitoring functions
 
-### Risks:
-- **JSON parsing complexity**: data_info format may be more complex than documented examples
-- **Recovery action safety**: Automatic recovery could cause additional disruption if not carefully implemented  
-- **Performance impact**: Additional parsing and health checks may slow reconciliation
-- **State management**: Need to track health transitions and recovery attempts to prevent infinite loops
+**Success Criteria**:
+- SYNC replication configured correctly (critical for data safety)
+- ASYNC replicas register properly  
+- Replica promotions/demotions work seamlessly
+- Health monitoring detects and handles failures
 
-### Mitigation Strategies:
-- Implement robust error handling and graceful degradation for parsing failures
-- Add feature flags to disable automatic recovery if needed
-- Implement circuit breakers for recovery attempts
-- Comprehensive logging and monitoring of data_info functionality
+**Tests to update/create**:
+- `TestSyncReplicaConfiguration_*` - SYNC replica setup and validation
+- `TestAsyncReplicaManagement_*` - ASYNC replica operations
+- `TestReplicaTransitions_*` - SYNC↔ASYNC transitions
+
+**Status**: Not Started
 
 ---
 
-## Success Metrics
+### Stage 5: Controller Runtime and Operations  
+**Goal**: Extract controller lifecycle and operational functions  
+**Target size**: ~400-500 lines → `runtime.go`
 
-### Stage 1-2 Success:
-- All SHOW REPLICAS calls include parsed data_info health status
-- Health assessment correctly identifies known good/bad scenarios
-- Zero parsing errors on well-formed data_info values
+**Functions to extract**:
+- `Run()`, `worker()`, `processReconcileRequest()` - Controller runtime
+- `setupInformers()`, `onPod*()` event handlers - Kubernetes event handling
+- `reconcileWithBackoff()`, reconciliation mechanics - Retry and backoff logic
+- `enqueuePodEvent()`, `enqueueReconcile()` - Event queuing
+- Metrics and monitoring functions
 
-### Stage 3-4 Success:  
-- Automatic recovery successfully resolves >90% of detectable replication failures
-- SYNC replica failures are detected and resolved within 30 seconds
-- No false positive recovery attempts on healthy replicas
+**Success Criteria**:
+- Controller starts and runs correctly
+- Kubernetes event handling works properly
+- Reconciliation loop maintains cluster state  
+- Metrics and observability preserved
 
-### Stage 5 Success:
-- E2E tests demonstrate end-to-end replication health monitoring
-- Documentation enables users to understand and troubleshoot replication health
-- Performance impact <5% on reconciliation cycle time
+**Tests to update/create**:
+- `TestControllerRuntime_*` - Lifecycle and event handling
+- `TestReconciliation_*` - Reconciliation loop and retry logic
+- `TestEventHandling_*` - Kubernetes event processing
+
+**Status**: Not Started
+
+---
+
+### Stage 6: Pod Operations and Utilities
+**Goal**: Extract pod manipulation and utility functions  
+**Target size**: ~200-300 lines → `pod_ops.go`
+
+**Functions to extract**:
+- `promoteToMaster()`, `demoteToReplica()` - Pod role changes
+- `RefreshPodInfo()` - Pod information refresh
+- `enforceMasterAuthority()`, `selectLowestIndexMaster()` - Authority enforcement
+- `TestConnection()`, `TestMemgraphConnections()` - Connection testing
+- `updateGatewayMaster()` - Gateway integration
+
+**Success Criteria**:
+- Pod promotion/demotion works correctly
+- Master authority enforcement prevents conflicts
+- Gateway integration maintains connectivity
+- All utility functions preserved
+
+**Tests to update/create**:
+- `TestPodOperations_*` - Promotion/demotion operations
+- `TestMasterAuthority_*` - Authority enforcement logic  
+- `TestGatewayIntegration_*` - Gateway connectivity
+
+**Status**: Not Started
+
+---
+
+## Final Structure
+
+After completion, the controller package will have:
+
+- **`controller.go`** (~800-1000 lines) - Core orchestration and public interface
+- **`discovery.go`** (~400-500 lines) - Cluster discovery and bootstrap
+- **`topology.go`** (~500-600 lines) - Master selection and topology management
+- **`failover.go`** (~300-400 lines) - Failover detection and handling  
+- **`replication.go`** (~700-800 lines) - Replication configuration
+- **`runtime.go`** (~400-500 lines) - Controller runtime and operations
+- **`pod_ops.go`** (~200-300 lines) - Pod operations and utilities
+
+**Total reduction**: ~3,011 lines → ~800-1000 lines main controller (67-75% reduction)
+
+## Testing Protocol
+
+**After each stage**:
+1. **Unit tests**: `make test` must pass
+2. **Build verification**: `go build ./...` must succeed  
+3. **E2E validation**: Human runs `make test-e2e` to verify functionality
+4. **Commit**: Create clean commit for the completed stage
+
+**Before proceeding to next stage**:
+- Confirm E2E tests pass
+- Review extracted module for clean interfaces
+- Ensure no behavioral changes introduced
+
+## Implementation Notes
+
+- **Preserve all existing functionality** - This is purely structural refactoring
+- **Maintain backward compatibility** - All public methods remain accessible
+- **Keep consistent error handling** - Preserve existing error patterns
+- **No performance regressions** - Controller should perform identically
+- **Clean commit history** - One commit per completed stage for easy rollback

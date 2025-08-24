@@ -10,24 +10,22 @@ Reference: https://memgraph.com/docs/clustering/replication
 
 # Development Workflow
 
-## CRITICAL: Claude NEVER Runs Deployment Commands
-
-**Claude must NEVER run the following commands:**
-- `skaffold run`
-- `skaffold dev` 
-- `kubectl apply`
-- `docker build`
-- Any deployment or build commands
-
-**After implementing fixes, Claude should explicitly state: "Please run skaffold and I'll check the logs"**
-
 ## Standard Development Process
 
-Our development workflow follows this pattern:
+For a new feature, our development workflow follows this pattern:
 
-1. **Claude Implements**: I implement the requested feature or fix
-2. **User Runs Skaffold**: You run `skaffold run` or `skaffold dev` to deploy and test
-3. **Claude Checks Logs**: I check the deployment logs to verify functionality and identify issues
+1. Run `make test`. If not all tests passed, confirm whether claude should fix unit tests first.
+2. Implement new feature
+3. Update unit tests,which should be in same folder as source code. Do NOT add unit tests to tests/ folder which is for e2e tests.
+4. Run `make test` and make sure all tests pass.
+5. Run e2e tests. See section "Running E2E Tests" for instructions.
+
+## Running E2E Tests
+
+1. Run `make down` to remove skaffold resources. If kubectl context failed to connect to a kubernetes cluster, FAIL IMMEDIATELY and prompt human to fix kubectl context.
+2. Run `make run` at background, which should buils and deploy a memgraph-ha cluster with skaffold.
+3. Wait for the memgraph-ha cluster to stablize. Can check memgraph-controller pod logs to assist.
+4. Run `make test-e2e`, which run the e2e tests in tests/ folder.
 
 ## Change Management Protocol
 

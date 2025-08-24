@@ -63,6 +63,108 @@ The Master-SYNC-ASYNC topology provides robust protection against write conflict
 - **Protection**: None - manual changes can override safety mechanisms
 - **Mitigation**: Operational procedures and access controls
 
+## Controller Lifecycle
+
+This controller has two phase throughout its lifecycle: BOOTSTRAP and OPERATIONAL.
+
+### Bootstrap Phase
+
+Controller starts up as BOOTSTRAP phase, which goal is discover current state of a memgraph-ha-cluster.
+
+Below describes the rules, which are expected to be deterministic.
+
+1. If memgraph statefulset has <2 replicas with pod status as "ready", wait. Proceed to next step ONLY after >=2 replicas ready.
+
+2. If both pod-0 and pod-1 have replication role as `MAIN` and storage shows 0 edge_count, 0 vertex_count, this cluster is in `INITIAL_STATE`.
+
+3. If one of pod-0 and pod-1 has replication role as `REPLICA`, the other one as `MAIN`, this cluster is in `OPERATIONAL_STATE`.
+
+4. Otherwise, the cluster is in `UNKNOWN_STATE`.
+
+#### INITIAL_STATE
+
+Controller always use pod-0 as MAIN, pod-1 as SYNC REPLICA.
+
+Controller will perform following steps to set up the cluster, and then go into OPERATIONAL phase.
+
+1. Run this command against pod-1 to demote it into replica:
+
+```mgconsole
+SET REPLICATION ROLE TO REPLICA WITH PORT 10000
+```
+
+2. Run this command against pod-0 to set up sync replication:
+
+```mgconsole
+REGISTER REPLICA <pod_1_name> SYNC TO "<pod_1_ip>:10000"
+```
+3. Run this command against pod-0 to verify replication:
+
+```mgconsole
+SHOW REPLICAS
+```
+
+Replication `<pod_1_name>` should show following in `data_info` field:
+
+```yaml
+{memgraph: {behind: 0, status: "ready", ts: 0}}
+```
+
+In case replica status of `<pod_1_name>` is not "ready", log warning and do exponential retry. In such case, memgraph-controller will stay in INITIAL_STATE.
+
+Once replication is good, controller picks pod-0 as MAIN, and then go into OPERATIONAL phase.
+
+
+#### OPERATIONAL_STATE
+
+Controller pick the active MAIN as MAIN, and then go into OPERATIONAL phase.
+
+
+#### UNKNOWN_STATE
+
+Controller log error and crash immediately, expecting human to fix the cluster.
+
+
+### Operational Phase
+
+Once controller enters OPERATIONAL phase, controller continuously reconciles the cluster into expected status.
+
+In this phase, controller receive events to kubernetes and do things as necessary to fix things.
+
+#### Actions to Kubernetes Events
+
+- Memgraph pod IP changes:
+  - Controller updates pod IP information, and wait for pod ready event.
+- Main memgraph pod status changed to "not ready":
+  - If sync replica status is READY, controller uses it as master, and promotes it immediately.
+  - If sync replica status is not READY, controller logs error, and waits for master to recover.
+- SYNC replica memgraph pod status changed to "not ready":
+  - Controller logs error than master will become read-only, and waits for async replica to recover.
+- ASYNC replica memgraph pod status changed to "not ready":
+  - Controller logs warning, drops the replication from master, and waits for async replica to recover.
+- Any memgraph pod status changed to "ready":
+  - Controller performs reconciliation.
+
+### Actions for Reconciliation
+
+1. Call kubernetes api to get memgraph pods which status is "ready", available to receive traffic.
+
+2. Run `SHOW REPLICAS` to main pod to check replication status.
+
+3. If `data_info` of SYNC replica is not `ready`, drop the replication and re-register immediately.
+
+3. If `data_info` for any ASYNC replica is not `ready`, drop the replication.
+
+4. If replication for any pod-N is is missing (could be dropped in step 3):
+
+  1. Check replication role of the pod, if it is `MAIN`, demote it into `REPLICA`.
+  2. Register ASYNC replica for the pod.
+
+5. Once all register done, run `SHOW REPLICAS` to check final result:
+
+  - If `data_info` of SYNC replica is not `ready`, log big error.
+  - If `data_info` of ASYNC replica is not `ready`, log warning.
+
 ## Gateway Integration
 
 The controller includes an embedded TCP gateway that provides transparent failover for client connections:

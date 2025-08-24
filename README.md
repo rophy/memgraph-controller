@@ -9,18 +9,18 @@ This controller implements a **Master-SYNC-ASYNC** replication topology that pro
 ### Cluster Topology
 
 ```
-┌─────────────┐    SYNC     ┌─────────────┐
-│   Pod-0     │◄───────────►│   Pod-1     │
+┌─────────────┐    SYNC     ┌──────────────┐
+│   Pod-0     │◄───────────►│   Pod-1      │
 │  (Master)   │             │(SYNC Replica)│
-└─────┬───────┘             └─────────────┘
-      │                              │
-      │ ASYNC                        │ ASYNC  
-      │                              │
-      ▼                              ▼
-┌─────────────┐             ┌─────────────┐
-│   Pod-2     │             │   Pod-N     │
-│(ASYNC Replica)│             │(ASYNC Replica)│
-└─────────────┘             └─────────────┘
+└─────┬───────┘             └──────────────┘
+      │
+      │ ASYNC     
+      │
+      ▼
+┌───────────────┐
+│   Pod-2       │
+│(ASYNC Replica)│
+└───────────────┘
 ```
 
 ### Key Design Principles
@@ -63,19 +63,6 @@ The Master-SYNC-ASYNC topology provides robust protection against write conflict
 - **Protection**: None - manual changes can override safety mechanisms
 - **Mitigation**: Operational procedures and access controls
 
-### Validation Test Results
-
-We validated this protection through live testing:
-
-1. **Setup**: pod-0 (master) → pod-1 (SYNC) → pod-2 (ASYNC)
-2. **Failover**: Promoted pod-1 to master while pod-0 remained running
-3. **Write Test**: Attempted writes from both pod-0 and pod-1
-4. **Result**: 
-   - ✅ Pod-0 write blocked: "At least one SYNC replica has not confirmed committing last transaction"
-   - ✅ Pod-1 writes succeeded
-   - ✅ Pod-2 cleanly switched to follow pod-1
-   - ✅ No data corruption or conflicts detected
-
 ## Gateway Integration
 
 The controller includes an embedded TCP gateway that provides transparent failover for client connections:
@@ -113,3 +100,88 @@ The controller exposes comprehensive metrics through its HTTP API:
 - **Health Status**: Master connectivity, error thresholds, system health
 
 Access metrics at: `http://controller:8080/status`
+
+# Study Notes on Memgraph Community Edition
+
+memgraph CE version: 3.4.0
+
+## How to run cypher queries or commands against a memgraph instance
+
+```bash
+kubectl exec <pod-name> -- bash -c 'echo "<mgcommand>;" | mgconsole --output-format csv --username=memgraph'
+```
+
+The `--username=memgraph` is not a real username, it is to avoid memgraph showing following warnings:
+
+```
+[memgraph_log] [warning] The client didn't supply the principal field! Trying with ""...
+[memgraph_log] [warning] The client didn't supply the credentials field! Trying with ""...
+```
+
+## Memgraph Replication
+
+Reference: https://memgraph.com/docs/clustering/replication
+
+- The following error in replica nodes can safely be ignored.
+
+```
+[memgraph_log] [error] Handling SystemRecovery, an enterprise RPC message, without license. Check your license status by running SHOW LICENSE INFO.
+```
+
+### Setting Replication Roles
+
+Note: A new memgraph instance ALWAYS starts as MAIN. If you see a memgraph instance starts as REPLICA, it must have been configured.
+
+Show replication role of a memgraph instance:
+
+```mgcommand
+SHOW REPLICATION ROLE
+```
+
+Demote master to replica:
+
+```mgcommand
+SET REPLICATION ROLE TO REPLICA WITH PORT 10000
+```
+
+Promote replica to mater:
+
+```mgcommand
+"SET REPLICATION ROLE TO MAIN
+```
+
+### Managing Replicas
+
+#### Concept
+
+- Replica instances do NOT automatically receive data from master. 
+- Replications have to be set up explicitly from mater.
+- All commands in this section are run against MASTER instance.
+
+#### Commands For Managing Replications
+
+1. Register target replica as a SYNC replica (guaranteed consistency - blocks master until confirmed)
+
+```mgcommand
+REGISTER REPLICA <replica_name> SYNC TO "<replica_ip>:10000"
+```
+For `replica_name`, I always use `pod_name` - pod-name converted to underscores.
+
+2. Register target replica as ASYNC replica (eventual consistency - non-blocking)
+
+```mgcommand
+REGISTER REPLICA <replica_name> ASYNC TO "<replica_ip>:10000"
+```
+
+3. Drop a registration
+
+```mgcommand
+DROP REPLICA <replica_name>
+```
+
+4. Show current replicas registered in master
+
+```mgcommand
+SHOW REPLICAS
+```
+

@@ -1,24 +1,13 @@
 Notes for running up a memgraph cluster under community edition.
 
-Reference: https://memgraph.com/docs/clustering/replication
-
-- The following error in replica nodes can safely be ignored.
-
-```
-[memgraph_log] [error] Handling SystemRecovery, an enterprise RPC message, without license. Check your license status by running SHOW LICENSE INFO.
-```
 
 # Development Workflow
 
-## Standard Development Process
+## Running Unit Tests
 
-For a new feature, our development workflow follows this pattern:
-
-1. Run `make test`. If not all tests passed, confirm whether claude should fix unit tests first.
-2. Implement new feature
-3. Update unit tests,which should be in same folder as source code. Do NOT add unit tests to tests/ folder which is for e2e tests.
-4. Run `make test` and make sure all tests pass.
-5. Run e2e tests. See section "Running E2E Tests" for instructions.
+```bash
+make test
+```
 
 ## Running E2E Tests
 
@@ -26,6 +15,17 @@ For a new feature, our development workflow follows this pattern:
 2. Run `make run` at background, which should buils and deploy a memgraph-ha cluster with skaffold.
 3. Wait for the memgraph-ha cluster to stablize. Can check memgraph-controller pod logs to assist.
 4. Run `make test-e2e`, which run the e2e tests in tests/ folder.
+
+## Standard Development Process
+
+For a new feature, our development workflow follows this pattern:
+
+1. Run unit tests. If not all tests passed, pause and confirm with huamn whether claude should fix unit tests first.
+2. Implement new feature
+3. Update unit tests,which should be in same folder as source code. Do NOT add unit tests to tests/ folder which is for e2e tests.
+4. Run unit tests, make sure all tests pass.
+5. Run e2e tests.
+
 
 ## Change Management Protocol
 
@@ -54,35 +54,7 @@ kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --outp
 
 **Do NOT rely on the memgraph-controller status API for debugging** - always verify the actual Memgraph state directly using the above commands.
 
-## Memgraph Replication Commands
 
-### Setting Replication Roles
-
-**CRITICAL**: Memgraph Community Edition requires specifying a port when setting replica role.
-
-```bash
-# Promote pod to master
-kubectl exec <pod-name> -- bash -c 'echo "SET REPLICATION ROLE TO MAIN;" | mgconsole --output-format csv --username=memgraph'
-
-# Demote pod to replica (Community Edition requires WITH PORT)
-kubectl exec <pod-name> -- bash -c 'echo "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;" | mgconsole --output-format csv --username=memgraph'
-```
-
-### Managing Replicas
-
-```bash
-# Register SYNC replica (guaranteed consistency - blocks master until confirmed)
-kubectl exec <master-pod> -- bash -c 'echo "REGISTER REPLICA <replica_name> SYNC TO \"<replica_ip>:10000\";" | mgconsole --output-format csv --username=memgraph'
-
-# Register ASYNC replica (eventual consistency - non-blocking)
-kubectl exec <master-pod> -- bash -c 'echo "REGISTER REPLICA <replica_name> ASYNC TO \"<replica_ip>:10000\";" | mgconsole --output-format csv --username=memgraph'
-
-# Drop replica registration
-kubectl exec <master-pod> -- bash -c 'echo "DROP REPLICA <replica_name>;" | mgconsole --output-format csv --username=memgraph'
-
-# Check replica status and sync modes
-kubectl exec <master-pod> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
-```
 
 ### Emergency Recovery Procedures
 
@@ -166,51 +138,6 @@ The controller implements a **SYNC replica strategy** for zero data loss failove
 3. **Deterministic selection** (pod-0 default) with warnings about potential data loss
 
 This design ensures **robust, predictable behavior** while preventing data loss during master failures through guaranteed SYNC replica consistency.
-
-## Testing
-
-### Unit Tests
-
-```bash
-make test
-```
-
-### E2E TEsts
-
-This should be run by human:
-
-```
-make run
-```
-
-Once skaffold is up and running with port-forward enabled, this can be run by either human or AI:
-
-```bash
-make test-e2e
-```
-
-### Manual Verify
-
-To send data to a specific pod using kubectl exec with mgconsole, use this format:
-
-  kubectl exec <pod-name> -n memgraph -c memgraph -- bash -c 'echo "<CYPHER_QUERY>" | mgconsole'
-
-  Examples:
-
-  Send to master (memgraph-ha-0):
-  kubectl exec memgraph-ha-0 -n memgraph -c memgraph -- bash -c 'echo "CREATE (n:TestNode {id: \"test-123\", value: \"my-test\"});" | mgconsole'
-
-  Send to SYNC replica (memgraph-ha-1):
-  kubectl exec memgraph-ha-1 -n memgraph -c memgraph -- bash -c 'echo "CREATE (n:TestNode {id: \"test-456\", value: \"direct-to-replica\"});" | mgconsole'
-
-  Query data from any pod:
-  kubectl exec memgraph-ha-0 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n:TestNode) RETURN n.id, n.value;" | mgconsole'
-
-  Check count:
-  kubectl exec memgraph-ha-1 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n) RETURN count(n);" | mgconsole'
-
-
-
 
 
 ## Known Issues

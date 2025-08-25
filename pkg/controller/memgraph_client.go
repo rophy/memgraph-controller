@@ -232,6 +232,8 @@ func parseDataInfoMap(dataInfoMap map[string]interface{}) (*DataInfoStatus, erro
 		switch v := behindVal.(type) {
 		case int:
 			status.Behind = v
+		case int64:
+			status.Behind = int(v)
 		case float64:
 			status.Behind = int(v)
 		default:
@@ -265,6 +267,8 @@ func parseDataInfoMap(dataInfoMap map[string]interface{}) (*DataInfoStatus, erro
 		switch v := tsVal.(type) {
 		case int:
 			status.Timestamp = v
+		case int64:
+			status.Timestamp = int(v)
 		case float64:
 			status.Timestamp = int(v)
 		default:

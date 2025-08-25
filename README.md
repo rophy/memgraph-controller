@@ -75,7 +75,7 @@ In this phase, Gateway REJECTS any bolt client connections.
 
 Below describes the rules, which are expected to be deterministic.
 
-1. If memgraph statefulset has <2 replicas with pod status as "ready", wait. Proceed to next step ONLY after >=2 replicas ready.
+1. If kubernetes status of pod-0 and pod-1 is not ready, wait. Proceed to next step ONLY after pod-0 and pod-1 are ready.
 
 2. If both pod-0 and pod-1 have replication role as `MAIN` and storage shows 0 edge_count, 0 vertex_count, this cluster is in `INITIAL_STATE`.
 

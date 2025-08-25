@@ -90,11 +90,14 @@ func (bc *BootstrapController) ExecuteBootstrap(ctx context.Context) (*ClusterSt
 
 // waitForMinimumReplicas implements bootstrap rule 1
 func (bc *BootstrapController) waitForMinimumReplicas(ctx context.Context) (*ClusterState, error) {
-	log.Println("Bootstrap Rule 1: Waiting for >=2 replicas with pod status as 'ready'")
+	log.Println("Bootstrap Rule 1: Waiting for pod-0 and pod-1 to be ready")
 
 	maxWait := 5 * time.Minute
 	checkInterval := 10 * time.Second
 	startTime := time.Now()
+
+	pod0Name := bc.controller.config.GetPodName(0)
+	pod1Name := bc.controller.config.GetPodName(1)
 
 	for {
 		// Discover current pods
@@ -103,30 +106,28 @@ func (bc *BootstrapController) waitForMinimumReplicas(ctx context.Context) (*Clu
 			return nil, fmt.Errorf("failed to discover pods: %w", err)
 		}
 
-		// Count ready pods
-		readyPods := 0
-		var podNames []string
-		for podName, podInfo := range clusterState.Pods {
-			if bc.isPodReady(podInfo) {
-				readyPods++
-				podNames = append(podNames, podName)
-			}
-		}
+		// Check if pod-0 and pod-1 are ready
+		pod0Info, pod0Exists := clusterState.Pods[pod0Name]
+		pod1Info, pod1Exists := clusterState.Pods[pod1Name]
 
-		log.Printf("Found %d ready pods: %v", readyPods, podNames)
+		pod0Ready := pod0Exists && bc.isPodReady(pod0Info)
+		pod1Ready := pod1Exists && bc.isPodReady(pod1Info)
 
-		// Check if we have minimum required replicas
-		if readyPods >= 2 {
-			log.Printf("✅ Bootstrap Rule 1 satisfied: %d ready pods found", readyPods)
+		log.Printf("Pod readiness status: %s=%t, %s=%t", pod0Name, pod0Ready, pod1Name, pod1Ready)
+
+		// Check if both pods are ready
+		if pod0Ready && pod1Ready {
+			log.Printf("✅ Bootstrap Rule 1 satisfied: both %s and %s are ready", pod0Name, pod1Name)
 			return clusterState, nil
 		}
 
 		// Check timeout
 		if time.Since(startTime) > maxWait {
-			return nil, fmt.Errorf("timeout waiting for minimum replicas: found %d, need >=2", readyPods)
+			return nil, fmt.Errorf("timeout waiting for %s and %s to be ready: %s=%t, %s=%t", 
+				pod0Name, pod1Name, pod0Name, pod0Ready, pod1Name, pod1Ready)
 		}
 
-		log.Printf("Waiting for more pods to be ready (%d/2)...", readyPods)
+		log.Printf("Waiting for both pods to be ready...")
 		select {
 		case <-ctx.Done():
 			return nil, ctx.Err()

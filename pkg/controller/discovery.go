@@ -338,14 +338,6 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 	return clusterState, nil
 }
 
-// getPodNames returns a slice of pod names for logging purposes
-func getPodNames(pods map[string]*PodInfo) []string {
-	var names []string
-	for name := range pods {
-		names = append(names, name)
-	}
-	return names
-}
 
 // performBootstrapValidation validates cluster state during bootstrap phase
 func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterState) error {

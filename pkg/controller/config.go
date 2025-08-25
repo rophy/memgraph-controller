@@ -52,14 +52,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-func getEnvOrDefaultInt(key string, defaultValue int) int {
-	if value := os.Getenv(key); value != "" {
-		if parsed, err := strconv.Atoi(value); err == nil {
-			return parsed
-		}
-	}
-	return defaultValue
-}
 
 func getEnvOrDefaultBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {

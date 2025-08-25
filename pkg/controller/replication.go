@@ -694,9 +694,6 @@ func (c *MemgraphController) handleSyncReplicaFailure(ctx context.Context, clust
 	log.Printf("  3. Manually promote a healthy ASYNC replica to SYNC if needed")
 	log.Printf("  4. Monitor replication lag before promoting ASYNC replicas")
 	return fmt.Errorf("SYNC replica failure - manual intervention required")
-
-	log.Printf("✅ SYNC replica failure handled successfully")
-	return nil
 }
 
 // configurePodAsSyncReplica configures a specific pod as SYNC replica

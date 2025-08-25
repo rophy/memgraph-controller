@@ -225,68 +225,6 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 
 // ConfigureReplication configures main/replica relationships in the cluster
 
-// cleanupObsoleteReplicas removes replica registrations that are no longer needed
-// CONSERVATIVE: Only drops replicas that are definitively obsolete, not temporarily unreachable
-func (c *MemgraphController) cleanupObsoleteReplicas(ctx context.Context, clusterState *ClusterState) error {
-	currentMain := clusterState.CurrentMain
-	if currentMain == "" {
-		return nil
-	}
-
-	mainPod, exists := clusterState.Pods[currentMain]
-	if !exists {
-		return fmt.Errorf("main pod %s not found", currentMain)
-	}
-
-	// Get current replicas from the main
-	replicasResp, err := c.memgraphClient.QueryReplicasWithRetry(ctx, mainPod.BoltAddress)
-	if err != nil {
-		return fmt.Errorf("failed to query current replicas from main: %w", err)
-	}
-
-	// Build set of ALL known pod names (including temporarily unreachable ones)
-	// We only want to drop replicas for pods that are definitively gone
-	allKnownPods := make(map[string]bool)
-	runningPods := make(map[string]bool)
-
-	for podName, podInfo := range clusterState.Pods {
-		if podName != currentMain {
-			replicaName := podInfo.GetReplicaName()
-			allKnownPods[replicaName] = true
-			// Only mark as running if we can actually query it
-			if podInfo.MemgraphRole != "" {
-				runningPods[replicaName] = true
-			}
-		}
-	}
-
-	// CONSERVATIVE CLEANUP: Only drop replicas that are definitely obsolete
-	var cleanupErrors []error
-	for _, replica := range replicasResp.Replicas {
-		if !allKnownPods[replica.Name] {
-			// This replica doesn't correspond to any known pod - safe to drop
-			log.Printf("Dropping truly obsolete replica %s (no corresponding pod found)", replica.Name)
-			if err := c.memgraphClient.DropReplicaWithRetry(ctx, mainPod.BoltAddress, replica.Name); err != nil {
-				log.Printf("Failed to drop obsolete replica %s: %v", replica.Name, err)
-				cleanupErrors = append(cleanupErrors, fmt.Errorf("drop replica %s: %w", replica.Name, err))
-			} else {
-				log.Printf("Successfully dropped obsolete replica %s", replica.Name)
-			}
-		} else if !runningPods[replica.Name] {
-			// Pod exists but is temporarily unreachable - DO NOT DROP
-			log.Printf("Keeping replica %s (pod temporarily unreachable, will recover)", replica.Name)
-		} else {
-			// Pod exists and is running - keep replica
-			log.Printf("Keeping replica %s (pod healthy)", replica.Name)
-		}
-	}
-
-	if len(cleanupErrors) > 0 {
-		return fmt.Errorf("cleanup had %d errors: %v", len(cleanupErrors), cleanupErrors)
-	}
-
-	return nil
-}
 
 // SyncPodLabels synchronizes pod labels with their actual replication state
 func (c *MemgraphController) SyncPodLabels(ctx context.Context, clusterState *ClusterState) error {

@@ -61,80 +61,6 @@ func (pd *PodDiscovery) DiscoverPods(ctx context.Context) (*ClusterState, error)
 	return clusterState, nil
 }
 
-func (pd *PodDiscovery) selectMain(clusterState *ClusterState) {
-	// SYNC Replica Priority Strategy:
-	// 1. Look for existing MAIN node (prefer current main if healthy)
-	// 2. If no MAIN, look for SYNC replica (guaranteed consistency)
-	// 3. If no SYNC replica, fall back to timestamp-based selection
-
-	var currentMain *PodInfo
-	var syncReplica *PodInfo
-	var latestPod *PodInfo
-	var latestTime time.Time
-
-	// Analyze all pods for main selection
-	for _, podInfo := range clusterState.Pods {
-		// Priority 1: Existing MAIN node (prefer current main)
-		if podInfo.MemgraphRole == "main" {
-			currentMain = podInfo
-			log.Printf("Found existing MAIN node: %s", podInfo.Name)
-		}
-
-		// Priority 2: SYNC replica (guaranteed data consistency)
-		if podInfo.IsSyncReplica {
-			syncReplica = podInfo
-			log.Printf("Found SYNC replica: %s", podInfo.Name)
-		}
-
-		// Priority 3: Latest timestamp (fallback)
-		if latestPod == nil || podInfo.Timestamp.After(latestTime) {
-			latestPod = podInfo
-			latestTime = podInfo.Timestamp
-		}
-	}
-
-	// Main selection decision tree
-	var selectedMain *PodInfo
-	var selectionReason string
-
-	if currentMain != nil {
-		// Prefer existing MAIN node (avoid unnecessary failover)
-		selectedMain = currentMain
-		selectionReason = "existing MAIN node"
-	} else if syncReplica != nil {
-		// ONLY safe automatic promotion: SYNC replica has all committed data
-		selectedMain = syncReplica
-		selectionReason = "SYNC replica (guaranteed consistency)"
-		log.Printf("PROMOTING SYNC REPLICA: %s has all committed transactions", syncReplica.Name)
-	} else {
-		// CRITICAL: No SYNC replica available - DO NOT auto-promote ASYNC replicas
-		// ASYNC replicas may be missing committed transactions, causing data loss
-		if len(clusterState.Pods) > 1 {
-			log.Printf("CRITICAL: No SYNC replica available for safe automatic promotion")
-			log.Printf("CRITICAL: Cannot guarantee data consistency - manual intervention required")
-			log.Printf("CRITICAL: ASYNC replicas may be missing committed transactions")
-
-			// Do NOT select any main - require manual intervention
-			selectedMain = nil
-			selectionReason = "no safe automatic promotion possible (SYNC replica unavailable)"
-		} else {
-			// Single pod scenario - safe to promote (no replication risk)
-			selectedMain = latestPod
-			selectionReason = "single pod cluster (no replication consistency risk)"
-		}
-	}
-
-	if selectedMain != nil {
-		clusterState.CurrentMain = selectedMain.Name
-		log.Printf("Selected main: %s (reason: %s, timestamp: %s)",
-			selectedMain.Name,
-			selectionReason,
-			selectedMain.Timestamp.Format(time.RFC3339))
-	} else {
-		log.Printf("No pods available for main selection")
-	}
-}
-
 func (pd *PodDiscovery) GetPodsByLabel(ctx context.Context, labelSelector string) (*ClusterState, error) {
 	pods, err := pd.clientset.CoreV1().Pods(pd.config.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
@@ -157,11 +83,11 @@ func (pd *PodDiscovery) GetPodsByLabel(ctx context.Context, labelSelector string
 func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState, error) {
 	// Check if this is bootstrap phase (first run)
 	isBootstrap := c.lastKnownMain == "" && c.targetMainIndex < 0
-	
+
 	if isBootstrap {
 		log.Println("=== BOOTSTRAP PHASE DETECTED ===")
 		log.Println("Executing strict bootstrap according to README.md design")
-		
+
 		// Use new bootstrap controller
 		bootstrapController := NewBootstrapController(c)
 		return bootstrapController.ExecuteBootstrap(ctx)
@@ -173,14 +99,14 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Ensure gateway is operational if cluster is stable
 	if c.gatewayServer != nil && c.gatewayServer.IsBootstrapPhase() {
 		// Check if cluster is in a healthy operational state
 		if clusterState != nil && clusterState.StateType == OPERATIONAL_STATE && clusterState.CurrentMain != "" {
 			log.Println("Cluster is in healthy operational state - transitioning gateway to operational phase")
 			c.gatewayServer.SetBootstrapPhase(false)
-			
+
 			// Start gateway if not already started
 			if err := c.gatewayServer.Start(ctx); err != nil {
 				log.Printf("Warning: Failed to start gateway after transitioning to operational: %v", err)
@@ -189,7 +115,7 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 			}
 		}
 	}
-	
+
 	return clusterState, nil
 }
 
@@ -337,7 +263,6 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 
 	return clusterState, nil
 }
-
 
 // performBootstrapValidation validates cluster state during bootstrap phase
 func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterState) error {

@@ -212,13 +212,8 @@ func (pi *PodInfo) GetReplicaName() string {
 	return strings.ReplaceAll(pi.Name, "-", "_")
 }
 
-// GetReplicationAddress returns the replication address for this pod using DNS name
-func (pi *PodInfo) GetReplicationAddress(serviceName string) string {
-	return fmt.Sprintf("%s.%s:10000", pi.Name, serviceName)
-}
-
-// GetReplicationAddressByIP returns the replication address using pod IP for reliable connectivity
-func (pi *PodInfo) GetReplicationAddressByIP() string {
+// GetReplicationAddress returns the replication address using pod IP for reliable connectivity
+func (pi *PodInfo) GetReplicationAddress() string {
 	if pi.Pod != nil && pi.Pod.Status.PodIP != "" {
 		return fmt.Sprintf("%s:10000", pi.Pod.Status.PodIP)
 	}

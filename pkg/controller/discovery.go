@@ -94,7 +94,19 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 		
 		// Mark bootstrap as complete
 		c.isBootstrap = false
-		return clusterState, nil
+		
+		// IMPORTANT: Re-query cluster state to get fresh replication configuration
+		// Bootstrap just configured new roles, so we need to refresh our view
+		log.Println("Bootstrap completed - re-querying cluster state to refresh internal view...")
+		freshClusterState, err := c.discoverOperationalCluster(ctx)
+		if err != nil {
+			log.Printf("Warning: Failed to refresh cluster state after bootstrap: %v", err)
+			log.Println("Returning bootstrap state as fallback")
+			return clusterState, nil
+		}
+		
+		log.Println("✅ Cluster state refreshed after bootstrap completion")
+		return freshClusterState, nil
 	}
 
 	// Operational phase - existing logic

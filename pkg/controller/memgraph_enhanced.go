@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 
@@ -121,6 +122,7 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 			// Extract and parse data_info field
 			if dataInfo, found := record.Get("data_info"); found {
 				if dataInfoStr, ok := dataInfo.(string); ok {
+					// Case 1: data_info is a string (as expected)
 					replica.DataInfo = dataInfoStr
 					
 					// Parse the data_info field for health assessment
@@ -135,6 +137,36 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 						}
 					} else {
 						replica.ParsedDataInfo = parsed
+					}
+				} else if dataInfoMap, ok := dataInfo.(map[string]interface{}); ok {
+					// Case 2: data_info is a map (Neo4j driver auto-parsed the YAML)
+					
+					// Convert map back to JSON string for storage
+					if jsonBytes, err := json.Marshal(dataInfoMap); err == nil {
+						replica.DataInfo = string(jsonBytes)
+					} else {
+						replica.DataInfo = fmt.Sprintf("%+v", dataInfoMap)
+					}
+					
+					// Parse the map directly for health assessment
+					if parsed, err := parseDataInfoMap(dataInfoMap); err != nil {
+						log.Printf("Warning: Failed to parse data_info map for replica %s: %v", replica.Name, err)
+						replica.ParsedDataInfo = &DataInfoStatus{
+							Status:      "parse_error",
+							Behind:      -1,
+							IsHealthy:   false,
+							ErrorReason: fmt.Sprintf("Map parse error: %v", err),
+						}
+					} else {
+						replica.ParsedDataInfo = parsed
+					}
+				} else {
+					replica.DataInfo = fmt.Sprintf("%v", dataInfo)
+					replica.ParsedDataInfo = &DataInfoStatus{
+						Status:      "type_error",
+						Behind:      -1,
+						IsHealthy:   false,
+						ErrorReason: fmt.Sprintf("data_info field has unexpected type: %T", dataInfo),
 					}
 				}
 			} else {

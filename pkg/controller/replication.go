@@ -453,19 +453,16 @@ func (c *MemgraphController) detectSyncReplicaHealth(ctx context.Context, cluste
 
 	// Check replica health from main's perspective
 	if syncReplicaInfo != nil {
-		if syncReplicaInfo.ParsedDataInfo == nil || !syncReplicaInfo.ParsedDataInfo.IsHealthy {
-			healthReason := "unknown"
-			if syncReplicaInfo.ParsedDataInfo != nil {
-				healthReason = syncReplicaInfo.ParsedDataInfo.ErrorReason
-			}
-			log.Printf("⚠️  SYNC replica %s health issue: %s", syncReplicaName, healthReason)
-		}
-
 		if syncReplicaInfo.ParsedDataInfo != nil {
-			log.Printf("✅ SYNC replica %s health check passed (behind: %d, status: %s)",
-				syncReplicaName, syncReplicaInfo.ParsedDataInfo.Behind, syncReplicaInfo.ParsedDataInfo.Status)
+			if syncReplicaInfo.ParsedDataInfo.IsHealthy {
+				log.Printf("✅ SYNC replica %s health check passed (behind: %d, status: %s)",
+					syncReplicaName, syncReplicaInfo.ParsedDataInfo.Behind, syncReplicaInfo.ParsedDataInfo.Status)
+			} else {
+				log.Printf("⚠️  SYNC replica %s health issue: %s", syncReplicaName, syncReplicaInfo.ParsedDataInfo.ErrorReason)
+			}
 		} else {
-			log.Printf("✅ SYNC replica %s health check passed (no detailed info available)", syncReplicaName)
+			// No detailed info available - this indicates a parsing or data retrieval problem
+			log.Printf("⚠️  SYNC replica %s health issue: no detailed info available", syncReplicaName)
 		}
 	}
 

@@ -294,7 +294,7 @@ SHOW REPLICAS
 
 This section documents observed `data_info` values from `SHOW REPLICAS` during testing to help implement proper parsing logic.
 
-**Format**: `data_info` appears to be a YAML string containing replication health metrics.
+**Format**: `data_info` appears to be a YAML flow string containing replication health metrics.
 
 #### Observed Values
 
@@ -322,7 +322,7 @@ This section documents observed `data_info` values from `SHOW REPLICAS` during t
 - May require different parsing logic than ASYNC replicas
 
 #### Notes for Implementation
-- Values appear to be JSON strings that need parsing
+- Values appear to be YAML strings that need parsing
 - Negative `behind` values seem to indicate errors
 - `status: "invalid"` is a clear failure indicator
 - Empty `{}` values need investigation (healthy vs unhealthy)
@@ -362,7 +362,7 @@ This section documents observed `data_info` values from `SHOW REPLICAS` during t
 - May require different parsing logic than ASYNC replicas
 
 #### Notes for Implementation
-- Values appear to be JSON strings that need parsing
+- Values appear to be YAML flow string that need parsing
 - Negative `behind` values seem to indicate errors
 - `status: "invalid"` is a clear failure indicator
 - Empty `{}` values need investigation (healthy vs unhealthy)

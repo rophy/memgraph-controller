@@ -203,6 +203,81 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 	return status, nil
 }
 
+// parseDataInfoMap parses data_info when it's already a map[string]interface{} 
+// (Neo4j driver auto-parsed the YAML string)
+func parseDataInfoMap(dataInfoMap map[string]interface{}) (*DataInfoStatus, error) {
+	status := &DataInfoStatus{}
+	
+	// Navigate to memgraph sub-object: {memgraph: {behind: 0, status: "ready", ts: 13}}
+	memgraphVal, exists := dataInfoMap["memgraph"]
+	if !exists {
+		status.Status = "malformed"
+		status.Behind = -1
+		status.IsHealthy = false
+		status.ErrorReason = "Missing 'memgraph' key in data_info"
+		return status, nil
+	}
+	
+	memgraphMap, ok := memgraphVal.(map[string]interface{})
+	if !ok {
+		status.Status = "malformed"
+		status.Behind = -1
+		status.IsHealthy = false
+		status.ErrorReason = "Invalid 'memgraph' value type in data_info"
+		return status, nil
+	}
+	
+	// Extract behind value
+	if behindVal, exists := memgraphMap["behind"]; exists {
+		switch v := behindVal.(type) {
+		case int:
+			status.Behind = v
+		case float64:
+			status.Behind = int(v)
+		default:
+			status.Behind = -1
+			status.Status = "malformed"
+			status.IsHealthy = false
+			status.ErrorReason = fmt.Sprintf("Invalid 'behind' value type: %T", behindVal)
+			return status, nil
+		}
+	} else {
+		status.Behind = -1
+	}
+	
+	// Extract status value  
+	if statusVal, exists := memgraphMap["status"]; exists {
+		if statusStr, ok := statusVal.(string); ok {
+			status.Status = statusStr
+		} else {
+			status.Status = "malformed"
+			status.Behind = -1
+			status.IsHealthy = false
+			status.ErrorReason = fmt.Sprintf("Invalid 'status' value type: %T", statusVal)
+			return status, nil
+		}
+	} else {
+		status.Status = "unknown"
+	}
+	
+	// Extract timestamp value
+	if tsVal, exists := memgraphMap["ts"]; exists {
+		switch v := tsVal.(type) {
+		case int:
+			status.Timestamp = v
+		case float64:
+			status.Timestamp = int(v)
+		default:
+			// Leave as 0 if invalid type
+		}
+	}
+	
+	// Determine health status based on parsed values
+	status.IsHealthy, status.ErrorReason = assessReplicationHealth(status.Status, status.Behind)
+	
+	return status, nil
+}
+
 // assessReplicationHealth determines if replica is healthy based on status and lag
 func assessReplicationHealth(status string, behind int) (bool, string) {
 	switch {

@@ -59,6 +59,8 @@ type GatewayServerInterface interface {
 	Stop(ctx context.Context) error
 	SetCurrentMain(endpoint string)
 	GetCurrentMain() string
+	SetBootstrapPhase(isBootstrap bool)
+	IsBootstrapPhase() bool
 }
 
 func NewMemgraphController(clientset kubernetes.Interface, config *Config) *MemgraphController {
@@ -510,12 +512,16 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	}
 	log.Println("Informer caches synced successfully")
 
-	// Start gateway server
-	log.Println("Starting gateway server...")
-	if err := c.gatewayServer.Start(ctx); err != nil {
-		log.Printf("Failed to start gateway server: %v", err)
-		c.stop()
-		return fmt.Errorf("failed to start gateway server: %w", err)
+	// Start gateway server only if not in bootstrap phase
+	if c.gatewayServer != nil && !c.gatewayServer.IsBootstrapPhase() {
+		log.Println("Starting gateway server...")
+		if err := c.gatewayServer.Start(ctx); err != nil {
+			log.Printf("Failed to start gateway server: %v", err)
+			c.stop()
+			return fmt.Errorf("failed to start gateway server: %w", err)
+		}
+	} else {
+		log.Println("Gateway server start deferred - currently in bootstrap phase")
 	}
 
 	// Initial reconciliation

@@ -3,21 +3,25 @@ package controller
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"memgraph-controller/pkg/gateway"
 )
 
 // GatewayAdapter adapts the gateway.Server to the GatewayServerInterface
 type GatewayAdapter struct {
-	server *gateway.Server
-	config *Config
+	server         *gateway.Server
+	config         *Config
+	isBootstrap    bool
+	bootstrapMu    sync.RWMutex
 }
 
 // NewGatewayAdapter creates a new gateway adapter
 func NewGatewayAdapter(config *Config) *GatewayAdapter {
 	return &GatewayAdapter{
-		server: nil, // Will be initialized later with main provider
-		config: config,
+		server:      nil, // Will be initialized later with main provider
+		config:      config,
+		isBootstrap: true, // Start in bootstrap phase - reject connections
 	}
 }
 
@@ -110,4 +114,26 @@ func (g *GatewayAdapter) IsHealthy(ctx context.Context) bool {
 	}
 	status := g.server.CheckHealth(ctx)
 	return status == "healthy"
+}
+
+// SetBootstrapPhase sets the gateway to bootstrap phase (reject connections)
+func (g *GatewayAdapter) SetBootstrapPhase(isBootstrap bool) {
+	g.bootstrapMu.Lock()
+	defer g.bootstrapMu.Unlock()
+	
+	if g.isBootstrap != isBootstrap {
+		if isBootstrap {
+			fmt.Println("=== GATEWAY BOOTSTRAP PHASE: REJECTING all client connections ===")
+		} else {
+			fmt.Println("=== GATEWAY OPERATIONAL PHASE: ACCEPTING client connections ===")
+		}
+		g.isBootstrap = isBootstrap
+	}
+}
+
+// IsBootstrapPhase returns true if gateway is in bootstrap phase
+func (g *GatewayAdapter) IsBootstrapPhase() bool {
+	g.bootstrapMu.RLock()
+	defer g.bootstrapMu.RUnlock()
+	return g.isBootstrap
 }

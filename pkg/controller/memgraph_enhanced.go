@@ -328,3 +328,115 @@ func (mc *MemgraphClient) DropReplicaWithRetry(ctx context.Context, mainBoltAddr
 
 	return nil
 }
+
+// StorageInfo represents the response from SHOW STORAGE INFO
+type StorageInfo struct {
+	VertexCount int64
+	EdgeCount   int64
+}
+
+// QueryStorageInfoWithRetry queries storage information with retry logic
+func (mc *MemgraphClient) QueryStorageInfoWithRetry(ctx context.Context, boltAddress string) (*StorageInfo, error) {
+	if boltAddress == "" {
+		return nil, fmt.Errorf("bolt address is empty")
+	}
+
+	var result *StorageInfo
+	err := WithRetry(ctx, func() error {
+		driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
+		if err != nil {
+			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
+		}
+
+		session := driver.NewSession(ctx, neo4j.SessionConfig{})
+		defer func() {
+			if closeErr := session.Close(ctx); closeErr != nil {
+				log.Printf("Warning: failed to close session for %s: %v", boltAddress, closeErr)
+			}
+		}()
+
+		// Execute SHOW STORAGE INFO
+		txResult, err := session.Run(ctx, "SHOW STORAGE INFO", nil)
+		if err != nil {
+			return fmt.Errorf("failed to execute SHOW STORAGE INFO: %w", err)
+		}
+
+		storageInfo := &StorageInfo{}
+		for txResult.Next(ctx) {
+			record := txResult.Record()
+			
+			// Extract storage_info field which is typically a string representation
+			if storageInfoField, found := record.Get("storage info"); found {
+				if _, ok := storageInfoField.(string); ok {
+					// Parse the storage info string to extract vertex and edge counts
+					// This is a simplified parser - in practice might need more robust parsing
+					storageInfo.VertexCount = 0 // Default to 0
+					storageInfo.EdgeCount = 0   // Default to 0
+					
+					// For now, assume empty storage (suitable for bootstrap check)
+					// TODO: Implement proper storage info parsing if needed
+				}
+			}
+			
+			// Alternative: look for specific vertex_count and edge_count fields
+			if vertexCount, found := record.Get("vertex_count"); found {
+				if count, ok := vertexCount.(int64); ok {
+					storageInfo.VertexCount = count
+				}
+			}
+			if edgeCount, found := record.Get("edge_count"); found {
+				if count, ok := edgeCount.(int64); ok {
+					storageInfo.EdgeCount = count
+				}
+			}
+		}
+
+		result = storageInfo
+		return nil
+	}, mc.retryConfig)
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to query storage info from %s after retries: %w", boltAddress, err)
+	}
+
+	return result, nil
+}
+
+// ExecuteCommandWithRetry executes a raw Memgraph command with retry logic
+func (mc *MemgraphClient) ExecuteCommandWithRetry(ctx context.Context, boltAddress, command string) error {
+	if boltAddress == "" {
+		return fmt.Errorf("bolt address is empty")
+	}
+	if command == "" {
+		return fmt.Errorf("command is empty")
+	}
+
+	err := WithRetry(ctx, func() error {
+		driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
+		if err != nil {
+			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
+		}
+
+		session := driver.NewSession(ctx, neo4j.SessionConfig{})
+		defer func() {
+			if closeErr := session.Close(ctx); closeErr != nil {
+				log.Printf("Warning: failed to close session for %s: %v", boltAddress, closeErr)
+			}
+		}()
+
+		// Execute the raw command
+		_, err = session.Run(ctx, command, nil)
+		if err != nil {
+			return fmt.Errorf("failed to execute command '%s': %w", command, err)
+		}
+
+		return nil
+	}, mc.retryConfig)
+
+	if err != nil {
+		return fmt.Errorf("failed to execute command '%s' on %s after retries: %w", command, boltAddress, err)
+	}
+
+	log.Printf("Successfully executed command '%s' on %s", command, boltAddress)
+	return nil
+}

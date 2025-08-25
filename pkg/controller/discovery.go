@@ -155,7 +155,47 @@ func (pd *PodDiscovery) GetPodsByLabel(ctx context.Context, labelSelector string
 
 // DiscoverCluster discovers the current state of the Memgraph cluster
 func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState, error) {
-	log.Println("Discovering Memgraph cluster...")
+	// Check if this is bootstrap phase (first run)
+	isBootstrap := c.lastKnownMain == "" && c.targetMainIndex < 0
+	
+	if isBootstrap {
+		log.Println("=== BOOTSTRAP PHASE DETECTED ===")
+		log.Println("Executing strict bootstrap according to README.md design")
+		
+		// Use new bootstrap controller
+		bootstrapController := NewBootstrapController(c)
+		return bootstrapController.ExecuteBootstrap(ctx)
+	}
+
+	// Operational phase - existing logic
+	log.Println("=== OPERATIONAL PHASE ===")
+	clusterState, err := c.discoverOperationalCluster(ctx)
+	if err != nil {
+		return nil, err
+	}
+	
+	// Ensure gateway is operational if cluster is stable
+	if c.gatewayServer != nil && c.gatewayServer.IsBootstrapPhase() {
+		// Check if cluster is in a healthy operational state
+		if clusterState != nil && clusterState.StateType == OPERATIONAL_STATE && clusterState.CurrentMain != "" {
+			log.Println("Cluster is in healthy operational state - transitioning gateway to operational phase")
+			c.gatewayServer.SetBootstrapPhase(false)
+			
+			// Start gateway if not already started
+			if err := c.gatewayServer.Start(ctx); err != nil {
+				log.Printf("Warning: Failed to start gateway after transitioning to operational: %v", err)
+			} else {
+				log.Println("✅ Gateway started successfully after operational phase transition")
+			}
+		}
+	}
+	
+	return clusterState, nil
+}
+
+// discoverOperationalCluster handles operational phase discovery (existing logic)
+func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*ClusterState, error) {
+	log.Println("Discovering Memgraph cluster in operational phase...")
 
 	clusterState, err := c.podDiscovery.DiscoverPods(ctx)
 	if err != nil {

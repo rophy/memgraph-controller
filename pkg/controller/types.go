@@ -25,6 +25,7 @@ const (
 	MIXED_STATE                               // Some main, some replica - conflicts
 	NO_MAIN_STATE                             // No main pods - requires promotion
 	SPLIT_BRAIN_STATE                         // Multiple mains - dangerous
+	UNKNOWN_STATE                             // Unknown state requiring manual intervention
 )
 
 func (ps PodState) String() string {
@@ -52,6 +53,8 @@ func (cst ClusterStateType) String() string {
 		return "NO_MAIN_STATE"
 	case SPLIT_BRAIN_STATE:
 		return "SPLIT_BRAIN_STATE"
+	case UNKNOWN_STATE:
+		return "UNKNOWN_STATE"
 	default:
 		return "UNKNOWN_STATE"
 	}

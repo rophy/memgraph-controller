@@ -21,7 +21,8 @@ make test
 For a new feature, our development workflow follows this pattern:
 
 1. Run unit tests. If not all tests passed, pause and confirm with huamn whether claude should fix unit tests first.
-2. Implement new feature
+2. Implement new feature.
+4. Run staticcheck and make sure no errors.
 3. Update unit tests,which should be in same folder as source code. Do NOT add unit tests to tests/ folder which is for e2e tests.
 4. Run unit tests, make sure all tests pass.
 5. Run e2e tests.

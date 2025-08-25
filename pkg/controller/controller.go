@@ -468,8 +468,8 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	// Initial reconciliation
 	c.enqueueReconcile("initial-reconciliation")
 
-	// Start worker goroutines
-	const numWorkers = 2
+	// Start worker goroutine
+	const numWorkers = 1
 	var wg sync.WaitGroup
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)

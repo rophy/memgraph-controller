@@ -191,15 +191,14 @@ func (c *MemgraphController) configureReplicationWithEnhancedSyncStrategy(ctx co
 
 	// Use controller state authority to determine SYNC replica
 	targetSyncReplica := c.selectSyncReplica(clusterState, currentMain)
-	currentSyncReplica := c.identifySyncReplica(clusterState, currentMain)
 
-	log.Printf("Enhanced SYNC strategy: target=%s, current=%s, main=%s",
-		targetSyncReplica, currentSyncReplica, currentMain)
+	log.Printf("Enhanced SYNC strategy: target=%s, main=%s",
+		targetSyncReplica, currentMain)
 
 	var configErrors []error
 
 	// Phase 1: Ensure SYNC replica is configured correctly
-	if err := c.ensureCorrectSyncReplica(ctx, clusterState, targetSyncReplica, currentSyncReplica); err != nil {
+	if err := c.ensureCorrectSyncReplica(ctx, clusterState, targetSyncReplica); err != nil {
 		configErrors = append(configErrors, fmt.Errorf("SYNC replica configuration: %w", err))
 	}
 
@@ -227,34 +226,17 @@ func (c *MemgraphController) configureReplicationWithEnhancedSyncStrategy(ctx co
 }
 
 // ensureCorrectSyncReplica ensures the correct pod is configured as SYNC replica
-func (c *MemgraphController) ensureCorrectSyncReplica(ctx context.Context, clusterState *ClusterState, targetSyncReplica, currentSyncReplica string) error {
+func (c *MemgraphController) ensureCorrectSyncReplica(ctx context.Context, clusterState *ClusterState, targetSyncReplica string) error {
 	if targetSyncReplica == "" {
-		log.Printf("No target SYNC replica available - skipping SYNC configuration")
-		return nil
+		return fmt.Errorf("no target SYNC replica specified")
 	}
 
-	// If target matches current, verify it's correctly configured
-	if targetSyncReplica == currentSyncReplica {
-		log.Printf("SYNC replica %s already correctly assigned", targetSyncReplica)
-		return c.verifyPodSyncConfiguration(ctx, clusterState, targetSyncReplica)
-	}
-
-	// Need to change SYNC replica assignment
-	log.Printf("Changing SYNC replica: %s → %s", currentSyncReplica, targetSyncReplica)
-
-	// Step 1: Remove old SYNC replica if it exists
-	if currentSyncReplica != "" {
-		if err := c.demoteSyncToAsync(ctx, clusterState, currentSyncReplica); err != nil {
-			log.Printf("Warning: Failed to demote old SYNC replica %s: %v", currentSyncReplica, err)
-		}
-	}
-
-	// Step 2: Configure new SYNC replica
+	// Simply configure the target pod as SYNC replica (idempotent operation)
 	if err := c.configurePodAsSyncReplica(ctx, clusterState, targetSyncReplica); err != nil {
-		return fmt.Errorf("failed to configure new SYNC replica %s: %w", targetSyncReplica, err)
+		return fmt.Errorf("failed to configure SYNC replica %s: %w", targetSyncReplica, err)
 	}
 
-	log.Printf("✅ SYNC replica successfully changed to %s", targetSyncReplica)
+	log.Printf("✅ Configured %s as SYNC replica", targetSyncReplica)
 	return nil
 }
 
@@ -322,41 +304,6 @@ func (c *MemgraphController) configurePodAsAsyncReplica(ctx context.Context, mai
 	return nil
 }
 
-// demoteSyncToAsync demotes a SYNC replica to ASYNC mode
-func (c *MemgraphController) demoteSyncToAsync(ctx context.Context, clusterState *ClusterState, syncReplicaPod string) error {
-	log.Printf("Demoting SYNC replica %s to ASYNC mode", syncReplicaPod)
-
-	syncPod, exists := clusterState.Pods[syncReplicaPod]
-	if !exists {
-		return fmt.Errorf("SYNC replica pod %s not found", syncReplicaPod)
-	}
-
-	mainPod := clusterState.Pods[clusterState.CurrentMain]
-	replicaName := syncPod.GetReplicaName()
-	replicaAddress := syncPod.GetReplicationAddress()
-
-	// Check if replica pod is ready for replication
-	if replicaAddress == "" || !syncPod.IsReadyForReplication() {
-		return fmt.Errorf("replica pod %s not ready for replication (IP: %s, Ready: %v)",
-			syncPod.Name, replicaAddress, syncPod.IsReadyForReplication())
-	}
-
-	// Drop SYNC registration
-	if err := c.memgraphClient.DropReplicaWithRetry(ctx, mainPod.BoltAddress, replicaName); err != nil {
-		return fmt.Errorf("failed to drop SYNC replica %s: %w", replicaName, err)
-	}
-
-	// Re-register as ASYNC
-	if err := c.memgraphClient.RegisterReplicaWithModeAndRetry(ctx, mainPod.BoltAddress, replicaName, replicaAddress, "ASYNC"); err != nil {
-		return fmt.Errorf("failed to re-register %s as ASYNC: %w", replicaName, err)
-	}
-
-	// Update tracking
-	syncPod.IsSyncReplica = false
-	log.Printf("Successfully demoted %s from SYNC to ASYNC", syncReplicaPod)
-
-	return nil
-}
 
 // verifyPodSyncConfiguration verifies that a pod is correctly configured as SYNC replica
 func (c *MemgraphController) verifyPodSyncConfiguration(ctx context.Context, clusterState *ClusterState, syncReplicaPod string) error {

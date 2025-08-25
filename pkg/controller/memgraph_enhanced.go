@@ -111,15 +111,40 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 				}
 			}
 
-			if sysTimestamp, found := record.Get("system_timestamp"); found {
-				if sysTimestampInt, ok := sysTimestamp.(int64); ok {
-					replica.SystemTimestamp = sysTimestampInt
+			// Extract system_info field
+			if systemInfo, found := record.Get("system_info"); found {
+				if systemInfoStr, ok := systemInfo.(string); ok {
+					replica.SystemInfo = systemInfoStr
 				}
 			}
-
-			if checkFreq, found := record.Get("check_frequency"); found {
-				if checkFreqInt, ok := checkFreq.(int64); ok {
-					replica.CheckFrequency = checkFreqInt
+			
+			// Extract and parse data_info field
+			if dataInfo, found := record.Get("data_info"); found {
+				if dataInfoStr, ok := dataInfo.(string); ok {
+					replica.DataInfo = dataInfoStr
+					
+					// Parse the data_info field for health assessment
+					if parsed, err := parseDataInfo(dataInfoStr); err != nil {
+						log.Printf("Warning: Failed to parse data_info for replica %s: %v", replica.Name, err)
+						// Create fallback status
+						replica.ParsedDataInfo = &DataInfoStatus{
+							Status:      "parse_error",
+							Behind:      -1,
+							IsHealthy:   false,
+							ErrorReason: fmt.Sprintf("Parse error: %v", err),
+						}
+					} else {
+						replica.ParsedDataInfo = parsed
+					}
+				}
+			} else {
+				// No data_info field found - create default status
+				replica.DataInfo = ""
+				replica.ParsedDataInfo = &DataInfoStatus{
+					Status:      "missing",
+					Behind:      -1,
+					IsHealthy:   false,
+					ErrorReason: "data_info field not present in SHOW REPLICAS output",
 				}
 			}
 

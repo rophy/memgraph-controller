@@ -654,14 +654,18 @@ func (c *MemgraphController) verifyReplicaSyncStatus(ctx context.Context, mainPo
 		return fmt.Errorf("replica %s not registered with main", replicaName)
 	}
 
-	// Check if replica is lagging significantly
-	if replicaInfo.SystemTimestamp == 0 {
-		log.Printf("⚠️  WARNING: Replica %s has zero system timestamp - may not be caught up", replicaName)
-		return fmt.Errorf("replica %s has zero system timestamp", replicaName)
+	// Check replica health using parsed data_info
+	if replicaInfo.ParsedDataInfo == nil || !replicaInfo.ParsedDataInfo.IsHealthy {
+		healthReason := "unknown"
+		if replicaInfo.ParsedDataInfo != nil {
+			healthReason = replicaInfo.ParsedDataInfo.ErrorReason
+		}
+		log.Printf("⚠️  WARNING: Replica %s is not healthy - %s", replicaName, healthReason)
+		return fmt.Errorf("replica %s is not healthy: %s", replicaName, healthReason)
 	}
 
-	log.Printf("Replica %s sync status: timestamp=%d, mode=%s",
-		replicaName, replicaInfo.SystemTimestamp, replicaInfo.SyncMode)
+	log.Printf("Replica %s sync status: behind=%d, status=%s, mode=%s",
+		replicaName, replicaInfo.ParsedDataInfo.Behind, replicaInfo.ParsedDataInfo.Status, replicaInfo.SyncMode)
 
 	return nil
 }
@@ -778,12 +782,20 @@ func (c *MemgraphController) detectSyncReplicaHealth(ctx context.Context, cluste
 
 	// Check replica health from main's perspective
 	if syncReplicaInfo != nil {
-		if syncReplicaInfo.SystemTimestamp == 0 {
-			log.Printf("⚠️  SYNC replica %s has zero timestamp - potential health issue", syncReplicaName)
+		if syncReplicaInfo.ParsedDataInfo == nil || !syncReplicaInfo.ParsedDataInfo.IsHealthy {
+			healthReason := "unknown"
+			if syncReplicaInfo.ParsedDataInfo != nil {
+				healthReason = syncReplicaInfo.ParsedDataInfo.ErrorReason
+			}
+			log.Printf("⚠️  SYNC replica %s health issue: %s", syncReplicaName, healthReason)
 		}
 
-		log.Printf("✅ SYNC replica %s health check passed (timestamp: %d)",
-			syncReplicaName, syncReplicaInfo.SystemTimestamp)
+		if syncReplicaInfo.ParsedDataInfo != nil {
+			log.Printf("✅ SYNC replica %s health check passed (behind: %d, status: %s)",
+				syncReplicaName, syncReplicaInfo.ParsedDataInfo.Behind, syncReplicaInfo.ParsedDataInfo.Status)
+		} else {
+			log.Printf("✅ SYNC replica %s health check passed (no detailed info available)", syncReplicaName)
+		}
 	}
 
 	return nil

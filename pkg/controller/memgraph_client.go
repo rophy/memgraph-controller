@@ -22,13 +22,12 @@ type ReplicationRole struct {
 }
 
 type ReplicaInfo struct {
-	Name         string
-	SocketAddress string
-	SyncMode     string
-	SystemTimestamp int64
-	CheckFrequency  int64
-	DataInfo     string           // Raw data_info field from SHOW REPLICAS
-	ParsedDataInfo *DataInfoStatus // Parsed structure
+	Name           string
+	SocketAddress  string
+	SyncMode       string
+	SystemInfo     string           // Raw system_info field from SHOW REPLICAS  
+	DataInfo       string           // Raw data_info field from SHOW REPLICAS
+	ParsedDataInfo *DataInfoStatus  // Parsed structure from data_info
 }
 
 // DataInfoStatus represents parsed data_info content for replication health
@@ -331,137 +330,3 @@ func (mc *MemgraphClient) TestConnection(ctx context.Context, boltAddress string
 	return nil
 }
 
-func (mc *MemgraphClient) QueryReplicas(ctx context.Context, boltAddress string) (*ReplicasResponse, error) {
-	if boltAddress == "" {
-		return nil, fmt.Errorf("bolt address is empty")
-	}
-
-	// Create driver for this specific instance
-	driver, err := neo4j.NewDriverWithContext(
-		fmt.Sprintf("bolt://%s", boltAddress),
-		neo4j.NoAuth(),
-		func(config *neo4j.Config) {
-			config.ConnectionAcquisitionTimeout = 10 * time.Second
-			config.SocketConnectTimeout = 5 * time.Second
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create driver for %s: %w", boltAddress, err)
-	}
-	defer driver.Close(ctx)
-
-	// Test connectivity
-	err = driver.VerifyConnectivity(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify connectivity to %s: %w", boltAddress, err)
-	}
-
-	// Execute SHOW REPLICAS query
-	session := driver.NewSession(ctx, neo4j.SessionConfig{})
-	defer session.Close(ctx)
-
-	result, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (interface{}, error) {
-		result, err := tx.Run(ctx, "SHOW REPLICAS", nil)
-		if err != nil {
-			return nil, err
-		}
-
-		var replicas []ReplicaInfo
-		for result.Next(ctx) {
-			record := result.Record()
-			
-			replica := ReplicaInfo{}
-			
-			if name, found := record.Get("name"); found {
-				if nameStr, ok := name.(string); ok {
-					replica.Name = nameStr
-				}
-			}
-			
-			if socketAddr, found := record.Get("socket_address"); found {
-				if socketAddrStr, ok := socketAddr.(string); ok {
-					replica.SocketAddress = socketAddrStr
-				}
-			}
-			
-			if syncMode, found := record.Get("sync_mode"); found {
-				if syncModeStr, ok := syncMode.(string); ok {
-					replica.SyncMode = syncModeStr
-				}
-			}
-			
-			if sysTimestamp, found := record.Get("system_timestamp"); found {
-				if sysTimestampInt, ok := sysTimestamp.(int64); ok {
-					replica.SystemTimestamp = sysTimestampInt
-				}
-			}
-			
-			if checkFreq, found := record.Get("check_frequency"); found {
-				if checkFreqInt, ok := checkFreq.(int64); ok {
-					replica.CheckFrequency = checkFreqInt
-				}
-			}
-			
-			// Extract and parse data_info field
-			if dataInfo, found := record.Get("data_info"); found {
-				if dataInfoStr, ok := dataInfo.(string); ok {
-					replica.DataInfo = dataInfoStr
-					
-					// Parse the data_info field for health assessment
-					if parsed, err := parseDataInfo(dataInfoStr); err != nil {
-						log.Printf("Warning: Failed to parse data_info for replica %s: %v", replica.Name, err)
-						// Create fallback status
-						replica.ParsedDataInfo = &DataInfoStatus{
-							Status:      "parse_error",
-							Behind:      -1,
-							IsHealthy:   false,
-							ErrorReason: fmt.Sprintf("Parse error: %v", err),
-						}
-					} else {
-						replica.ParsedDataInfo = parsed
-					}
-				}
-			} else {
-				// No data_info field found - create default status
-				replica.DataInfo = ""
-				replica.ParsedDataInfo = &DataInfoStatus{
-					Status:      "missing",
-					Behind:      -1,
-					IsHealthy:   false,
-					ErrorReason: "data_info field not present in SHOW REPLICAS output",
-				}
-			}
-			
-			replicas = append(replicas, replica)
-		}
-
-		return &ReplicasResponse{Replicas: replicas}, nil
-	})
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to query replicas from %s: %w", boltAddress, err)
-	}
-
-	replicasResponse, ok := result.(*ReplicasResponse)
-	if !ok {
-		return nil, fmt.Errorf("unexpected result type: %T", result)
-	}
-
-	log.Printf("Queried replicas from %s: found %d replicas", boltAddress, len(replicasResponse.Replicas))
-	for _, replica := range replicasResponse.Replicas {
-		healthStatus := "unknown"
-		healthReason := ""
-		if replica.ParsedDataInfo != nil {
-			if replica.ParsedDataInfo.IsHealthy {
-				healthStatus = "healthy"
-			} else {
-				healthStatus = "unhealthy"
-				healthReason = fmt.Sprintf(" (%s)", replica.ParsedDataInfo.ErrorReason)
-			}
-		}
-		log.Printf("  Replica: %s at %s, sync=%s, health=%s%s", 
-			replica.Name, replica.SocketAddress, replica.SyncMode, healthStatus, healthReason)
-	}
-
-	return replicasResponse, nil
-}

@@ -7,7 +7,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 )
 
-func TestIdentifyFailedMasterIndex(t *testing.T) {
+func TestIdentifyFailedMainIndex(t *testing.T) {
 	controller := &MemgraphController{
 		config: &Config{
 			StatefulSetName: "memgraph-ha",
@@ -19,13 +19,13 @@ func TestIdentifyFailedMasterIndex(t *testing.T) {
 	newerTime := time.Now().Add(-1 * time.Minute)
 
 	tests := []struct {
-		name           string
-		clusterState   *ClusterState
-		expectedIndex  int
-		description    string
+		name          string
+		clusterState  *ClusterState
+		expectedIndex int
+		description   string
 	}{
 		{
-			name: "pod-0 restarted more recently (failed master)",
+			name: "pod-0 restarted more recently (failed main)",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
@@ -34,7 +34,7 @@ func TestIdentifyFailedMasterIndex(t *testing.T) {
 						Pod:       &v1.Pod{},
 					},
 					"memgraph-ha-1": {
-						Name:      "memgraph-ha-1", 
+						Name:      "memgraph-ha-1",
 						Timestamp: olderTime, // Older, stable pod
 						Pod:       &v1.Pod{},
 					},
@@ -44,7 +44,7 @@ func TestIdentifyFailedMasterIndex(t *testing.T) {
 			description:   "pod-0 failed, should promote pod-1",
 		},
 		{
-			name: "pod-1 restarted more recently (failed master)",
+			name: "pod-1 restarted more recently (failed main)",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
@@ -54,7 +54,7 @@ func TestIdentifyFailedMasterIndex(t *testing.T) {
 					},
 					"memgraph-ha-1": {
 						Name:      "memgraph-ha-1",
-						Timestamp: newerTime, // More recent restart  
+						Timestamp: newerTime, // More recent restart
 						Pod:       &v1.Pod{},
 					},
 				},
@@ -77,7 +77,7 @@ func TestIdentifyFailedMasterIndex(t *testing.T) {
 			description:   "pod-0 missing, should promote pod-1",
 		},
 		{
-			name: "pod-1 missing entirely", 
+			name: "pod-1 missing entirely",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
@@ -102,17 +102,17 @@ func TestIdentifyFailedMasterIndex(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := controller.identifyFailedMasterIndex(tt.clusterState)
-			
+			result := controller.identifyFailedMainIndex(tt.clusterState)
+
 			if result != tt.expectedIndex {
-				t.Errorf("identifyFailedMasterIndex() = %d, expected %d\nDescription: %s", 
+				t.Errorf("identifyFailedMainIndex() = %d, expected %d\nDescription: %s",
 					result, tt.expectedIndex, tt.description)
 			}
 		})
 	}
 }
 
-func TestHandleMasterFailurePromotion_Logic(t *testing.T) {
+func TestHandleMainFailurePromotion_Logic(t *testing.T) {
 	controller := &MemgraphController{
 		config: &Config{
 			StatefulSetName: "memgraph-ha",
@@ -124,28 +124,28 @@ func TestHandleMasterFailurePromotion_Logic(t *testing.T) {
 	newerTime := time.Now().Add(-1 * time.Minute)
 
 	tests := []struct {
-		name               string
-		clusterState       *ClusterState
-		replicaPods        []string
-		expectedPromotion  string
-		description        string
+		name              string
+		clusterState      *ClusterState
+		replicaPods       []string
+		expectedPromotion string
+		description       string
 	}{
 		{
 			name: "pod-0 failed, should promote pod-1 (SYNC replica)",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
-						Name:        "memgraph-ha-0",
-						Timestamp:   newerTime, // Recently restarted (failed master)
-						Pod:         &v1.Pod{},
-						State:       REPLICA,
+						Name:          "memgraph-ha-0",
+						Timestamp:     newerTime, // Recently restarted (failed main)
+						Pod:           &v1.Pod{},
+						State:         REPLICA,
 						IsSyncReplica: false, // Lost SYNC status after restart
 					},
 					"memgraph-ha-1": {
-						Name:        "memgraph-ha-1", 
-						Timestamp:   olderTime, // Stable pod (was SYNC replica)
-						Pod:         &v1.Pod{},
-						State:       REPLICA,
+						Name:          "memgraph-ha-1",
+						Timestamp:     olderTime, // Stable pod (was SYNC replica)
+						Pod:           &v1.Pod{},
+						State:         REPLICA,
 						IsSyncReplica: false, // Not detected yet in all-replica state
 					},
 				},
@@ -159,45 +159,45 @@ func TestHandleMasterFailurePromotion_Logic(t *testing.T) {
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
-						Name:        "memgraph-ha-0",
-						Timestamp:   olderTime, // Stable pod (was SYNC replica)
-						Pod:         &v1.Pod{},
-						State:       REPLICA,
+						Name:          "memgraph-ha-0",
+						Timestamp:     olderTime, // Stable pod (was SYNC replica)
+						Pod:           &v1.Pod{},
+						State:         REPLICA,
 						IsSyncReplica: false, // Not detected yet in all-replica state
 					},
 					"memgraph-ha-1": {
-						Name:        "memgraph-ha-1",
-						Timestamp:   newerTime, // Recently restarted (failed master)
-						Pod:         &v1.Pod{},
-						State:       REPLICA,
+						Name:          "memgraph-ha-1",
+						Timestamp:     newerTime, // Recently restarted (failed main)
+						Pod:           &v1.Pod{},
+						State:         REPLICA,
 						IsSyncReplica: false, // Lost SYNC status after restart
 					},
 				},
 			},
 			replicaPods:       []string{"memgraph-ha-0", "memgraph-ha-1"},
-			expectedPromotion: "memgraph-ha-0", 
+			expectedPromotion: "memgraph-ha-0",
 			description:       "pod-1 failed → promote pod-0 (the SYNC replica)",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Test the logic by checking identifyFailedMasterIndex result
-			failedIndex := controller.identifyFailedMasterIndex(tt.clusterState)
-			
+			// Test the logic by checking identifyFailedMainIndex result
+			failedIndex := controller.identifyFailedMainIndex(tt.clusterState)
+
 			var expectedSyncReplica string
 			if failedIndex == 0 {
 				expectedSyncReplica = "memgraph-ha-1"
 			} else {
 				expectedSyncReplica = "memgraph-ha-0"
 			}
-			
+
 			if expectedSyncReplica != tt.expectedPromotion {
-				t.Errorf("Logic test failed: identifyFailedMasterIndex()=%d should promote %s, expected %s\nDescription: %s", 
+				t.Errorf("Logic test failed: identifyFailedMainIndex()=%d should promote %s, expected %s\nDescription: %s",
 					failedIndex, expectedSyncReplica, tt.expectedPromotion, tt.description)
 			}
-			
-			t.Logf("✅ %s: Failed master index=%d → Promoting %s", 
+
+			t.Logf("✅ %s: Failed main index=%d → Promoting %s",
 				tt.description, failedIndex, expectedSyncReplica)
 		})
 	}

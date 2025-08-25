@@ -40,7 +40,7 @@ func (mc *MemgraphClient) QueryReplicationRoleWithRetry(ctx context.Context, bol
 			if !found {
 				return fmt.Errorf("replication role field not found in result")
 			}
-			
+
 			roleStr, ok := role.(string)
 			if !ok {
 				return fmt.Errorf("replication role is not a string: %T", role)
@@ -90,39 +90,39 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 		var replicas []ReplicaInfo
 		for txResult.Next(ctx) {
 			record := txResult.Record()
-			
+
 			replica := ReplicaInfo{}
-			
+
 			if name, found := record.Get("name"); found {
 				if nameStr, ok := name.(string); ok {
 					replica.Name = nameStr
 				}
 			}
-			
+
 			if socketAddr, found := record.Get("socket_address"); found {
 				if socketAddrStr, ok := socketAddr.(string); ok {
 					replica.SocketAddress = socketAddrStr
 				}
 			}
-			
+
 			if syncMode, found := record.Get("sync_mode"); found {
 				if syncModeStr, ok := syncMode.(string); ok {
 					replica.SyncMode = syncModeStr
 				}
 			}
-			
+
 			if sysTimestamp, found := record.Get("system_timestamp"); found {
 				if sysTimestampInt, ok := sysTimestamp.(int64); ok {
 					replica.SystemTimestamp = sysTimestampInt
 				}
 			}
-				
+
 			if checkFreq, found := record.Get("check_frequency"); found {
 				if checkFreqInt, ok := checkFreq.(int64); ok {
 					replica.CheckFrequency = checkFreqInt
 				}
 			}
-			
+
 			replicas = append(replicas, replica)
 		}
 
@@ -238,10 +238,10 @@ func (mc *MemgraphClient) SetReplicationRoleToReplicaWithRetry(ctx context.Conte
 	return nil
 }
 
-// RegisterReplicaWithModeAndRetry registers a replica with the master using specified mode (SYNC or ASYNC)
-func (mc *MemgraphClient) RegisterReplicaWithModeAndRetry(ctx context.Context, masterBoltAddress, replicaName, replicaAddress, syncMode string) error {
-	if masterBoltAddress == "" {
-		return fmt.Errorf("master bolt address is empty")
+// RegisterReplicaWithModeAndRetry registers a replica with the main using specified mode (SYNC or ASYNC)
+func (mc *MemgraphClient) RegisterReplicaWithModeAndRetry(ctx context.Context, mainBoltAddress, replicaName, replicaAddress, syncMode string) error {
+	if mainBoltAddress == "" {
+		return fmt.Errorf("main bolt address is empty")
 	}
 	if replicaName == "" {
 		return fmt.Errorf("replica name is empty")
@@ -254,15 +254,15 @@ func (mc *MemgraphClient) RegisterReplicaWithModeAndRetry(ctx context.Context, m
 	}
 
 	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, masterBoltAddress)
+		driver, err := mc.connectionPool.GetDriver(ctx, mainBoltAddress)
 		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", masterBoltAddress, err)
+			return fmt.Errorf("failed to get driver for %s: %w", mainBoltAddress, err)
 		}
 
 		session := driver.NewSession(ctx, neo4j.SessionConfig{})
 		defer func() {
 			if closeErr := session.Close(ctx); closeErr != nil {
-				log.Printf("Warning: failed to close session for %s: %v", masterBoltAddress, closeErr)
+				log.Printf("Warning: failed to close session for %s: %v", mainBoltAddress, closeErr)
 			}
 		}()
 
@@ -277,36 +277,36 @@ func (mc *MemgraphClient) RegisterReplicaWithModeAndRetry(ctx context.Context, m
 	}, mc.retryConfig)
 
 	if err != nil {
-		return fmt.Errorf("register replica %s (%s mode) with master at %s: %w", replicaName, syncMode, masterBoltAddress, err)
+		return fmt.Errorf("register replica %s (%s mode) with main at %s: %w", replicaName, syncMode, mainBoltAddress, err)
 	}
 
 	return nil
 }
 
-// RegisterReplicaWithRetry registers a replica with the master using ASYNC mode (backward compatibility)
-func (mc *MemgraphClient) RegisterReplicaWithRetry(ctx context.Context, masterBoltAddress, replicaName, replicaAddress string) error {
-	return mc.RegisterReplicaWithModeAndRetry(ctx, masterBoltAddress, replicaName, replicaAddress, "ASYNC")
+// RegisterReplicaWithRetry registers a replica with the main using ASYNC mode (backward compatibility)
+func (mc *MemgraphClient) RegisterReplicaWithRetry(ctx context.Context, mainBoltAddress, replicaName, replicaAddress string) error {
+	return mc.RegisterReplicaWithModeAndRetry(ctx, mainBoltAddress, replicaName, replicaAddress, "ASYNC")
 }
 
-// DropReplicaWithRetry removes a replica registration from the master
-func (mc *MemgraphClient) DropReplicaWithRetry(ctx context.Context, masterBoltAddress, replicaName string) error {
-	if masterBoltAddress == "" {
-		return fmt.Errorf("master bolt address is empty")
+// DropReplicaWithRetry removes a replica registration from the main
+func (mc *MemgraphClient) DropReplicaWithRetry(ctx context.Context, mainBoltAddress, replicaName string) error {
+	if mainBoltAddress == "" {
+		return fmt.Errorf("main bolt address is empty")
 	}
 	if replicaName == "" {
 		return fmt.Errorf("replica name is empty")
 	}
 
 	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, masterBoltAddress)
+		driver, err := mc.connectionPool.GetDriver(ctx, mainBoltAddress)
 		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", masterBoltAddress, err)
+			return fmt.Errorf("failed to get driver for %s: %w", mainBoltAddress, err)
 		}
 
 		session := driver.NewSession(ctx, neo4j.SessionConfig{})
 		defer func() {
 			if closeErr := session.Close(ctx); closeErr != nil {
-				log.Printf("Warning: failed to close session for %s: %v", masterBoltAddress, closeErr)
+				log.Printf("Warning: failed to close session for %s: %v", mainBoltAddress, closeErr)
 			}
 		}()
 
@@ -317,13 +317,13 @@ func (mc *MemgraphClient) DropReplicaWithRetry(ctx context.Context, masterBoltAd
 			return fmt.Errorf("failed to execute DROP REPLICA: %w", err)
 		}
 
-		log.Printf("Successfully dropped replica %s from master %s", replicaName, masterBoltAddress)
+		log.Printf("Successfully dropped replica %s from main %s", replicaName, mainBoltAddress)
 		return nil
 	}, mc.retryConfig)
 
 	if err != nil {
-		return fmt.Errorf("failed to drop replica %s from master %s after retries: %w", 
-			replicaName, masterBoltAddress, err)
+		return fmt.Errorf("failed to drop replica %s from main %s after retries: %w",
+			replicaName, mainBoltAddress, err)
 	}
 
 	return nil

@@ -9,15 +9,15 @@ import (
 )
 
 type Config struct {
-	AppName            string
-	Namespace          string
-	ReconcileInterval  time.Duration
-	BoltPort           string
-	ReplicationPort    string
-	ServiceName        string
-	HTTPPort           string
-	StatefulSetName    string
-	
+	AppName           string
+	Namespace         string
+	ReconcileInterval time.Duration
+	BoltPort          string
+	ReplicationPort   string
+	ServiceName       string
+	HTTPPort          string
+	StatefulSetName   string
+
 	// Gateway configuration
 	GatewayEnabled     bool
 	GatewayBindAddress string
@@ -30,15 +30,15 @@ func LoadConfig() *Config {
 	}
 
 	return &Config{
-		AppName:            getEnvOrDefault("APP_NAME", "memgraph"),
-		Namespace:          getEnvOrDefault("NAMESPACE", "memgraph"),
-		ReconcileInterval:  reconcileInterval,
-		BoltPort:           getEnvOrDefault("BOLT_PORT", "7687"),
-		ReplicationPort:    getEnvOrDefault("REPLICATION_PORT", "10000"),
-		ServiceName:        getEnvOrDefault("SERVICE_NAME", "memgraph"),
-		HTTPPort:           getEnvOrDefault("HTTP_PORT", "8080"),
-		StatefulSetName:    getEnvOrDefault("STATEFULSET_NAME", "memgraph"),
-		
+		AppName:           getEnvOrDefault("APP_NAME", "memgraph"),
+		Namespace:         getEnvOrDefault("NAMESPACE", "memgraph"),
+		ReconcileInterval: reconcileInterval,
+		BoltPort:          getEnvOrDefault("BOLT_PORT", "7687"),
+		ReplicationPort:   getEnvOrDefault("REPLICATION_PORT", "10000"),
+		ServiceName:       getEnvOrDefault("SERVICE_NAME", "memgraph"),
+		HTTPPort:          getEnvOrDefault("HTTP_PORT", "8080"),
+		StatefulSetName:   getEnvOrDefault("STATEFULSET_NAME", "memgraph"),
+
 		// Gateway configuration
 		GatewayEnabled:     getEnvOrDefaultBool("GATEWAY_ENABLED", false),
 		GatewayBindAddress: getEnvOrDefault("GATEWAY_BIND_ADDRESS", "0.0.0.0:7687"),
@@ -75,7 +75,7 @@ func (c *Config) GetPodName(index int) string {
 	return fmt.Sprintf("%s-%d", c.StatefulSetName, index)
 }
 
-// GetEligiblePodNames returns the names of pods eligible for master/SYNC roles (pod-0 and pod-1)
+// GetEligiblePodNames returns the names of pods eligible for main/SYNC roles (pod-0 and pod-1)
 func (c *Config) GetEligiblePodNames() (string, string) {
 	return c.GetPodName(0), c.GetPodName(1)
 }
@@ -87,11 +87,11 @@ func (c *Config) ExtractPodIndex(podName string) int {
 	if lastDash == -1 {
 		return -1 // Invalid pod name format
 	}
-	
+
 	indexStr := podName[lastDash+1:]
 	if index, err := strconv.Atoi(indexStr); err == nil {
 		return index
 	}
-	
+
 	return -1 // Could not parse index
 }

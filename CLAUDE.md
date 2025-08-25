@@ -45,8 +45,8 @@ This ensures you stay informed about all modifications and maintains control ove
 # Check replication role of a pod
 kubectl exec <pod-name> -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=memgraph'
 
-# Check registered replicas from master pod
-kubectl exec <master-pod-name> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
+# Check registered replicas from main pod
+kubectl exec <main-pod-name> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
 
 # Check storage info
 kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --output-format csv --username=memgraph'
@@ -70,29 +70,29 @@ kubectl delete pod <sync-replica-pod>
 **Option 2: Promote ASYNC Replica to SYNC (Emergency)**
 ```bash
 # Step 1: Drop the failed SYNC replica
-kubectl exec <master-pod> -- bash -c 'echo "DROP REPLICA <failed_sync_replica_name>;" | mgconsole --output-format csv --username=memgraph'
+kubectl exec <main-pod> -- bash -c 'echo "DROP REPLICA <failed_sync_replica_name>;" | mgconsole --output-format csv --username=memgraph'
 
 # Step 2: Promote healthy ASYNC replica to SYNC
-kubectl exec <master-pod> -- bash -c 'echo "DROP REPLICA <async_replica_name>;" | mgconsole --username=memgraph'
-kubectl exec <master-pod> -- bash -c 'echo "REGISTER REPLICA <async_replica_name> SYNC TO \"<replica_ip>:10000\";" | mgconsole --output-format csv --username=memgraph'
+kubectl exec <main-pod> -- bash -c 'echo "DROP REPLICA <async_replica_name>;" | mgconsole --username=memgraph'
+kubectl exec <main-pod> -- bash -c 'echo "REGISTER REPLICA <async_replica_name> SYNC TO \"<replica_ip>:10000\";" | mgconsole --output-format csv --username=memgraph'
 
 # Step 3: Verify new SYNC replica
-kubectl exec <master-pod> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
+kubectl exec <main-pod> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
 ```
 
 #### Scenario: Split-Brain Resolution
 
 **Manual Split-Brain Resolution (if controller fails to resolve automatically):**
 ```bash
-# Step 1: Identify all masters
+# Step 1: Identify all mains
 kubectl exec memgraph-ha-0 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=memgraph'
 kubectl exec memgraph-ha-1 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=memgraph'
 
-# Step 2: Choose master with most recent data (check storage info)
+# Step 2: Choose main with most recent data (check storage info)
 kubectl exec <pod> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --output-format csv --username=memgraph'
 
-# Step 3: Demote incorrect masters (keep lowest index pod as master by convention)
-kubectl exec <incorrect-master-pod> -- bash -c 'echo "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;" | mgconsole --output-format csv --username=memgraph'
+# Step 3: Demote incorrect mains (keep lowest index pod as main by convention)
+kubectl exec <incorrect-main-pod> -- bash -c 'echo "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;" | mgconsole --output-format csv --username=memgraph'
 
 # Step 4: Restart controller after manual resolution
 kubectl rollout restart deployment/memgraph-controller -n memgraph
@@ -104,130 +104,12 @@ kubectl rollout restart deployment/memgraph-controller -n memgraph
 
 The controller implements a **SYNC replica strategy** for zero data loss failover:
 
-- **1 SYNC replica**: Guaranteed to have all committed transactions (blocks master until confirmed)
+- **1 SYNC replica**: Guaranteed to have all committed transactions (blocks main until confirmed)
 - **N-1 ASYNC replicas**: May lag behind but provide read scalability  
-- **Master failure**: Always promote the SYNC replica (guaranteed zero data loss)
+- **MAIN failure**: Always promote the SYNC replica (guaranteed zero data loss)
 
-### Two-Pod Master/SYNC Strategy
+### Two-Pod MAIN/SYNC Strategy
 
-- **pod-0 and pod-1**: Eligible for master OR SYNC replica roles
+- **pod-0 and pod-1**: Eligible for main OR SYNC replica roles
 - **pod-2, pod-3, ...**: ALWAYS ASYNC replicas only
 - **Controller Authority**: Maintains expected topology in-memory after bootstrap
-
-### Bootstrap Safety vs. Operational Authority
-
-- **Bootstrap**: Conservative - refuse to start on ambiguous states (mixed main/replica)
-- **Operational**: Authoritative - enforce known topology against drift, resolve split-brain
-
-### Key Operational Behaviors
-
-#### SYNC Replica Failure Impact
-- **SYNC replica failure** = **Complete write outage**
-- **No graceful degradation** to ASYNC mode  
-- **Manual intervention required** to restore write capability
-- **Reads unaffected** but cluster effectively becomes read-only
-
-#### Split-Brain Resolution
-- **Controller enforces known master** during operational phase
-- **Demotes restarted pods** that incorrectly promoted themselves to master
-- **Uses lower-index precedence** as fallback (pod-0 over pod-1)
-
-#### Master Failover Priority
-1. **Existing MAIN node** (avoid unnecessary failover)
-2. **SYNC replica** (guaranteed data consistency)
-3. **Deterministic selection** (pod-0 default) with warnings about potential data loss
-
-This design ensures **robust, predictable behavior** while preventing data loss during master failures through guaranteed SYNC replica consistency.
-
-
-## Known Issues
-
-### SYNC Replication Not Functioning Properly
-
-**Issue**: SYNC replication configuration appears correct in controller logs, but actual data synchronization is failing.
-
-**Symptoms**:
-- Controller reports "✅ Enhanced SYNC replication configuration completed"
-- `SHOW REPLICAS` shows SYNC replica with `sync_mode: sync`
-- However, data written to master does NOT replicate to SYNC replica
-- ASYNC replicas receive data correctly
-- Writes proceed without waiting for SYNC confirmation (should block until SYNC replica confirms)
-
-**Impact**:
-- **Data loss during failover**: When master fails, SYNC replica becomes new master but lacks recent data
-- **False sense of security**: Controller believes SYNC replication is working, but it's not
-- **Test failures**: E2E failover tests fail because expected data doesn't exist in failover target
-
-**Debugging Steps**:
-```bash
-# 1. Write test data to master via gateway
-# 2. Check data exists in all pods individually
-kubectl exec memgraph-ha-0 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n:TestNode) RETURN count(n);" | mgconsole --output-format csv --username=memgraph'
-kubectl exec memgraph-ha-1 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n:TestNode) RETURN count(n);" | mgconsole --output-format csv --username=memgraph'
-kubectl exec memgraph-ha-2 -n memgraph -c memgraph -- bash -c 'echo "MATCH (n:TestNode) RETURN count(n);" | mgconsole --output-format csv --username=memgraph'
-
-# 3. Verify replication topology
-kubectl exec <master-pod> -n memgraph -c memgraph -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
-```
-
-**Expected**: Data should exist in master and SYNC replica, may be missing from ASYNC replica  
-**Actual**: Data exists in master and ASYNC replica, missing from SYNC replica
-
-**Investigation Finding**: Controller NOW PARSES `data_info` field but not used for operational decisions
-- `ReplicaInfo` struct in `pkg/controller/memgraph_client.go:30-31` includes `DataInfo` and `ParsedDataInfo` fields
-- Parsing logic at `memgraph_client.go:406-433` captures and parses `data_info` field correctly
-- Health assessment functions `IsHealthy()`, `RequiresRecovery()`, and `GetHealthReason()` are implemented
-- Parsed data is logged for display purposes in `memgraph_client.go:454-461`
-- **HOWEVER**: Main controller logic does NOT use health checks for operational decisions
-- No calls to `IsHealthy()` or `RequiresRecovery()` in main controller reconciliation loops
-
-**Current Implementation Status**:
-1. ✅ `DataInfo string` field exists in `ReplicaInfo` struct
-2. ✅ Parsing logic extracts and parses `data_info` field
-3. ✅ Health validation functions detect `status: "invalid"` and other issues
-4. ✅ `behind` metric is monitored and parsed
-5. ✅ Unhealthy replicas are logged with health status
-6. ❌ **Missing**: Integration with controller decision-making logic
-7. ❌ **Missing**: Automatic recovery actions based on health status
-
-**Status**: **PARTIALLY IMPLEMENTED** - Infrastructure exists but not integrated into operational decisions
-
-### data_info Field Values Documentation
-
-This section documents observed `data_info` values from `SHOW REPLICAS` during testing to help implement proper parsing logic.
-
-**Format**: `data_info` appears to be a JSON-like string containing replication health metrics.
-
-#### Observed Values
-
-**Healthy ASYNC Replica**:
-```
-"{memgraph: {behind: 0, status: \"ready\", ts: 2}}"
-```
-- `behind: 0` = replica is caught up
-- `status: "ready"` = replica is functioning normally  
-- `ts: 2` = timestamp/sequence number
-
-**Unhealthy ASYNC Replica**:
-```
-"{memgraph: {behind: -20, status: \"invalid\", ts: 0}}"
-```
-- `behind: -20` = negative value indicates replication error
-- `status: "invalid"` = replica has failed/broken replication
-- `ts: 0` = timestamp reset to zero
-
-**SYNC Replica (Empty)**:
-```
-"{}"
-```
-- Empty object - unclear if this indicates healthy or problematic state
-- May require different parsing logic than ASYNC replicas
-
-#### Notes for Implementation
-- Values appear to be JSON strings that need parsing
-- Negative `behind` values seem to indicate errors
-- `status: "invalid"` is a clear failure indicator
-- Empty `{}` values need investigation (healthy vs unhealthy)
-- Different replica types (SYNC vs ASYNC) may have different data_info formats
-
-*This section will be updated with additional values found during testing*

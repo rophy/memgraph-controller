@@ -18,7 +18,7 @@ func TestConvertPodInfoToStatus(t *testing.T) {
 			Name:      "memgraph-0",
 			Namespace: "memgraph",
 			Labels: map[string]string{
-				"role": "master",
+				"role": "main",
 			},
 		},
 		Status: v1.PodStatus{
@@ -30,32 +30,31 @@ func TestConvertPodInfoToStatus(t *testing.T) {
 	podInfo := NewPodInfo(pod, "memgraph")
 	podInfo.MemgraphRole = "main"
 	podInfo.Replicas = []string{"memgraph_1", "memgraph_2"}
-	podInfo.State = MASTER
+	podInfo.State = MAIN
 
 	// Test healthy pod conversion
 	status := convertPodInfoToStatus(podInfo, true)
-	
+
 	if status.Name != "memgraph-0" {
 		t.Errorf("Expected name 'memgraph-0', got '%s'", status.Name)
 	}
-	
-	if status.State != "MASTER" {
-		t.Errorf("Expected state 'MASTER', got '%s'", status.State)
+
+	if status.State != "MAIN" {
+		t.Errorf("Expected state 'MAIN', got '%s'", status.State)
 	}
-	
+
 	if !status.Healthy {
 		t.Error("Expected pod to be healthy")
 	}
-	
-	
+
 	if status.MemgraphRole != "main" {
 		t.Errorf("Expected MemgraphRole 'main', got '%s'", status.MemgraphRole)
 	}
-	
+
 	if status.IsSyncReplica {
-		t.Error("Expected master pod to not be a SYNC replica")
+		t.Error("Expected main pod to not be a SYNC replica")
 	}
-	
+
 	if len(status.ReplicasRegistered) != 2 {
 		t.Errorf("Expected 2 replicas, got %d", len(status.ReplicasRegistered))
 	}
@@ -63,11 +62,11 @@ func TestConvertPodInfoToStatus(t *testing.T) {
 	// Test unhealthy pod conversion
 	podInfo.MemgraphRole = "" // Simulate unreachable pod
 	statusUnhealthy := convertPodInfoToStatus(podInfo, false)
-	
+
 	if statusUnhealthy.Healthy {
 		t.Error("Expected pod to be unhealthy")
 	}
-	
+
 	if statusUnhealthy.Inconsistency == nil {
 		t.Error("Expected inconsistency for unhealthy pod")
 	} else if statusUnhealthy.Inconsistency.Description != "Pod is unreachable - cannot query Memgraph status" {
@@ -98,24 +97,23 @@ func TestConvertPodInfoToStatus_SyncReplica(t *testing.T) {
 
 	// Test SYNC replica conversion
 	status := convertPodInfoToStatus(podInfo, true)
-	
+
 	if status.Name != "memgraph-1" {
 		t.Errorf("Expected name 'memgraph-1', got '%s'", status.Name)
 	}
-	
+
 	if status.State != "REPLICA" {
 		t.Errorf("Expected state 'REPLICA', got '%s'", status.State)
 	}
-	
+
 	if !status.Healthy {
 		t.Error("Expected pod to be healthy")
 	}
-	
+
 	if !status.IsSyncReplica {
 		t.Error("Expected pod to be a SYNC replica")
 	}
-	
-	
+
 	if status.MemgraphRole != "replica" {
 		t.Errorf("Expected MemgraphRole 'replica', got '%s'", status.MemgraphRole)
 	}
@@ -124,14 +122,14 @@ func TestConvertPodInfoToStatus_SyncReplica(t *testing.T) {
 func TestHTTPServerStatusEndpoint(t *testing.T) {
 	// Create a simple unit test that doesn't rely on network calls
 	// Test the HTTP response format and structure
-	
+
 	// Create a ClusterState with mock data
 	clusterState := &ClusterState{
-		Pods:          make(map[string]*PodInfo),
-		CurrentMaster: "memgraph-0",
+		Pods:        make(map[string]*PodInfo),
+		CurrentMain: "memgraph-0",
 	}
-	
-	// Add mock pod data  
+
+	// Add mock pod data
 	pod1 := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "memgraph-0",
@@ -142,10 +140,10 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 			StartTime: &metav1.Time{Time: time.Now()},
 		},
 	}
-	
+
 	pod2 := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "memgraph-1", 
+			Name:      "memgraph-1",
 			Namespace: "memgraph",
 		},
 		Status: v1.PodStatus{
@@ -153,27 +151,27 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 			StartTime: &metav1.Time{Time: time.Now()},
 		},
 	}
-	
+
 	podInfo1 := NewPodInfo(pod1, "memgraph")
 	podInfo1.MemgraphRole = "main"
-	podInfo1.State = MASTER
-	
+	podInfo1.State = MAIN
+
 	podInfo2 := NewPodInfo(pod2, "memgraph")
 	podInfo2.MemgraphRole = "replica"
 	podInfo2.State = REPLICA
 	podInfo2.IsSyncReplica = true
-	
+
 	clusterState.Pods["memgraph-0"] = podInfo1
 	clusterState.Pods["memgraph-1"] = podInfo2
-	
+
 	// Create API response directly
 	response := StatusResponse{
 		Timestamp: time.Now(),
 		ClusterState: ClusterStatus{
-			TotalPods:         len(clusterState.Pods),
-			HealthyPods:       2,
-			UnhealthyPods:     0,
-			CurrentMaster:     clusterState.CurrentMaster,
+			TotalPods:          len(clusterState.Pods),
+			HealthyPods:        2,
+			UnhealthyPods:      0,
+			CurrentMain:        clusterState.CurrentMain,
 			CurrentSyncReplica: "memgraph-1",
 			SyncReplicaHealthy: true,
 		},
@@ -182,36 +180,36 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 			convertPodInfoToStatus(podInfo2, true),
 		},
 	}
-	
+
 	// Test JSON marshaling
 	jsonData, err := json.Marshal(response)
 	if err != nil {
 		t.Fatalf("Failed to marshal response: %v", err)
 	}
-	
+
 	// Verify response structure
 	var decoded StatusResponse
 	if err := json.Unmarshal(jsonData, &decoded); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
-	
+
 	// Verify response content
 	if decoded.ClusterState.TotalPods != 2 {
 		t.Errorf("Expected 2 total pods, got %d", decoded.ClusterState.TotalPods)
 	}
-	
-	if decoded.ClusterState.CurrentMaster != "memgraph-0" {
-		t.Errorf("Expected master 'memgraph-0', got '%s'", decoded.ClusterState.CurrentMaster)
+
+	if decoded.ClusterState.CurrentMain != "memgraph-0" {
+		t.Errorf("Expected main 'memgraph-0', got '%s'", decoded.ClusterState.CurrentMain)
 	}
-	
+
 	if decoded.ClusterState.CurrentSyncReplica != "memgraph-1" {
-		t.Errorf("Expected sync replica 'memgraph-1', got '%s'", decoded.ClusterState.CurrentSyncReplica)  
+		t.Errorf("Expected sync replica 'memgraph-1', got '%s'", decoded.ClusterState.CurrentSyncReplica)
 	}
-	
+
 	if !decoded.ClusterState.SyncReplicaHealthy {
 		t.Error("Expected sync replica to be healthy")
 	}
-	
+
 	if len(decoded.Pods) != 2 {
 		t.Errorf("Expected 2 pods in response, got %d", len(decoded.Pods))
 	}
@@ -224,7 +222,7 @@ func TestHTTPServerHealthEndpoint(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/health", nil)
 	w := httptest.NewRecorder()
-	
+
 	httpServer.handleHealth(w, req)
 
 	resp := w.Result()
@@ -253,7 +251,7 @@ func TestHTTPServerRootEndpoint(t *testing.T) {
 
 	req := httptest.NewRequest("GET", "/", nil)
 	w := httptest.NewRecorder()
-	
+
 	httpServer.handleRoot(w, req)
 
 	resp := w.Result()
@@ -289,7 +287,7 @@ func TestHTTPServerMethodNotAllowed(t *testing.T) {
 	// Test POST to status endpoint
 	req := httptest.NewRequest("POST", "/api/v1/status", nil)
 	w := httptest.NewRecorder()
-	
+
 	httpServer.handleStatus(w, req)
 
 	resp := w.Result()
@@ -300,7 +298,7 @@ func TestHTTPServerMethodNotAllowed(t *testing.T) {
 	// Test POST to health endpoint
 	req = httptest.NewRequest("POST", "/health", nil)
 	w = httptest.NewRecorder()
-	
+
 	httpServer.handleHealth(w, req)
 
 	resp = w.Result()

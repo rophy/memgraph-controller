@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestDetermineMasterIndex(t *testing.T) {
+func TestDetermineMainIndex(t *testing.T) {
 	tests := []struct {
 		name          string
 		pods          map[string]*PodInfo
@@ -13,7 +13,7 @@ func TestDetermineMasterIndex(t *testing.T) {
 		expectedError string
 	}{
 		{
-			name: "fresh_cluster_all_masters",
+			name: "fresh_cluster_all_mains",
 			pods: map[string]*PodInfo{
 				"memgraph-0": {MemgraphRole: "main"},
 				"memgraph-1": {MemgraphRole: "main"},
@@ -23,7 +23,7 @@ func TestDetermineMasterIndex(t *testing.T) {
 			shouldFail:    false,
 		},
 		{
-			name: "healthy_cluster_pod0_master",
+			name: "healthy_cluster_pod0_main",
 			pods: map[string]*PodInfo{
 				"memgraph-0": {MemgraphRole: "main"},
 				"memgraph-1": {MemgraphRole: "replica"},
@@ -33,7 +33,7 @@ func TestDetermineMasterIndex(t *testing.T) {
 			shouldFail:    false,
 		},
 		{
-			name: "failover_cluster_pod1_master",
+			name: "failover_cluster_pod1_main",
 			pods: map[string]*PodInfo{
 				"memgraph-0": {MemgraphRole: "replica"},
 				"memgraph-1": {MemgraphRole: "main"},
@@ -81,23 +81,23 @@ func TestDetermineMasterIndex(t *testing.T) {
 				Pods: tt.pods,
 			}
 
-			index, err := clusterState.DetermineMasterIndex(config)
+			index, err := clusterState.DetermineMainIndex(config)
 
 			if tt.shouldFail {
 				if err == nil {
-					t.Errorf("DetermineMasterIndex() expected error but got none")
+					t.Errorf("DetermineMainIndex() expected error but got none")
 					return
 				}
 				if tt.expectedError != "" && !containsString(err.Error(), tt.expectedError) {
-					t.Errorf("DetermineMasterIndex() error = %v, want to contain %v", err.Error(), tt.expectedError)
+					t.Errorf("DetermineMainIndex() error = %v, want to contain %v", err.Error(), tt.expectedError)
 				}
 			} else {
 				if err != nil {
-					t.Errorf("DetermineMasterIndex() unexpected error = %v", err)
+					t.Errorf("DetermineMainIndex() unexpected error = %v", err)
 					return
 				}
 				if index != tt.expectedIndex {
-					t.Errorf("DetermineMasterIndex() = %v, want %v", index, tt.expectedIndex)
+					t.Errorf("DetermineMainIndex() = %v, want %v", index, tt.expectedIndex)
 				}
 			}
 		})
@@ -114,7 +114,7 @@ func TestAnalyzeExistingCluster(t *testing.T) {
 		shouldFail    bool
 	}{
 		{
-			name: "pod0_is_master",
+			name: "pod0_is_main",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main"},
@@ -125,7 +125,7 @@ func TestAnalyzeExistingCluster(t *testing.T) {
 			shouldFail:    false,
 		},
 		{
-			name: "pod1_is_master",
+			name: "pod1_is_main",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "replica"},
@@ -136,7 +136,7 @@ func TestAnalyzeExistingCluster(t *testing.T) {
 			shouldFail:    false,
 		},
 		{
-			name: "non_eligible_master_prefer_pod0",
+			name: "non_eligible_main_prefer_pod0",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "replica"},
@@ -186,7 +186,7 @@ func TestAnalyzeExistingCluster(t *testing.T) {
 
 // Helper function to check if string contains substring
 func containsString(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || 
+	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
 		(len(s) > len(substr) && findInString(s, substr)))
 }
 

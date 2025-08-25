@@ -14,7 +14,7 @@ func TestPodState_String(t *testing.T) {
 		expected string
 	}{
 		{INITIAL, "INITIAL"},
-		{MASTER, "MASTER"},
+		{MAIN, "MAIN"},
 		{REPLICA, "REPLICA"},
 		{PodState(999), "UNKNOWN"},
 	}
@@ -39,8 +39,8 @@ func TestNewClusterState(t *testing.T) {
 	if len(cs.Pods) != 0 {
 		t.Errorf("NewClusterState() Pods map length = %d, want 0", len(cs.Pods))
 	}
-	if cs.CurrentMaster != "" {
-		t.Errorf("NewClusterState() CurrentMaster = %s, want empty", cs.CurrentMaster)
+	if cs.CurrentMain != "" {
+		t.Errorf("NewClusterState() CurrentMain = %s, want empty", cs.CurrentMain)
 	}
 }
 
@@ -54,7 +54,7 @@ func TestNewPodInfo(t *testing.T) {
 			Name:              "memgraph-1",
 			CreationTimestamp: creationTime,
 			Labels: map[string]string{
-				"role": "master",
+				"role": "main",
 				"app":  "memgraph",
 			},
 		},
@@ -80,7 +80,6 @@ func TestNewPodInfo(t *testing.T) {
 	if !podInfo.Timestamp.Equal(expectedTime) {
 		t.Errorf("Timestamp = %s, want %s", podInfo.Timestamp, expectedTime)
 	}
-
 
 	if podInfo.BoltAddress != "10.0.0.1:7687" {
 		t.Errorf("BoltAddress = %s, want 10.0.0.1:7687", podInfo.BoltAddress)

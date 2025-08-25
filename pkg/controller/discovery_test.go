@@ -14,7 +14,7 @@ import (
 
 func TestPodDiscovery_DiscoverPods(t *testing.T) {
 	now := time.Now()
-	
+
 	// Create test pods
 	pod1 := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -22,7 +22,7 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 			Namespace: "memgraph",
 			Labels: map[string]string{
 				"app.kubernetes.io/name": "memgraph",
-				"role": "master",
+				"role":                   "main",
 			},
 			CreationTimestamp: metav1.NewTime(now.Add(-10 * time.Minute)),
 		},
@@ -39,7 +39,7 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 			Namespace: "memgraph",
 			Labels: map[string]string{
 				"app.kubernetes.io/name": "memgraph",
-				"role": "replica",
+				"role":                   "replica",
 			},
 			CreationTimestamp: metav1.NewTime(now.Add(-8 * time.Minute)),
 		},
@@ -105,9 +105,9 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 		t.Error("Pod memgraph-1 not found")
 	}
 
-	// After discovery, master selection is deferred until after Memgraph querying
-	if clusterState.CurrentMaster != "" {
-		t.Errorf("CurrentMaster = %s, want empty (deferred until after Memgraph querying)", clusterState.CurrentMaster)
+	// After discovery, main selection is deferred until after Memgraph querying
+	if clusterState.CurrentMain != "" {
+		t.Errorf("CurrentMain = %s, want empty (deferred until after Memgraph querying)", clusterState.CurrentMain)
 	}
 }
 
@@ -148,19 +148,19 @@ func TestPodDiscovery_GetPodsByLabel(t *testing.T) {
 	}
 }
 
-func TestPodDiscovery_SelectMaster_EmptyCluster(t *testing.T) {
+func TestPodDiscovery_SelectMain_EmptyCluster(t *testing.T) {
 	config := &Config{}
 	discovery := NewPodDiscovery(nil, config)
 	clusterState := NewClusterState()
 
-	discovery.selectMaster(clusterState)
+	discovery.selectMain(clusterState)
 
-	if clusterState.CurrentMaster != "" {
-		t.Errorf("CurrentMaster = %s, want empty", clusterState.CurrentMaster)
+	if clusterState.CurrentMain != "" {
+		t.Errorf("CurrentMain = %s, want empty", clusterState.CurrentMain)
 	}
 }
 
-func TestPodDiscovery_SelectMaster_SinglePod(t *testing.T) {
+func TestPodDiscovery_SelectMain_SinglePod(t *testing.T) {
 	now := time.Now()
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -174,20 +174,20 @@ func TestPodDiscovery_SelectMaster_SinglePod(t *testing.T) {
 	config := &Config{}
 	discovery := NewPodDiscovery(nil, config)
 	clusterState := NewClusterState()
-	
+
 	podInfo := NewPodInfo(pod, "service")
 	clusterState.Pods["single-pod"] = podInfo
 
-	discovery.selectMaster(clusterState)
+	discovery.selectMain(clusterState)
 
-	if clusterState.CurrentMaster != "single-pod" {
-		t.Errorf("CurrentMaster = %s, want single-pod", clusterState.CurrentMaster)
+	if clusterState.CurrentMain != "single-pod" {
+		t.Errorf("CurrentMain = %s, want single-pod", clusterState.CurrentMain)
 	}
 }
 
-func TestPodDiscovery_SelectMaster_LatestTimestamp(t *testing.T) {
+func TestPodDiscovery_SelectMain_LatestTimestamp(t *testing.T) {
 	now := time.Now()
-	
+
 	// Pod with older timestamp
 	pod1 := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -211,15 +211,15 @@ func TestPodDiscovery_SelectMaster_LatestTimestamp(t *testing.T) {
 	config := &Config{}
 	discovery := NewPodDiscovery(nil, config)
 	clusterState := NewClusterState()
-	
+
 	clusterState.Pods["older-pod"] = NewPodInfo(pod1, "service")
 	clusterState.Pods["newer-pod"] = NewPodInfo(pod2, "service")
 
-	discovery.selectMaster(clusterState)
+	discovery.selectMain(clusterState)
 
-	// With SYNC replica strategy, no master should be selected when no SYNC replica available
-	if clusterState.CurrentMaster != "" {
-		t.Errorf("CurrentMaster = %s, want empty (no SYNC replica available)", clusterState.CurrentMaster)
+	// With SYNC replica strategy, no main should be selected when no SYNC replica available
+	if clusterState.CurrentMain != "" {
+		t.Errorf("CurrentMain = %s, want empty (no SYNC replica available)", clusterState.CurrentMain)
 	}
 }
 
@@ -227,11 +227,11 @@ func TestPodDiscovery_SelectMaster_LatestTimestamp(t *testing.T) {
 
 func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) {
 	tests := []struct {
-		name           string
-		stateType      ClusterStateType
-		bootstrapSafe  bool
-		expectError    bool
-		errorContains  string
+		name          string
+		stateType     ClusterStateType
+		bootstrapSafe bool
+		expectError   bool
+		errorContains string
 	}{
 		{
 			name:          "operational_state_safe",
@@ -253,11 +253,11 @@ func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) 
 			errorContains: "split-brain during bootstrap",
 		},
 		{
-			name:          "no_master_state_unsafe",
-			stateType:     NO_MASTER_STATE,
+			name:          "no_main_state_unsafe",
+			stateType:     NO_MAIN_STATE,
 			bootstrapSafe: false,
 			expectError:   true,
-			errorContains: "no master during bootstrap",
+			errorContains: "no main during bootstrap",
 		},
 	}
 
@@ -265,8 +265,8 @@ func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			// Create mock controller with minimal setup
 			controller := &MemgraphController{
-				lastKnownMaster:   "", // Simulate bootstrap scenario
-				targetMasterIndex: -1,
+				lastKnownMain:   "", // Simulate bootstrap scenario
+				targetMainIndex: -1,
 				config: &Config{
 					AppName:         "memgraph",
 					StatefulSetName: "memgraph-ha",
@@ -299,7 +299,7 @@ func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) 
 					Name:         "memgraph-ha-2",
 					MemgraphRole: "replica",
 				}
-			} else if tt.stateType == NO_MASTER_STATE {
+			} else if tt.stateType == NO_MAIN_STATE {
 				clusterState.Pods["memgraph-ha-0"] = &PodInfo{
 					Name:         "memgraph-ha-0",
 					MemgraphRole: "replica",
@@ -341,30 +341,30 @@ func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		targetMasterIndex int
-		expectedMaster    string
-		podCount          int
+		name            string
+		targetMainIndex int
+		expectedMain    string
+		podCount        int
 	}{
 		{
-			name:              "master_index_0",
-			targetMasterIndex: 0,
-			expectedMaster:    "memgraph-ha-0",
-			podCount:          3,
+			name:            "main_index_0",
+			targetMainIndex: 0,
+			expectedMain:    "memgraph-ha-0",
+			podCount:        3,
 		},
 		{
-			name:              "master_index_1",
-			targetMasterIndex: 1,
-			expectedMaster:    "memgraph-ha-1",
-			podCount:          3,
+			name:            "main_index_1",
+			targetMainIndex: 1,
+			expectedMain:    "memgraph-ha-1",
+			podCount:        3,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			clusterState := &ClusterState{
-				TargetMasterIndex: tt.targetMasterIndex,
-				Pods:              make(map[string]*PodInfo),
+				TargetMainIndex: tt.targetMainIndex,
+				Pods:            make(map[string]*PodInfo),
 			}
 
 			// Add mock pods
@@ -375,8 +375,8 @@ func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 
 			controller.applyDeterministicRoles(clusterState)
 
-			if clusterState.CurrentMaster != tt.expectedMaster {
-				t.Errorf("CurrentMaster = %s, want %s", clusterState.CurrentMaster, tt.expectedMaster)
+			if clusterState.CurrentMain != tt.expectedMain {
+				t.Errorf("CurrentMain = %s, want %s", clusterState.CurrentMain, tt.expectedMain)
 			}
 		})
 	}
@@ -391,36 +391,36 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 	}
 
 	tests := []struct {
-		name           string
-		mainPods       []string
-		expectedMaster string
-		shouldWarn     bool
+		name         string
+		mainPods     []string
+		expectedMain string
+		shouldWarn   bool
 	}{
 		{
-			name:           "single_master_pod_0",
-			mainPods:       []string{"memgraph-ha-0"},
-			expectedMaster: "memgraph-ha-0",
-			shouldWarn:     false,
+			name:         "single_main_pod_0",
+			mainPods:     []string{"memgraph-ha-0"},
+			expectedMain: "memgraph-ha-0",
+			shouldWarn:   false,
 		},
 		{
-			name:           "single_master_pod_1",
-			mainPods:       []string{"memgraph-ha-1"},
-			expectedMaster: "memgraph-ha-1",
-			shouldWarn:     false,
+			name:         "single_main_pod_1",
+			mainPods:     []string{"memgraph-ha-1"},
+			expectedMain: "memgraph-ha-1",
+			shouldWarn:   false,
 		},
 		{
-			name:           "multiple_masters_fallback",
-			mainPods:       []string{"memgraph-ha-0", "memgraph-ha-1"},
-			expectedMaster: "memgraph-ha-0", // Should use fallback
-			shouldWarn:     true,
+			name:         "multiple_mains_fallback",
+			mainPods:     []string{"memgraph-ha-0", "memgraph-ha-1"},
+			expectedMain: "memgraph-ha-0", // Should use fallback
+			shouldWarn:   true,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			clusterState := &ClusterState{
-				TargetMasterIndex: 0,
-				Pods:              make(map[string]*PodInfo),
+				TargetMainIndex: 0,
+				Pods:            make(map[string]*PodInfo),
 			}
 
 			// Set up pods based on test case
@@ -446,22 +446,22 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 
 			controller.learnExistingTopology(clusterState)
 
-			if clusterState.CurrentMaster != tt.expectedMaster {
-				t.Errorf("CurrentMaster = %s, want %s", clusterState.CurrentMaster, tt.expectedMaster)
+			if clusterState.CurrentMain != tt.expectedMain {
+				t.Errorf("CurrentMain = %s, want %s", clusterState.CurrentMain, tt.expectedMain)
 			}
 
-			// Verify target master index was updated for single master cases
+			// Verify target main index was updated for single main cases
 			if len(tt.mainPods) == 1 {
-				expectedIndex := controller.config.ExtractPodIndex(tt.expectedMaster)
-				if controller.targetMasterIndex != expectedIndex {
-					t.Errorf("targetMasterIndex = %d, want %d", controller.targetMasterIndex, expectedIndex)
+				expectedIndex := controller.config.ExtractPodIndex(tt.expectedMain)
+				if controller.targetMainIndex != expectedIndex {
+					t.Errorf("targetMainIndex = %d, want %d", controller.targetMainIndex, expectedIndex)
 				}
 			}
 		})
 	}
 }
 
-func TestMemgraphController_SelectMasterAfterQuerying(t *testing.T) {
+func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
 	controller := &MemgraphController{
 		config: &Config{
 			AppName:         "memgraph",
@@ -470,38 +470,38 @@ func TestMemgraphController_SelectMasterAfterQuerying(t *testing.T) {
 	}
 
 	tests := []struct {
-		name              string
-		stateType         ClusterStateType
-		targetMasterIndex int
-		expectMethod      string // Which method should be called
+		name            string
+		stateType       ClusterStateType
+		targetMainIndex int
+		expectMethod    string // Which method should be called
 	}{
 		{
-			name:              "initial_state_calls_apply_deterministic",
-			stateType:         INITIAL_STATE,
-			targetMasterIndex: 0,
-			expectMethod:      "applyDeterministicRoles",
+			name:            "initial_state_calls_apply_deterministic",
+			stateType:       INITIAL_STATE,
+			targetMainIndex: 0,
+			expectMethod:    "applyDeterministicRoles",
 		},
 		{
-			name:              "operational_state_calls_learn_topology",
-			stateType:         OPERATIONAL_STATE,
-			targetMasterIndex: 1,
-			expectMethod:      "learnExistingTopology",
+			name:            "operational_state_calls_learn_topology",
+			stateType:       OPERATIONAL_STATE,
+			targetMainIndex: 1,
+			expectMethod:    "learnExistingTopology",
 		},
 		{
-			name:              "mixed_state_calls_enhanced_selection",
-			stateType:         MIXED_STATE,
-			targetMasterIndex: 0,
-			expectMethod:      "enhancedMasterSelection",
+			name:            "mixed_state_calls_enhanced_selection",
+			stateType:       MIXED_STATE,
+			targetMainIndex: 0,
+			expectMethod:    "enhancedMainSelection",
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			clusterState := &ClusterState{
-				StateType:         tt.stateType,
-				TargetMasterIndex: tt.targetMasterIndex,
-				IsBootstrapPhase:  true, // Should be set to false
-				Pods:              make(map[string]*PodInfo),
+				StateType:        tt.stateType,
+				TargetMainIndex:  tt.targetMainIndex,
+				IsBootstrapPhase: true, // Should be set to false
+				Pods:             make(map[string]*PodInfo),
 			}
 
 			// Setup minimal pod structure for function to work
@@ -509,7 +509,7 @@ func TestMemgraphController_SelectMasterAfterQuerying(t *testing.T) {
 			clusterState.Pods["memgraph-ha-1"] = &PodInfo{Name: "memgraph-ha-1"}
 
 			// Call the function (we can't easily mock internal method calls)
-			controller.selectMasterAfterQuerying(clusterState)
+			controller.selectMainAfterQuerying(clusterState)
 
 			// Verify bootstrap phase was cleared - this is the main behavior we can test
 			if clusterState.IsBootstrapPhase {

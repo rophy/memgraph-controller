@@ -3,7 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
-	
+
 	"memgraph-controller/pkg/gateway"
 )
 
@@ -16,24 +16,24 @@ type GatewayAdapter struct {
 // NewGatewayAdapter creates a new gateway adapter
 func NewGatewayAdapter(config *Config) *GatewayAdapter {
 	return &GatewayAdapter{
-		server: nil, // Will be initialized later with master provider
+		server: nil, // Will be initialized later with main provider
 		config: config,
 	}
 }
 
-// InitializeWithMasterProvider initializes the gateway server with master endpoint provider
-func (g *GatewayAdapter) InitializeWithMasterProvider(masterProvider gateway.MasterEndpointProvider) error {
+// InitializeWithMainProvider initializes the gateway server with main endpoint provider
+func (g *GatewayAdapter) InitializeWithMainProvider(mainProvider gateway.MainEndpointProvider) error {
 	if !g.config.GatewayEnabled {
 		return nil // Gateway is disabled
 	}
-	
+
 	gatewayConfig := gateway.LoadGatewayConfig()
-	
+
 	// Override with controller configuration
 	gatewayConfig.Enabled = g.config.GatewayEnabled
 	gatewayConfig.BindAddress = g.config.GatewayBindAddress
-	
-	g.server = gateway.NewServer(gatewayConfig, masterProvider)
+
+	g.server = gateway.NewServer(gatewayConfig, mainProvider)
 	return nil
 }
 
@@ -53,20 +53,20 @@ func (g *GatewayAdapter) Stop(ctx context.Context) error {
 	return g.server.Stop(ctx)
 }
 
-// SetCurrentMaster updates the current master endpoint
-func (g *GatewayAdapter) SetCurrentMaster(endpoint string) {
+// SetCurrentMain updates the current main endpoint
+func (g *GatewayAdapter) SetCurrentMain(endpoint string) {
 	if g.server == nil {
 		return // Gateway is disabled
 	}
-	g.server.SetCurrentMaster(endpoint)
+	g.server.SetCurrentMain(endpoint)
 }
 
-// GetCurrentMaster returns the current master endpoint
-func (g *GatewayAdapter) GetCurrentMaster() string {
+// GetCurrentMain returns the current main endpoint
+func (g *GatewayAdapter) GetCurrentMain() string {
 	if g.server == nil {
 		return ""
 	}
-	return g.server.GetCurrentMaster()
+	return g.server.GetCurrentMain()
 }
 
 // GetStats returns gateway statistics (additional method not in interface)

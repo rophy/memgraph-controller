@@ -22,7 +22,7 @@ const (
 
 // Logger provides structured logging for the gateway
 type Logger struct {
-	level       LogLevel
+	level        LogLevel
 	traceEnabled bool
 }
 
@@ -39,7 +39,7 @@ type LogEntry struct {
 // NewLogger creates a new structured logger
 func NewLogger(level string, traceEnabled bool) *Logger {
 	return &Logger{
-		level:       parseLogLevel(level),
+		level:        parseLogLevel(level),
 		traceEnabled: traceEnabled,
 	}
 }
@@ -96,7 +96,7 @@ func (l *Logger) log(level LogLevel, message string, fields ...map[string]interf
 		Message:   message,
 		Component: "gateway",
 	}
-	
+
 	// Merge all fields
 	if len(fields) > 0 {
 		entry.Fields = make(map[string]interface{})
@@ -106,12 +106,12 @@ func (l *Logger) log(level LogLevel, message string, fields ...map[string]interf
 			}
 		}
 	}
-	
+
 	// Add trace ID if tracing is enabled
 	if l.traceEnabled {
 		entry.TraceID = generateTraceID()
 	}
-	
+
 	// Output as JSON for structured logging
 	if data, err := json.Marshal(entry); err == nil {
 		log.Println(string(data))
@@ -187,30 +187,30 @@ func (lc *LoggerContext) Error(message string, additionalFields ...map[string]in
 // LogConnectionEvent logs a connection-related event with standard fields
 func (l *Logger) LogConnectionEvent(event string, clientAddr string, fields ...map[string]interface{}) {
 	_, file, line, _ := runtime.Caller(1)
-	
+
 	baseFields := map[string]interface{}{
 		"event":       event,
 		"client_addr": clientAddr,
 		"file":        file,
 		"line":        line,
 	}
-	
+
 	allFields := []map[string]interface{}{baseFields}
 	allFields = append(allFields, fields...)
-	
+
 	l.Info(fmt.Sprintf("Connection %s: %s", event, clientAddr), allFields...)
 }
 
 // LogFailoverEvent logs a failover-related event with standard fields
-func (l *Logger) LogFailoverEvent(event string, oldMaster, newMaster string, fields ...map[string]interface{}) {
+func (l *Logger) LogFailoverEvent(event string, oldMain, newMain string, fields ...map[string]interface{}) {
 	baseFields := map[string]interface{}{
-		"event":      event,
-		"old_master": oldMaster,
-		"new_master": newMaster,
+		"event":    event,
+		"old_main": oldMain,
+		"new_main": newMain,
 	}
-	
+
 	allFields := []map[string]interface{}{baseFields}
 	allFields = append(allFields, fields...)
-	
-	l.Warn(fmt.Sprintf("Failover %s: %s -> %s", event, oldMaster, newMaster), allFields...)
+
+	l.Warn(fmt.Sprintf("Failover %s: %s -> %s", event, oldMain, newMain), allFields...)
 }

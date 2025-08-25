@@ -12,13 +12,13 @@ This directory contains end-to-end tests that validate the complete functionalit
 ## Test Structure
 
 ### TestE2E_ClusterTopology
-- **Purpose**: Validates the cluster has the expected master-sync-async topology
+- **Purpose**: Validates the cluster has the expected main-sync-async topology
 - **Checks**:
   - 3 pods are present and healthy
-  - memgraph-0 is the master (main role)
+  - memgraph-0 is the main (main role)
   - memgraph-1 is the sync replica  
   - memgraph-2 is the async replica
-  - Gateway points to the correct master
+  - Gateway points to the correct main
 
 ### TestE2E_DataWriteThoughGateway
 - **Purpose**: Writes test data through the controller gateway
@@ -33,7 +33,7 @@ This directory contains end-to-end tests that validate the complete functionalit
 - **Checks**:
   - Connects directly to each pod's bolt address
   - Verifies test data from previous test exists on all pods
-  - Confirms master-sync-async replication is working
+  - Confirms main-sync-async replication is working
 
 ## Running the Tests
 
@@ -63,7 +63,7 @@ go test -v -timeout 2m ./...
 
 ```
 === RUN   TestE2E_ClusterTopology
-    e2e_test.go:89: ✓ Cluster topology validated: Master=memgraph-0, Sync=memgraph-1, Total pods=3
+    e2e_test.go:89: ✓ Cluster topology validated: Main=memgraph-0, Sync=memgraph-1, Total pods=3
 --- PASS: TestE2E_ClusterTopology (2.34s)
 === RUN   TestE2E_DataWriteThoughGateway  
     e2e_test.go:134: ✓ Data write validated: ID=test_1703123456, Value=value_1703123456

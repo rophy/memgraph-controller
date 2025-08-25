@@ -110,12 +110,12 @@ Add support for parsing and utilizing the `data_info` field from `SHOW REPLICAS`
 ### Implementation Details:
 1. **Recovery strategies by failure type**:
    - `status: "invalid"` → Drop and re-register replica
-   - Empty `{}` → Check master logs, potentially restart pod or re-register
+   - Empty `{}` → Check main logs, potentially restart pod or re-register
    - High `behind` values → Monitor and alert, potential manual intervention flag
 
 2. **Add recovery functions**:
    ```go
-   func (c *MemgraphController) recoverFailedReplica(ctx context.Context, masterPod *PodInfo, replicaInfo *ReplicaInfo) error
+   func (c *MemgraphController) recoverFailedReplica(ctx context.Context, mainPod *PodInfo, replicaInfo *ReplicaInfo) error
    func (c *MemgraphController) assessReplicaRecoveryNeeds(clusterState *ClusterState) []ReplicaRecoveryAction
    ```
 

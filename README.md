@@ -4,14 +4,14 @@ A Kubernetes controller that manages Memgraph clusters with built-in TCP gateway
 
 ## Architecture Overview
 
-This controller implements a **Master-SYNC-ASYNC** replication topology that provides robust write conflict protection and automatic failover capabilities.
+This controller implements a **MAIN-SYNC-ASYNC** replication topology that provides robust write conflict protection and automatic failover capabilities.
 
 ### Cluster Topology
 
 ```
 ┌─────────────┐    SYNC     ┌──────────────┐
 │   Pod-0     │◄───────────►│   Pod-1      │
-│  (Master)   │             │(SYNC Replica)│
+│  (MAIN)   │             │(SYNC Replica)│
 └─────┬───────┘             └──────────────┘
       │
       │ ASYNC     
@@ -25,38 +25,38 @@ This controller implements a **Master-SYNC-ASYNC** replication topology that pro
 
 ### Key Design Principles
 
-1. **Two-Pod Authority**: Only pod-0 and pod-1 are eligible for Master/SYNC replica roles
+1. **Two-Pod Authority**: Only pod-0 and pod-1 are eligible for MAIN/SYNC replica roles
 2. **SYNC Replica Strategy**: One SYNC replica ensures zero data loss during failover
-3. **Deterministic Failover**: SYNC replica is always promoted during master failure
-4. **Write Conflict Protection**: SYNC replication prevents dual-master scenarios
+3. **Deterministic Failover**: SYNC replica is always promoted during MAIN failure
+4. **Write Conflict Protection**: SYNC replication prevents dual-MAIN scenarios
 
 ## Write Conflict Protection
 
-The Master-SYNC-ASYNC topology provides robust protection against write conflicts through Memgraph's built-in SYNC replication mechanism:
+The MAIN-SYNC-ASYNC topology provides robust protection against write conflicts through Memgraph's built-in SYNC replication mechanism:
 
 ### How SYNC Protection Works
 
-1. **Master Dependency**: The master cannot commit transactions until the SYNC replica acknowledges them
-2. **Promotion Safety**: When a SYNC replica is promoted to master, it stops acknowledging the old master
-3. **Write Blocking**: The old master becomes write-blocked when its SYNC replica becomes unavailable
-4. **Clean Failover**: Only the new master can accept writes, preventing dual-master conflicts
+1. **MAIN Dependency**: The MAIN cannot commit transactions until the SYNC replica acknowledges them
+2. **Promotion Safety**: When a SYNC replica is promoted to MAIN, it stops acknowledging the old MAIN
+3. **Write Blocking**: The old MAIN becomes write-blocked when its SYNC replica becomes unavailable
+4. **Clean Failover**: Only the new MAIN can accept writes, preventing dual-MAIN conflicts
 
 ### Conflict Scenarios Analysis
 
 #### ✅ **Network Partition** (Protected)
-- **Scenario**: Controller loses connection to master but master can reach replicas
-- **Protection**: When SYNC replica is promoted, it stops acknowledging old master transactions
-- **Result**: Old master becomes write-blocked, new master handles all writes
+- **Scenario**: Controller loses connection to MAIN but MAIN can reach replicas
+- **Protection**: When SYNC replica is promoted, it stops acknowledging old MAIN transactions
+- **Result**: Old MAIN becomes write-blocked, new MAIN handles all writes
 
 #### ✅ **Controller Split-Brain** (Protected)  
 - **Scenario**: Multiple controllers try to manage the same cluster
-- **Protection**: SYNC replica can only acknowledge one master at a time
-- **Result**: Only one master remains operational, others become write-blocked
+- **Protection**: SYNC replica can only acknowledge one MAIN at a time
+- **Result**: Only one MAIN remains operational, others become write-blocked
 
 #### ✅ **Gradual Failure** (Protected)
-- **Scenario**: Master becomes slow/degraded but not completely failed  
-- **Protection**: SYNC replica promotion immediately blocks old master writes
-- **Result**: Clean transition to new master without conflicts
+- **Scenario**: MAIN becomes slow/degraded but not completely failed  
+- **Protection**: SYNC replica promotion immediately blocks old MAIN writes
+- **Result**: Clean transition to new MAIN without conflicts
 
 #### ⚠️ **Manual Intervention** (Risk)
 - **Scenario**: Manual `DROP REPLICA` commands or configuration changes
@@ -70,6 +70,8 @@ This controller has two phase throughout its lifecycle: BOOTSTRAP and OPERATIONA
 ### Bootstrap Phase
 
 Controller starts up as BOOTSTRAP phase, which goal is discover current state of a memgraph-ha-cluster.
+
+In this phase, Gateway REJECTS any bolt client connections.
 
 Below describes the rules, which are expected to be deterministic.
 
@@ -136,12 +138,13 @@ In this phase, controller receive events to kubernetes and do things as necessar
 - Memgraph pod IP changes:
   - Controller updates pod IP information, and wait for pod ready event.
 - Main memgraph pod status changed to "not ready":
-  - If sync replica status is READY, controller uses it as master, and promotes it immediately.
-  - If sync replica status is not READY, controller logs error, and waits for master to recover.
+  - If sync replica status is READY, controller uses it as MAIN, and promotes it immediately.
+    - NOTE: Gateway ALWAYS forward traffic to 
+  - If sync replica status is not READY, controller logs error, and waits for MAIN to recover.
 - SYNC replica memgraph pod status changed to "not ready":
-  - Controller logs error than master will become read-only, and waits for async replica to recover.
+  - Controller logs error than MAIN will become read-only, and waits for async replica to recover.
 - ASYNC replica memgraph pod status changed to "not ready":
-  - Controller logs warning, drops the replication from master, and waits for async replica to recover.
+  - Controller logs warning, drops the replication from MAIN, and waits for async replica to recover.
 - Any memgraph pod status changed to "ready":
   - Controller performs reconciliation.
 
@@ -170,10 +173,10 @@ In this phase, controller receive events to kubernetes and do things as necessar
 The controller includes an embedded TCP gateway that provides transparent failover for client connections:
 
 ### Features
-- **Transparent Proxying**: Raw TCP proxy to current master (no protocol interpretation)
-- **Automatic Failover**: Terminates all connections on master change, clients reconnect to new master
+- **Transparent Proxying**: Raw TCP proxy to current MAIN (no protocol interpretation)
+- **Automatic Failover**: Terminates all connections on MAIN change, clients reconnect to new MAIN
 - **Connection Tracking**: Full session lifecycle management with metrics
-- **Health Monitoring**: Master connectivity validation and error rate tracking
+- **Health Monitoring**: MAIN connectivity validation and error rate tracking
 
 ### Configuration
 ```bash
@@ -190,16 +193,16 @@ The controller manages Memgraph StatefulSets with the following operational char
 
 - **Bootstrap Safety**: Conservative startup - refuses ambiguous cluster states
 - **Operational Authority**: Enforces known topology, resolves split-brain scenarios  
-- **Master Selection**: SYNC replica priority, deterministic fallback to pod-0
+- **MAIN Selection**: SYNC replica priority, deterministic fallback to pod-0
 - **Reconciliation**: Event-driven + periodic reconciliation with exponential backoff
 
 ## Monitoring
 
 The controller exposes comprehensive metrics through its HTTP API:
 
-- **Cluster State**: Master/replica roles, replication status
+- **Cluster State**: MAIN/replica roles, replication status
 - **Gateway Stats**: Active connections, failover count, error rates  
-- **Health Status**: Master connectivity, error thresholds, system health
+- **Health Status**: MAIN connectivity, error thresholds, system health
 
 Access metrics at: `http://controller:8080/status`
 
@@ -240,7 +243,7 @@ Show replication role of a memgraph instance:
 SHOW REPLICATION ROLE
 ```
 
-Demote master to replica:
+Demote MAIN to replica:
 
 ```mgcommand
 SET REPLICATION ROLE TO REPLICA WITH PORT 10000
@@ -256,13 +259,13 @@ Promote replica to mater:
 
 #### Concept
 
-- Replica instances do NOT automatically receive data from master. 
+- Replica instances do NOT automatically receive data from MAIN. 
 - Replications have to be set up explicitly from mater.
-- All commands in this section are run against MASTER instance.
+- All commands in this section are run against MAIN instance.
 
 #### Commands For Managing Replications
 
-1. Register target replica as a SYNC replica (guaranteed consistency - blocks master until confirmed)
+1. Register target replica as a SYNC replica (guaranteed consistency - blocks MAIN until confirmed)
 
 ```mgcommand
 REGISTER REPLICA <replica_name> SYNC TO "<replica_ip>:10000"
@@ -281,9 +284,88 @@ REGISTER REPLICA <replica_name> ASYNC TO "<replica_ip>:10000"
 DROP REPLICA <replica_name>
 ```
 
-4. Show current replicas registered in master
+4. Show current replicas registered in MAIN
 
 ```mgcommand
 SHOW REPLICAS
 ```
 
+### data_info Field Values Documentation
+
+This section documents observed `data_info` values from `SHOW REPLICAS` during testing to help implement proper parsing logic.
+
+**Format**: `data_info` appears to be a YAML string containing replication health metrics.
+
+#### Observed Values
+
+**Healthy ASYNC Replica**:
+```
+"{memgraph: {behind: 0, status: \"ready\", ts: 2}}"
+```
+- `behind: 0` = replica is caught up
+- `status: "ready"` = replica is functioning normally  
+- `ts: 2` = timestamp/sequence number
+
+**Unhealthy ASYNC Replica**:
+```
+"{memgraph: {behind: -20, status: \"invalid\", ts: 0}}"
+```
+- `behind: -20` = negative value indicates replication error
+- `status: "invalid"` = replica has failed/broken replication
+- `ts: 0` = timestamp reset to zero
+
+**SYNC Replica (Empty)**:
+```
+"{}"
+```
+- Empty object - unclear if this indicates healthy or problematic state
+- May require different parsing logic than ASYNC replicas
+
+#### Notes for Implementation
+- Values appear to be JSON strings that need parsing
+- Negative `behind` values seem to indicate errors
+- `status: "invalid"` is a clear failure indicator
+- Empty `{}` values need investigation (healthy vs unhealthy)
+- Different replica types (SYNC vs ASYNC) may have different data_info formats
+
+*This section will be updated with additional values found during testing*
+
+## data_info Field Values Documentation
+
+This section documents observed `data_info` values from `SHOW REPLICAS` during testing to help implement proper parsing logic.
+
+**Format**: `data_info` appears to be a YAML string containing replication health metrics.
+
+#### Observed Values
+
+**Healthy ASYNC Replica**:
+```
+"{memgraph: {behind: 0, status: \"ready\", ts: 2}}"
+```
+- `behind: 0` = replica is caught up
+- `status: "ready"` = replica is functioning normally  
+- `ts: 2` = timestamp/sequence number
+
+**Unhealthy ASYNC Replica**:
+```
+"{memgraph: {behind: -20, status: \"invalid\", ts: 0}}"
+```
+- `behind: -20` = negative value indicates replication error
+- `status: "invalid"` = replica has failed/broken replication
+- `ts: 0` = timestamp reset to zero
+
+**SYNC Replica (Empty)**:
+```
+"{}"
+```
+- Empty object - unclear if this indicates healthy or problematic state
+- May require different parsing logic than ASYNC replicas
+
+#### Notes for Implementation
+- Values appear to be JSON strings that need parsing
+- Negative `behind` values seem to indicate errors
+- `status: "invalid"` is a clear failure indicator
+- Empty `{}` values need investigation (healthy vs unhealthy)
+- Different replica types (SYNC vs ASYNC) may have different data_info formats
+
+*This section will be updated with additional values found during testing*

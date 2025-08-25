@@ -23,7 +23,7 @@ func TestClassifyClusterState(t *testing.T) {
 			expectedType: INITIAL_STATE,
 		},
 		{
-			name: "operational_state_one_master",
+			name: "operational_state_one_main",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main"},
@@ -34,7 +34,7 @@ func TestClassifyClusterState(t *testing.T) {
 			expectedType: OPERATIONAL_STATE,
 		},
 		{
-			name: "split_brain_multiple_masters",
+			name: "split_brain_multiple_mains",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main"},
@@ -45,7 +45,7 @@ func TestClassifyClusterState(t *testing.T) {
 			expectedType: SPLIT_BRAIN_STATE,
 		},
 		{
-			name: "no_master_all_replicas",
+			name: "no_main_all_replicas",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "replica"},
@@ -53,7 +53,7 @@ func TestClassifyClusterState(t *testing.T) {
 					"memgraph-2": {MemgraphRole: "replica"},
 				},
 			},
-			expectedType: NO_MASTER_STATE,
+			expectedType: NO_MAIN_STATE,
 		},
 		{
 			name: "initial_state_no_roles",
@@ -122,7 +122,7 @@ func TestIsBootstrapSafe(t *testing.T) {
 			expectedSafe: false,
 		},
 		{
-			name: "no_master_unsafe",
+			name: "no_main_unsafe",
 			clusterState: &ClusterState{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "replica"},
@@ -225,7 +225,7 @@ func TestClusterStateString(t *testing.T) {
 		{INITIAL_STATE, "INITIAL_STATE"},
 		{OPERATIONAL_STATE, "OPERATIONAL_STATE"},
 		{MIXED_STATE, "MIXED_STATE"},
-		{NO_MASTER_STATE, "NO_MASTER_STATE"},
+		{NO_MAIN_STATE, "NO_MAIN_STATE"},
 		{SPLIT_BRAIN_STATE, "SPLIT_BRAIN_STATE"},
 	}
 
@@ -249,21 +249,21 @@ func TestClusterStateSummary(t *testing.T) {
 				IsSyncReplica: false,
 			},
 			"memgraph-1": {
-				MemgraphRole:  "replica", 
+				MemgraphRole:  "replica",
 				BoltAddress:   "memgraph-1:7687",
 				IsSyncReplica: true,
 			},
 			"memgraph-2": {
 				MemgraphRole:  "replica",
-				BoltAddress:   "",  // Unhealthy pod
+				BoltAddress:   "", // Unhealthy pod
 				IsSyncReplica: false,
 			},
 		},
-		CurrentMaster:       "memgraph-0",
-		TargetMasterIndex:   0,
-		StateType:          OPERATIONAL_STATE,
-		IsBootstrapPhase:   false,
-		LastStateChange:    now,
+		CurrentMain:      "memgraph-0",
+		TargetMainIndex:  0,
+		StateType:        OPERATIONAL_STATE,
+		IsBootstrapPhase: false,
+		LastStateChange:  now,
 	}
 
 	summary := clusterState.GetClusterHealthSummary()
@@ -287,8 +287,8 @@ func TestClusterStateSummary(t *testing.T) {
 	if summary["sync_replicas"] != 1 {
 		t.Errorf("Summary sync_replicas = %v, want 1", summary["sync_replicas"])
 	}
-	if summary["current_master"] != "memgraph-0" {
-		t.Errorf("Summary current_master = %v, want memgraph-0", summary["current_master"])
+	if summary["current_main"] != "memgraph-0" {
+		t.Errorf("Summary current_main = %v, want memgraph-0", summary["current_main"])
 	}
 	if summary["target_index"] != 0 {
 		t.Errorf("Summary target_index = %v, want 0", summary["target_index"])

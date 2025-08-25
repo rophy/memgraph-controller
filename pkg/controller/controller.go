@@ -42,6 +42,7 @@ type MemgraphController struct {
 	// Controller state tracking
 	lastKnownMain   string
 	targetMainIndex int
+	isBootstrap     bool // Always starts as true, set to false after bootstrap completes
 
 	// Event-driven reconciliation
 	podInformer     cache.SharedInformer
@@ -83,6 +84,8 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 
 	// Initialize controller state
 	controller.maxFailures = 5
+	controller.targetMainIndex = -1
+	controller.isBootstrap = true // Controller starts in bootstrap phase
 	controller.workQueue = make(chan reconcileRequest, 100)
 	controller.stopCh = make(chan struct{})
 

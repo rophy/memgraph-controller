@@ -81,16 +81,20 @@ func (pd *PodDiscovery) GetPodsByLabel(ctx context.Context, labelSelector string
 
 // DiscoverCluster discovers the current state of the Memgraph cluster
 func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState, error) {
-	// Check if this is bootstrap phase (first run)
-	isBootstrap := c.lastKnownMain == "" && c.targetMainIndex < 0
+	if c.isBootstrap {
+		log.Println("=== BOOTSTRAP PHASE ===")
+		log.Println("Controller starts up as BOOTSTRAP phase (per README.md)")
 
-	if isBootstrap {
-		log.Println("=== BOOTSTRAP PHASE DETECTED ===")
-		log.Println("Executing strict bootstrap according to README.md design")
-
-		// Use new bootstrap controller
+		// Use bootstrap controller which implements proper readiness checks
 		bootstrapController := NewBootstrapController(c)
-		return bootstrapController.ExecuteBootstrap(ctx)
+		clusterState, err := bootstrapController.ExecuteBootstrap(ctx)
+		if err != nil {
+			return nil, err
+		}
+		
+		// Mark bootstrap as complete
+		c.isBootstrap = false
+		return clusterState, nil
 	}
 
 	// Operational phase - existing logic

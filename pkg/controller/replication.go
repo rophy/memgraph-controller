@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 )
 
 // ConfigureReplication configures replication for the cluster
@@ -540,104 +539,7 @@ func (c *MemgraphController) configureReplicationWithSyncStrategy(ctx context.Co
 	return nil
 }
 
-// promoteAsyncToSync promotes an ASYNC replica to SYNC mode
-func (c *MemgraphController) promoteAsyncToSync(ctx context.Context, clusterState *ClusterState, targetReplicaPod string) error {
-	currentMain := clusterState.CurrentMain
-	if currentMain == "" {
-		return fmt.Errorf("no main pod available for ASYNC→SYNC promotion")
-	}
 
-	mainPod, exists := clusterState.Pods[currentMain]
-	if !exists {
-		return fmt.Errorf("main pod %s not found", currentMain)
-	}
-
-	targetPod, exists := clusterState.Pods[targetReplicaPod]
-	if !exists {
-		return fmt.Errorf("target replica pod %s not found", targetReplicaPod)
-	}
-
-	log.Printf("🔄 ASYNC→SYNC PROMOTION: %s", targetReplicaPod)
-
-	// Pre-promotion validation
-	if err := c.validateAsyncToSyncPromotion(ctx, clusterState, targetReplicaPod); err != nil {
-		return fmt.Errorf("ASYNC→SYNC promotion validation failed: %w", err)
-	}
-
-	replicaName := targetPod.GetReplicaName()
-	replicaAddress := targetPod.GetReplicationAddressByIP()
-
-	// Check if replica pod is ready for replication
-	if replicaAddress == "" || !targetPod.IsReadyForReplication() {
-		return fmt.Errorf("target replica pod %s not ready for replication (IP: %s, Ready: %v)",
-			targetPod.Name, replicaAddress, targetPod.IsReadyForReplication())
-	}
-
-	// Step 1: Check if replica is caught up
-	log.Printf("Checking if %s is caught up with main...", replicaName)
-	if err := c.verifyReplicaSyncStatus(ctx, mainPod, replicaName); err != nil {
-		log.Printf("⚠️  WARNING: Replica may not be fully caught up: %v", err)
-		log.Printf("⚠️  Proceeding with promotion - verify data consistency manually")
-	}
-
-	// Step 2: Drop existing ASYNC registration
-	log.Printf("Dropping existing ASYNC replica registration: %s", replicaName)
-	if err := c.memgraphClient.DropReplicaWithRetry(ctx, mainPod.BoltAddress, replicaName); err != nil {
-		return fmt.Errorf("failed to drop ASYNC replica %s: %w", replicaName, err)
-	}
-
-	// Step 3: Re-register as SYNC replica
-	log.Printf("Re-registering %s as SYNC replica", replicaName)
-	if err := c.memgraphClient.RegisterReplicaWithModeAndRetry(ctx, mainPod.BoltAddress, replicaName, replicaAddress, "SYNC"); err != nil {
-		return fmt.Errorf("failed to register SYNC replica %s: %w", replicaName, err)
-	}
-
-	// Step 4: Update tracking and clear old SYNC replica
-	c.updateSyncReplicaTracking(clusterState, targetReplicaPod)
-
-	// Step 5: Verify promotion success
-	if err := c.verifyAsyncToSyncPromotion(ctx, clusterState, targetReplicaPod); err != nil {
-		log.Printf("❌ SYNC promotion verification failed: %v", err)
-		return fmt.Errorf("ASYNC→SYNC promotion verification failed: %w", err)
-	}
-
-	log.Printf("✅ Successfully promoted %s to SYNC replica", targetReplicaPod)
-	log.Printf("📊 PROMOTION EVENT: %s promoted from ASYNC to SYNC", targetReplicaPod)
-
-	return nil
-}
-
-// validateAsyncToSyncPromotion validates preconditions for ASYNC→SYNC promotion
-func (c *MemgraphController) validateAsyncToSyncPromotion(ctx context.Context, clusterState *ClusterState, targetReplica string) error {
-	// Check 1: Target replica must exist and be healthy
-	targetPod, exists := clusterState.Pods[targetReplica]
-	if !exists {
-		return fmt.Errorf("target replica %s not found", targetReplica)
-	}
-
-	if !c.isPodHealthyForMain(targetPod) {
-		return fmt.Errorf("target replica %s is not healthy", targetReplica)
-	}
-
-	// Check 2: Target replica must have replica role
-	if targetPod.MemgraphRole != "replica" {
-		return fmt.Errorf("target pod %s has role %s, expected replica", targetReplica, targetPod.MemgraphRole)
-	}
-
-	// Check 3: Target replica must not already be SYNC
-	if targetPod.IsSyncReplica {
-		return fmt.Errorf("target replica %s is already a SYNC replica", targetReplica)
-	}
-
-	// Check 4: Main must be available
-	mainPod, exists := clusterState.Pods[clusterState.CurrentMain]
-	if !exists || !c.isPodHealthyForMain(mainPod) {
-		return fmt.Errorf("main is not available for ASYNC→SYNC promotion")
-	}
-
-	log.Printf("✅ ASYNC→SYNC promotion validation passed for %s", targetReplica)
-	return nil
-}
 
 // verifyReplicaSyncStatus checks if replica is caught up with main
 func (c *MemgraphController) verifyReplicaSyncStatus(ctx context.Context, mainPod *PodInfo, replicaName string) error {
@@ -684,61 +586,7 @@ func (c *MemgraphController) updateSyncReplicaTracking(clusterState *ClusterStat
 	}
 }
 
-// verifyAsyncToSyncPromotion verifies that ASYNC→SYNC promotion succeeded
-func (c *MemgraphController) verifyAsyncToSyncPromotion(ctx context.Context, clusterState *ClusterState, promotedReplica string) error {
-	// Wait a moment for Memgraph to update replica information
-	time.Sleep(100 * time.Millisecond)
 
-	// Re-query main's replica information to get updated status
-	currentMain := clusterState.CurrentMain
-	mainPod := clusterState.Pods[currentMain]
-
-	// Refresh main pod's replica information
-	if refreshedPod, err := c.RefreshPodInfo(ctx, mainPod.Name); err != nil {
-		log.Printf("Warning: Could not refresh main replica info: %v", err)
-	} else {
-		*mainPod = *refreshedPod
-	}
-
-	promotedPod := clusterState.Pods[promotedReplica]
-	replicaName := promotedPod.GetReplicaName()
-
-	// Check if promoted replica is now registered as SYNC
-	for _, replica := range mainPod.ReplicasInfo {
-		if replica.Name == replicaName {
-			if replica.SyncMode == "sync" {
-				log.Printf("✅ Promotion verification passed: %s is now SYNC", promotedReplica)
-				return nil
-			}
-			return fmt.Errorf("replica %s still has sync_mode=%s after promotion", promotedReplica, replica.SyncMode)
-		}
-	}
-
-	return fmt.Errorf("replica %s not found in main's replica list after promotion", promotedReplica)
-}
-
-// emergencyAsyncToSyncPromotion handles emergency SYNC replica promotion when SYNC replica fails
-func (c *MemgraphController) emergencyAsyncToSyncPromotion(ctx context.Context, clusterState *ClusterState) error {
-	log.Printf("🚨 EMERGENCY: Performing ASYNC→SYNC promotion due to SYNC replica failure")
-
-	// Find best candidate for ASYNC→SYNC promotion
-	candidateReplica := c.selectBestAsyncReplicaForSyncPromotion(clusterState)
-	if candidateReplica == "" {
-		return fmt.Errorf("no suitable ASYNC replica available for emergency SYNC promotion")
-	}
-
-	log.Printf("🚨 EMERGENCY PROMOTION: Promoting %s from ASYNC to SYNC", candidateReplica)
-
-	// Perform emergency promotion
-	if err := c.promoteAsyncToSync(ctx, clusterState, candidateReplica); err != nil {
-		return fmt.Errorf("emergency ASYNC→SYNC promotion failed: %w", err)
-	}
-
-	log.Printf("✅ EMERGENCY: Successfully promoted %s to SYNC replica", candidateReplica)
-	log.Printf("📊 EMERGENCY EVENT: ASYNC→SYNC promotion completed due to SYNC replica failure")
-
-	return nil
-}
 
 // detectSyncReplicaHealth monitors SYNC replica health and handles failures
 func (c *MemgraphController) detectSyncReplicaHealth(ctx context.Context, clusterState *ClusterState) error {
@@ -765,7 +613,11 @@ func (c *MemgraphController) detectSyncReplicaHealth(ctx context.Context, cluste
 
 	if syncReplicaName == "" {
 		log.Printf("⚠️  No SYNC replica detected - cluster in degraded state")
-		return c.emergencyAsyncToSyncPromotion(ctx, clusterState)
+		log.Printf("🚨 CRITICAL: Manual intervention required to restore SYNC replica")
+		log.Printf("💡 Options:")
+		log.Printf("  1. Restart existing SYNC replica pod if it exists")
+		log.Printf("  2. Manually promote a healthy ASYNC replica to SYNC")
+		return fmt.Errorf("no SYNC replica available - manual intervention required")
 	}
 
 	// Check if SYNC replica pod exists and is healthy
@@ -834,17 +686,14 @@ func (c *MemgraphController) handleSyncReplicaFailure(ctx context.Context, clust
 		log.Printf("Dropped failed SYNC replica registration: %s", failedReplicaName)
 	}
 
-	// Strategy 3: Emergency ASYNC→SYNC promotion
-	log.Printf("Strategy 3: Emergency ASYNC→SYNC promotion")
-	if err := c.emergencyAsyncToSyncPromotion(ctx, clusterState); err != nil {
-		log.Printf("❌ Emergency ASYNC→SYNC promotion failed: %v", err)
-		log.Printf("🚨 CRITICAL: Cluster remains in degraded state without SYNC replica")
-		log.Printf("💡 Manual intervention required:")
-		log.Printf("  1. Check pod health: kubectl get pods")
-		log.Printf("  2. Restart failed SYNC replica pod if needed")
-		log.Printf("  3. Consider manual ASYNC→SYNC promotion")
-		return fmt.Errorf("SYNC replica failure recovery failed - manual intervention required")
-	}
+	// No automatic ASYNC→SYNC promotion - require manual intervention
+	log.Printf("🚨 CRITICAL: SYNC replica failure requires manual intervention")
+	log.Printf("💡 Manual recovery options:")
+	log.Printf("  1. Check pod health: kubectl get pods -n %s", c.config.Namespace)
+	log.Printf("  2. Restart failed SYNC replica pod if it exists")
+	log.Printf("  3. Manually promote a healthy ASYNC replica to SYNC if needed")
+	log.Printf("  4. Monitor replication lag before promoting ASYNC replicas")
+	return fmt.Errorf("SYNC replica failure - manual intervention required")
 
 	log.Printf("✅ SYNC replica failure handled successfully")
 	return nil
@@ -909,39 +758,6 @@ const (
 	SyncReplicaFailed
 )
 
-// shouldPerformEmergencyPromotion determines if automatic emergency promotion should be performed
-func (c *MemgraphController) shouldPerformEmergencyPromotion(clusterState *ClusterState) bool {
-	// Conservative approach: only perform automatic promotion if:
-	// 1. We have a suitable candidate
-	// 2. The candidate is the expected SYNC replica pod (pod-0 or pod-1)
-	// 3. The cluster is in a healthy state otherwise
-
-	bestCandidate := c.selectBestAsyncReplicaForSyncPromotion(clusterState)
-	if bestCandidate == "" {
-		return false
-	}
-
-	// Only auto-promote if candidate is pod-0 or pod-1 (expected SYNC replica range)
-	candidateIndex := c.config.ExtractPodIndex(bestCandidate)
-	if candidateIndex < 0 || candidateIndex > 1 {
-		log.Printf("Emergency candidate %s is not in expected SYNC range (index %d) - requiring manual intervention",
-			bestCandidate, candidateIndex)
-		return false
-	}
-
-	// Check cluster health
-	healthSummary := clusterState.GetClusterHealthSummary()
-	healthyPods := healthSummary["healthy_pods"].(int)
-	totalPods := healthSummary["total_pods"].(int)
-
-	if healthyPods < totalPods/2 {
-		log.Printf("Cluster health insufficient for automatic promotion: %d/%d pods healthy", healthyPods, totalPods)
-		return false
-	}
-
-	log.Printf("✅ Automatic emergency promotion criteria met for %s", bestCandidate)
-	return true
-}
 
 // provideManaualRecoveryInstructions provides detailed manual recovery instructions
 func (c *MemgraphController) provideManaualRecoveryInstructions(clusterState *ClusterState, failedSyncReplica, bestCandidate string) error {

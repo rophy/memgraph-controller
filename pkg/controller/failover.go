@@ -163,51 +163,6 @@ func (c *MemgraphController) selectBestAsyncReplica(replicas []*PodInfo, targetI
 	return bestReplica
 }
 
-// selectBestAsyncReplicaForSyncPromotion selects the best ASYNC replica for promotion to SYNC
-func (c *MemgraphController) selectBestAsyncReplicaForSyncPromotion(clusterState *ClusterState) string {
-	currentMain := clusterState.CurrentMain
-	targetSyncReplicaName := c.selectSyncReplica(clusterState, currentMain)
-
-	// First preference: the pod that should normally be SYNC replica
-	if targetPod, exists := clusterState.Pods[targetSyncReplicaName]; exists {
-		if c.isPodHealthyForMain(targetPod) && targetPod.MemgraphRole == "replica" && !targetPod.IsSyncReplica {
-			log.Printf("Best ASYNC→SYNC candidate: %s (normal SYNC replica pod)", targetSyncReplicaName)
-			return targetSyncReplicaName
-		}
-	}
-
-	// Second preference: healthy ASYNC replicas, lowest index first
-	var candidates []string
-	for podName, podInfo := range clusterState.Pods {
-		if podName != currentMain &&
-			!podInfo.IsSyncReplica &&
-			podInfo.MemgraphRole == "replica" &&
-			c.isPodHealthyForMain(podInfo) {
-			candidates = append(candidates, podName)
-		}
-	}
-
-	if len(candidates) == 0 {
-		return ""
-	}
-
-	// Sort by index (deterministic selection)
-	var bestCandidate string
-	bestIndex := 999
-	for _, candidate := range candidates {
-		index := c.config.ExtractPodIndex(candidate)
-		if index >= 0 && index < bestIndex {
-			bestIndex = index
-			bestCandidate = candidate
-		}
-	}
-
-	if bestCandidate != "" {
-		log.Printf("Best ASYNC→SYNC candidate: %s (lowest index %d)", bestCandidate, bestIndex)
-	}
-
-	return bestCandidate
-}
 
 // handleMainFailurePromotion handles main failure and promotes SYNC replica
 func (c *MemgraphController) handleMainFailurePromotion(clusterState *ClusterState, replicaPods []string) error {

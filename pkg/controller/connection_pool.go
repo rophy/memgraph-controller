@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j/config"
 )
 
 type ConnectionPool struct {
@@ -68,11 +69,11 @@ func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) 
 	driver, err := neo4j.NewDriverWithContext(
 		fmt.Sprintf("bolt://%s", boltAddress),
 		neo4j.NoAuth(),
-		func(config *neo4j.Config) {
-			config.ConnectionAcquisitionTimeout = 10 * time.Second
-			config.SocketConnectTimeout = 5 * time.Second
-			config.MaxConnectionLifetime = 30 * time.Minute
-			config.MaxConnectionPoolSize = 5
+		func(c *config.Config) {
+			c.ConnectionAcquisitionTimeout = 10 * time.Second
+			c.SocketConnectTimeout = 5 * time.Second
+			c.MaxConnectionLifetime = 30 * time.Minute
+			c.MaxConnectionPoolSize = 5
 		},
 	)
 	if err != nil {

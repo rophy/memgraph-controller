@@ -67,9 +67,7 @@ func convertPodInfoToStatus(podInfo *PodInfo, healthy bool) PodStatus {
 
 	// Convert replica names to readable format (underscore back to dash)
 	replicasRegistered := make([]string, len(podInfo.Replicas))
-	for i, replica := range podInfo.Replicas {
-		replicasRegistered[i] = replica
-	}
+	copy(replicasRegistered, podInfo.Replicas)
 
 	return PodStatus{
 		Name:               podInfo.Name,

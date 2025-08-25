@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j/config"
 	"gopkg.in/yaml.v3"
 )
 
@@ -246,9 +247,9 @@ func (mc *MemgraphClient) QueryReplicationRole(ctx context.Context, boltAddress 
 	driver, err := neo4j.NewDriverWithContext(
 		fmt.Sprintf("bolt://%s", boltAddress),
 		neo4j.NoAuth(),
-		func(config *neo4j.Config) {
-			config.ConnectionAcquisitionTimeout = 10 * time.Second
-			config.SocketConnectTimeout = 5 * time.Second
+		func(c *config.Config) {
+			c.ConnectionAcquisitionTimeout = 10 * time.Second
+			c.SocketConnectTimeout = 5 * time.Second
 		},
 	)
 	if err != nil {
@@ -311,9 +312,9 @@ func (mc *MemgraphClient) TestConnection(ctx context.Context, boltAddress string
 	driver, err := neo4j.NewDriverWithContext(
 		fmt.Sprintf("bolt://%s", boltAddress),
 		neo4j.NoAuth(),
-		func(config *neo4j.Config) {
-			config.ConnectionAcquisitionTimeout = 5 * time.Second
-			config.SocketConnectTimeout = 3 * time.Second
+		func(c *config.Config) {
+			c.ConnectionAcquisitionTimeout = 5 * time.Second
+			c.SocketConnectTimeout = 3 * time.Second
 		},
 	)
 	if err != nil {

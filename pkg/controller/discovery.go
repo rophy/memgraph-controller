@@ -95,6 +95,11 @@ func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState
 		// Mark bootstrap as complete
 		c.isBootstrap = false
 		
+		// Save controller state after successful bootstrap (only if leader)
+		if err := c.saveControllerStateAfterBootstrap(ctx); err != nil {
+			log.Printf("Warning: Failed to save controller state after bootstrap: %v", err)
+		}
+		
 		// IMPORTANT: Re-query cluster state to get fresh replication configuration
 		// Bootstrap just configured new roles, so we need to refresh our view
 		log.Println("Bootstrap completed - re-querying cluster state to refresh internal view...")

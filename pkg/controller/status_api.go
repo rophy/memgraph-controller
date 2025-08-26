@@ -19,6 +19,7 @@ type ClusterStatus struct {
 	HealthyPods           int                   `json:"healthy_pods"`
 	UnhealthyPods         int                   `json:"unhealthy_pods"`
 	SyncReplicaHealthy    bool                  `json:"sync_replica_healthy"`
+	IsLeader              bool                  `json:"is_leader"`
 	ReconciliationMetrics ReconciliationMetrics `json:"reconciliation_metrics"`
 }
 

@@ -54,6 +54,11 @@ spec:
           value: {{ .Values.env.HTTP_PORT | quote }}
         - name: STATEFULSET_NAME
           value: {{ .Values.env.STATEFULSET_NAME | default "memgraph" | quote }}
+        # Leader election environment variables
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         {{- if .Values.gateway.enabled }}
         # Gateway configuration
         - name: GATEWAY_ENABLED

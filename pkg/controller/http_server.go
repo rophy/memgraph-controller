@@ -34,6 +34,7 @@ func NewHTTPServer(controller *MemgraphController, config *Config) *HTTPServer {
 
 	// Register routes
 	mux.HandleFunc("/api/v1/status", httpServer.handleStatus)
+	mux.HandleFunc("/api/v1/leadership", httpServer.handleLeadership)
 	mux.HandleFunc("/health", httpServer.handleHealth)
 	mux.HandleFunc("/", httpServer.handleRoot)
 
@@ -106,6 +107,64 @@ func (h *HTTPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		status.ClusterState.TotalPods, status.ClusterState.CurrentMain)
 }
 
+// handleLeadership handles GET /api/v1/leadership requests
+func (h *HTTPServer) handleLeadership(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	log.Println("Handling leadership API request")
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+
+	// Get current leader from Kubernetes lease
+	leaderElection := h.controller.GetLeaderElection()
+	currentLeader, err := leaderElection.GetCurrentLeader(ctx)
+	if err != nil {
+		log.Printf("Failed to get current leader: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to get current leader: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Get this pod's identity
+	myIdentity, err := leaderElection.GetMyIdentity()
+	if err != nil {
+		log.Printf("Failed to get my identity: %v", err)
+		http.Error(w, fmt.Sprintf("Failed to get pod identity: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Check if this pod is the leader
+	isLeader := h.controller.IsLeader()
+
+	// Prepare response
+	response := map[string]interface{}{
+		"current_leader":    currentLeader,
+		"my_identity":       myIdentity,
+		"i_am_leader":       isLeader,
+		"leader_match":      currentLeader == myIdentity,
+		"timestamp":         time.Now(),
+		"lease_name":        "memgraph-controller-leader",
+		"namespace":         h.config.Namespace,
+	}
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
+
+	// Encode and send response
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		log.Printf("Failed to encode leadership response: %v", err)
+		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
+		return
+	}
+
+	log.Printf("Leadership info: leader=%s, me=%s, i_am_leader=%t", currentLeader, myIdentity, isLeader)
+}
+
 // handleHealth handles GET /health requests for basic health checks
 func (h *HTTPServer) handleHealth(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -140,6 +199,7 @@ func (h *HTTPServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 		"version": "1.0.0",
 		"endpoints": []string{
 			"/api/v1/status",
+			"/api/v1/leadership",
 			"/health",
 		},
 		"timestamp": time.Now(),

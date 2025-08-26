@@ -32,6 +32,14 @@ type MemgraphController struct {
 	httpServer     *HTTPServer
 	gatewayServer  GatewayServerInterface
 
+	// Leader election
+	leaderElection *LeaderElection
+	isLeader       bool
+	leaderMu       sync.RWMutex
+
+	// State persistence
+	stateManager *StateManager
+
 	// Controller loop state
 	isRunning     bool
 	mu            sync.RWMutex
@@ -81,6 +89,13 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 		log.Printf("Failed to initialize gateway adapter: %v", err)
 	}
 	controller.gatewayServer = gatewayAdapter
+
+	// Initialize leader election
+	controller.leaderElection = NewLeaderElection(clientset, config)
+	controller.setupLeaderElectionCallbacks()
+
+	// Initialize state manager
+	controller.stateManager = NewStateManager(clientset, config.Namespace)
 
 	// Initialize controller state
 	controller.maxFailures = 5
@@ -305,6 +320,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 			HealthyPods:           healthyPods,
 			UnhealthyPods:         unhealthyPods,
 			SyncReplicaHealthy:    syncReplicaHealthy,
+			IsLeader:              c.IsLeader(),
 			ReconciliationMetrics: c.GetReconciliationMetrics(),
 		},
 		Pods: podStatuses,
@@ -350,6 +366,113 @@ func (c *MemgraphController) setupInformers() {
 		UpdateFunc: c.onPodUpdate,
 		DeleteFunc: c.onPodDelete,
 	})
+}
+
+// setupLeaderElectionCallbacks configures the callbacks for leader election
+func (c *MemgraphController) setupLeaderElectionCallbacks() {
+	c.leaderElection.SetCallbacks(
+		func(ctx context.Context) {
+			// OnStartedLeading: This controller instance became leader
+			c.leaderMu.Lock()
+			c.isLeader = true
+			c.leaderMu.Unlock()
+			
+			log.Println("🎯 Became leader - loading state and starting controller operations")
+			
+			// Load state to determine startup phase (BOOTSTRAP vs OPERATIONAL)
+			if err := c.loadControllerStateOnStartup(ctx); err != nil {
+				log.Printf("Warning: Failed to load startup state: %v", err)
+			}
+		},
+		func() {
+			// OnStoppedLeading: This controller instance lost leadership
+			c.leaderMu.Lock()
+			c.isLeader = false
+			c.leaderMu.Unlock()
+			
+			log.Println("⏹️  Lost leadership - stopping operations")
+			// Stop reconciliation operations but keep the process running
+		},
+		func(identity string) {
+			// OnNewLeader: A new leader was elected
+			log.Printf("👑 New leader elected: %s", identity)
+		},
+	)
+}
+
+// IsLeader returns true if this controller instance is the current leader
+func (c *MemgraphController) IsLeader() bool {
+	c.leaderMu.RLock()
+	defer c.leaderMu.RUnlock()
+	return c.isLeader
+}
+
+// GetLeaderElection returns the leader election instance for API access
+func (c *MemgraphController) GetLeaderElection() *LeaderElection {
+	return c.leaderElection
+}
+
+// saveControllerStateAfterBootstrap persists the controller state after successful bootstrap
+func (c *MemgraphController) saveControllerStateAfterBootstrap(ctx context.Context) error {
+	if !c.IsLeader() {
+		log.Println("Not leader, skipping state save")
+		return nil
+	}
+
+	c.mu.RLock()
+	targetMainIndex := c.targetMainIndex
+	c.mu.RUnlock()
+
+	if targetMainIndex < 0 {
+		return fmt.Errorf("cannot save state: target main index not set")
+	}
+
+	state := &ControllerState{
+		MasterIndex:        targetMainIndex,
+		LastUpdated:        time.Now(),
+		ControllerVersion:  "v1.0.0", // TODO: Get from build info
+		BootstrapCompleted: true,
+	}
+
+	if err := c.stateManager.SaveState(ctx, state); err != nil {
+		return fmt.Errorf("failed to save controller state: %w", err)
+	}
+
+	log.Printf("✅ Saved controller state after bootstrap: masterIndex=%d", targetMainIndex)
+	return nil
+}
+
+// loadControllerStateOnStartup loads persisted state and determines startup phase
+func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) error {
+	exists, err := c.stateManager.StateExists(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to check state existence: %w", err)
+	}
+
+	if !exists {
+		log.Println("No state ConfigMap found - will start in BOOTSTRAP phase")
+		return nil // Keep default bootstrap=true
+	}
+
+	state, err := c.stateManager.LoadState(ctx)
+	if err != nil {
+		log.Printf("Warning: Failed to load state ConfigMap: %v", err)
+		log.Println("Will start in BOOTSTRAP phase as fallback")
+		return nil // Don't fail startup, just use bootstrap
+	}
+
+	if state.BootstrapCompleted {
+		c.mu.Lock()
+		c.isBootstrap = false // Start in OPERATIONAL phase
+		c.targetMainIndex = state.MasterIndex
+		c.mu.Unlock()
+
+		log.Printf("Loaded persisted state - will start in OPERATIONAL phase: masterIndex=%d", state.MasterIndex)
+	} else {
+		log.Println("State exists but bootstrap not completed - will start in BOOTSTRAP phase")
+	}
+
+	return nil
 }
 
 // onPodAdd handles pod addition events
@@ -428,6 +551,11 @@ func (c *MemgraphController) enqueuePodEvent(reason string) {
 	default:
 		log.Printf("Work queue full, dropping reconcile request: %s", reason)
 	}
+}
+
+// RunLeaderElection starts the leader election process
+func (c *MemgraphController) RunLeaderElection(ctx context.Context) error {
+	return c.leaderElection.Run(ctx)
 }
 
 // Run starts the main controller loop
@@ -526,6 +654,12 @@ func (c *MemgraphController) processReconcileRequest(ctx context.Context, reques
 	startTime := time.Now()
 	log.Printf("Worker %d processing reconcile request: %s (queued at %s)",
 		workerID, request.reason, request.timestamp.Format(time.RFC3339))
+
+	// Only process reconciliation if we are the leader
+	if !c.IsLeader() {
+		log.Printf("Worker %d: Not leader, skipping reconciliation request: %s", workerID, request.reason)
+		return
+	}
 
 	// Execute reconciliation with retry logic
 	err := c.reconcileWithBackoff(ctx)

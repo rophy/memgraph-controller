@@ -7,7 +7,7 @@ metadata:
     app: memgraph-controller
     component: controller
 spec:
-  replicas: 1
+  replicas: 3
   selector:
     matchLabels:
       app: memgraph-controller
@@ -49,6 +49,11 @@ spec:
           value: "8080"
         - name: STATEFULSET_NAME
           value: "memgraph-ha"
+        # Leader election environment variables
+        - name: POD_NAME
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.name
         # Gateway configuration
         - name: GATEWAY_ENABLED
           value: "true"

@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -14,7 +15,7 @@ import (
 )
 
 func main() {
-	log.Println("Starting Memgraph Controller...")
+	log.Println("Starting Memgraph Controller with HA support...")
 
 	config := controller.LoadConfig()
 	log.Printf("Configuration: AppName=%s, Namespace=%s, ReconcileInterval=%s, HTTPPort=%s",
@@ -36,9 +37,9 @@ func main() {
 		log.Fatalf("Failed to connect to Kubernetes API: %v", err)
 	}
 
-	log.Println("Memgraph Controller started successfully")
+	log.Println("Memgraph Controller initialized successfully")
 
-	// Start HTTP server for status API
+	// Start HTTP server for status API (always running, not leader-dependent)
 	if err := ctrl.StartHTTPServer(); err != nil {
 		log.Fatalf("Failed to start HTTP server: %v", err)
 	}
@@ -51,6 +52,32 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
+	var wg sync.WaitGroup
+
+	// Start leader election and controller loop
+	wg.Add(2)
+
+	// Start leader election
+	go func() {
+		defer wg.Done()
+		log.Println("Starting leader election...")
+		if err := ctrl.RunLeaderElection(ctx); err != nil && err != context.Canceled {
+			log.Printf("Leader election failed: %v", err)
+			cancel()
+		}
+	}()
+
+	// Start controller loop
+	go func() {
+		defer wg.Done()
+		log.Println("Starting controller main loop...")
+		if err := ctrl.Run(ctx); err != nil && err != context.Canceled {
+			log.Printf("Controller loop failed: %v", err)
+			cancel()
+		}
+	}()
+
+	// Wait for shutdown signal
 	go func() {
 		<-sigChan
 		log.Println("Received shutdown signal, stopping controller...")
@@ -65,13 +92,8 @@ func main() {
 		cancel()
 	}()
 
-	// Start the main controller loop (includes event-driven reconciliation, 
-	// periodic reconciliation, exponential backoff, and graceful shutdown)
-	log.Println("Starting controller main loop...")
-	if err := ctrl.Run(ctx); err != nil && err != context.Canceled {
-		log.Fatalf("Controller loop failed: %v", err)
-	}
-	
+	// Wait for all components to finish
+	wg.Wait()
 	log.Println("Controller shutdown complete")
 }
 

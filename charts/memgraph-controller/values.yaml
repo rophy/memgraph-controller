@@ -3,7 +3,20 @@ image:
   tag: latest
   pullPolicy: IfNotPresent
 
-replicas: 1
+# High Availability Configuration
+# Controller always supports HA with leader election
+# Default: 3 replicas for production HA deployment
+# Set replicas: 1 for single-instance development/testing
+replicas: 3
+
+# Leader election configuration
+leaderElection:
+  # Resource lock lease duration (how long a leader holds the lock)
+  leaseDuration: 15s
+  # Deadline for renewing the leadership lock
+  renewDeadline: 10s
+  # Retry period for leader election
+  retryPeriod: 2s
 
 env:
   APP_NAME: memgraph
@@ -16,6 +29,11 @@ env:
   # For example: if user installs memgraph with "helm install my-db memgraph/memgraph"
   # then STATEFULSET_NAME should be "my-db-memgraph" to match the StatefulSet name
 
+# Resource requirements
+# For HA mode, consider increasing requests:
+#   requests:
+#     cpu: 200m
+#     memory: 256Mi
 resources:
   limits:
     cpu: 500m
@@ -36,7 +54,20 @@ nodeSelector: {}
 
 tolerations: []
 
+# Pod anti-affinity to spread replicas across nodes (recommended for HA)
+# Uncomment for HA deployment:
 affinity: {}
+  # podAntiAffinity:
+  #   preferredDuringSchedulingIgnoredDuringExecution:
+  #   - weight: 100
+  #     podAffinityTerm:
+  #       labelSelector:
+  #         matchExpressions:
+  #         - key: app.kubernetes.io/name
+  #           operator: In
+  #           values:
+  #           - memgraph-controller
+  #       topologyKey: kubernetes.io/hostname
 
 podAnnotations: {}
 

@@ -1,9 +1,9 @@
 apiVersion: v2
 name: memgraph-controller
 type: application
-version: 0.1.0
+version: 0.2.0
 appVersion: "latest"
-description: Memgraph Kubernetes Controller for managing cluster replication
+description: Memgraph Kubernetes Controller with High Availability support for managing cluster replication
 keywords:
 - memgraph
 - controller

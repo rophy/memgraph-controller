@@ -207,6 +207,15 @@ func (c *MemgraphController) configureReplicationWithEnhancedSyncStrategy(ctx co
 		configErrors = append(configErrors, fmt.Errorf("ASYNC replica configuration: %w", err))
 	}
 
+	// Refresh replica information from main to get current state after configuration
+	mainPod := clusterState.Pods[currentMain]
+	if replicasResp, err := c.memgraphClient.QueryReplicasWithRetry(ctx, mainPod.BoltAddress); err != nil {
+		log.Printf("Warning: Failed to refresh replicas info from main %s: %v", currentMain, err)
+	} else {
+		mainPod.ReplicasInfo = replicasResp.Replicas
+		log.Printf("Refreshed replica information from main - found %d replicas", len(mainPod.ReplicasInfo))
+	}
+
 	// Phase 3: Verify final SYNC replica configuration
 	if err := c.verifySyncReplicaConfiguration(ctx, clusterState); err != nil {
 		log.Printf("⚠️  SYNC replica verification failed: %v", err)

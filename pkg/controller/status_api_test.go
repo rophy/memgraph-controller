@@ -27,7 +27,7 @@ func TestConvertPodInfoToStatus(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod, "memgraph")
+	podInfo := NewPodInfo(pod)
 	podInfo.MemgraphRole = "main"
 	podInfo.Replicas = []string{"memgraph_1", "memgraph_2"}
 	podInfo.State = MAIN
@@ -90,7 +90,7 @@ func TestConvertPodInfoToStatus_SyncReplica(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod, "memgraph")
+	podInfo := NewPodInfo(pod)
 	podInfo.MemgraphRole = "replica"
 	podInfo.State = REPLICA
 	podInfo.IsSyncReplica = true
@@ -152,11 +152,11 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 		},
 	}
 
-	podInfo1 := NewPodInfo(pod1, "memgraph")
+	podInfo1 := NewPodInfo(pod1)
 	podInfo1.MemgraphRole = "main"
 	podInfo1.State = MAIN
 
-	podInfo2 := NewPodInfo(pod2, "memgraph")
+	podInfo2 := NewPodInfo(pod2)
 	podInfo2.MemgraphRole = "replica"
 	podInfo2.State = REPLICA
 	podInfo2.IsSyncReplica = true

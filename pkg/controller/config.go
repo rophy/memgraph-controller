@@ -14,7 +14,6 @@ type Config struct {
 	ReconcileInterval time.Duration
 	BoltPort          string
 	ReplicationPort   string
-	ServiceName       string
 	HTTPPort          string
 	StatefulSetName   string
 
@@ -35,7 +34,6 @@ func LoadConfig() *Config {
 		ReconcileInterval: reconcileInterval,
 		BoltPort:          getEnvOrDefault("BOLT_PORT", "7687"),
 		ReplicationPort:   getEnvOrDefault("REPLICATION_PORT", "10000"),
-		ServiceName:       getEnvOrDefault("SERVICE_NAME", "memgraph"),
 		HTTPPort:          getEnvOrDefault("HTTP_PORT", "8080"),
 		StatefulSetName:   getEnvOrDefault("STATEFULSET_NAME", "memgraph"),
 

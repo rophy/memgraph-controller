@@ -78,7 +78,6 @@ type PodInfo struct {
 	Timestamp          time.Time     // Pod creation/restart time
 	MemgraphRole       string        // Result of SHOW REPLICATION ROLE ("MAIN", "REPLICA")
 	BoltAddress        string        // Pod IP:7687 for Bolt connections
-	ReplicationAddress string        // <pod-name>.<service-name>:10000 for replication
 	ReplicaName        string        // Pod name with dashes → underscores for REGISTER REPLICA
 	Replicas           []string      // Result of SHOW REPLICAS (only for MAIN nodes)
 	ReplicasInfo       []ReplicaInfo // Detailed replica information including sync mode
@@ -92,7 +91,7 @@ func NewClusterState() *ClusterState {
 	}
 }
 
-func NewPodInfo(pod *v1.Pod, serviceName string) *PodInfo {
+func NewPodInfo(pod *v1.Pod) *PodInfo {
 	podName := pod.Name
 
 	// Extract timestamp (prefer status start time, fallback to creation time)
@@ -107,8 +106,6 @@ func NewPodInfo(pod *v1.Pod, serviceName string) *PodInfo {
 		boltAddress = pod.Status.PodIP + ":7687"
 	}
 
-	replicationAddress := podName + "." + serviceName + ":10000"
-
 	// Convert pod name for replica registration (dashes to underscores)
 	replicaName := convertPodNameForReplica(podName)
 
@@ -118,7 +115,6 @@ func NewPodInfo(pod *v1.Pod, serviceName string) *PodInfo {
 		Timestamp:          timestamp,
 		MemgraphRole:       "", // Will be queried later
 		BoltAddress:        boltAddress,
-		ReplicationAddress: replicationAddress,
 		ReplicaName:        replicaName,
 		Replicas:           []string{},
 		ReplicasInfo:       []ReplicaInfo{},

@@ -45,7 +45,7 @@ func (pd *PodDiscovery) DiscoverPods(ctx context.Context) (*ClusterState, error)
 			continue
 		}
 
-		podInfo := NewPodInfo(&pod, pd.config.ServiceName)
+		podInfo := NewPodInfo(&pod)
 		clusterState.Pods[pod.Name] = podInfo
 
 		log.Printf("Discovered pod: %s, IP: %s, Timestamp: %s",
@@ -72,7 +72,7 @@ func (pd *PodDiscovery) GetPodsByLabel(ctx context.Context, labelSelector string
 	clusterState := NewClusterState()
 
 	for _, pod := range pods.Items {
-		podInfo := NewPodInfo(&pod, pd.config.ServiceName)
+		podInfo := NewPodInfo(&pod)
 		clusterState.Pods[pod.Name] = podInfo
 	}
 

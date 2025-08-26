@@ -21,7 +21,7 @@ func TestLoadConfig(t *testing.T) {
 				ReconcileInterval:  30 * time.Second,
 				BoltPort:           "7687",
 				ReplicationPort:    "10000",
-				ServiceName:        "memgraph",
+				StatefulSetName:    "memgraph",
 			},
 		},
 		{
@@ -32,7 +32,7 @@ func TestLoadConfig(t *testing.T) {
 				"RECONCILE_INTERVAL":  "60s",
 				"BOLT_PORT":           "8687",
 				"REPLICATION_PORT":    "11000",
-				"SERVICE_NAME":        "custom-service",
+				"STATEFULSET_NAME":    "custom-statefulset",
 			},
 			expected: &Config{
 				AppName:            "custom-app",
@@ -40,7 +40,7 @@ func TestLoadConfig(t *testing.T) {
 				ReconcileInterval:  60 * time.Second,
 				BoltPort:           "8687",
 				ReplicationPort:    "11000",
-				ServiceName:        "custom-service",
+				StatefulSetName:    "custom-statefulset",
 			},
 		},
 	}
@@ -73,8 +73,8 @@ func TestLoadConfig(t *testing.T) {
 			if config.ReplicationPort != tt.expected.ReplicationPort {
 				t.Errorf("ReplicationPort = %v, want %v", config.ReplicationPort, tt.expected.ReplicationPort)
 			}
-			if config.ServiceName != tt.expected.ServiceName {
-				t.Errorf("ServiceName = %v, want %v", config.ServiceName, tt.expected.ServiceName)
+			if config.StatefulSetName != tt.expected.StatefulSetName {
+				t.Errorf("StatefulSetName = %v, want %v", config.StatefulSetName, tt.expected.StatefulSetName)
 			}
 		})
 	}

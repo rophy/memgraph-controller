@@ -43,8 +43,6 @@ spec:
           value: "30s"
         - name: BOLT_PORT
           value: "7687"
-        - name: SERVICE_NAME
-          value: "memgraph-ha"
         - name: HTTP_PORT
           value: "8080"
         - name: STATEFULSET_NAME

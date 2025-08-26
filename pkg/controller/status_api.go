@@ -75,7 +75,7 @@ func convertPodInfoToStatus(podInfo *PodInfo, healthy bool) PodStatus {
 		State:              podInfo.State.String(),
 		MemgraphRole:       podInfo.MemgraphRole,
 		BoltAddress:        podInfo.BoltAddress,
-		ReplicationAddress: podInfo.ReplicationAddress,
+		ReplicationAddress: podInfo.GetReplicationAddress(),
 		Timestamp:          podInfo.Timestamp,
 		Healthy:            healthy,
 		IsSyncReplica:      podInfo.IsSyncReplica,

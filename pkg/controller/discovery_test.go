@@ -66,9 +66,8 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 
 	fakeClient := fake.NewSimpleClientset(pod1, pod2, pod3)
 	config := &Config{
-		AppName:     "memgraph",
-		Namespace:   "memgraph",
-		ServiceName: "memgraph-service",
+		AppName:   "memgraph",
+		Namespace: "memgraph",
 	}
 
 	discovery := NewPodDiscovery(fakeClient, config)
@@ -128,8 +127,7 @@ func TestPodDiscovery_GetPodsByLabel(t *testing.T) {
 
 	fakeClient := fake.NewSimpleClientset(pod)
 	config := &Config{
-		Namespace:   "memgraph",
-		ServiceName: "memgraph-service",
+		Namespace: "memgraph",
 	}
 
 	discovery := NewPodDiscovery(fakeClient, config)

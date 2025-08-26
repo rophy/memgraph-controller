@@ -521,7 +521,7 @@ func (c *MemgraphController) RefreshPodInfo(ctx context.Context, podName string)
 		log.Printf("Refreshed pod %s IP: %s", podName, pod.Status.PodIP)
 	}
 
-	return NewPodInfo(pod, c.config.ServiceName), nil
+	return NewPodInfo(pod), nil
 }
 
 // shouldReconcile determines if a pod update requires reconciliation

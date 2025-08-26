@@ -65,7 +65,7 @@ func TestNewPodInfo(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod, "memgraph-service")
+	podInfo := NewPodInfo(pod)
 
 	if podInfo.Name != "memgraph-1" {
 		t.Errorf("Name = %s, want memgraph-1", podInfo.Name)
@@ -85,8 +85,8 @@ func TestNewPodInfo(t *testing.T) {
 		t.Errorf("BoltAddress = %s, want 10.0.0.1:7687", podInfo.BoltAddress)
 	}
 
-	if podInfo.ReplicationAddress != "memgraph-1.memgraph-service:10000" {
-		t.Errorf("ReplicationAddress = %s, want memgraph-1.memgraph-service:10000", podInfo.ReplicationAddress)
+	if podInfo.GetReplicationAddress() != "10.0.0.1:10000" {
+		t.Errorf("GetReplicationAddress = %s, want 10.0.0.1:10000", podInfo.GetReplicationAddress())
 	}
 
 	if podInfo.ReplicaName != "memgraph_1" {
@@ -118,7 +118,7 @@ func TestNewPodInfo_NoStartTime(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod, "memgraph-service")
+	podInfo := NewPodInfo(pod)
 
 	// Should fall back to CreationTimestamp
 	expectedTime := creationTime.Time
@@ -139,7 +139,7 @@ func TestNewPodInfo_NoPodIP(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod, "memgraph-service")
+	podInfo := NewPodInfo(pod)
 
 	if podInfo.BoltAddress != "" {
 		t.Errorf("BoltAddress = %s, want empty", podInfo.BoltAddress)

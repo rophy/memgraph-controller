@@ -14,7 +14,11 @@ func TestLoadConfig(t *testing.T) {
 	}{
 		{
 			name:    "default values",
-			envVars: map[string]string{},
+			envVars: map[string]string{
+				"APP_NAME":         "memgraph",
+				"NAMESPACE":        "memgraph",
+				"STATEFULSET_NAME": "memgraph",
+			},
 			expected: &Config{
 				AppName:            "memgraph",
 				Namespace:          "memgraph",

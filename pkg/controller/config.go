@@ -29,13 +29,13 @@ func LoadConfig() *Config {
 	}
 
 	return &Config{
-		AppName:           getEnvOrDefault("APP_NAME", "memgraph"),
-		Namespace:         getEnvOrDefault("NAMESPACE", "memgraph"),
+		AppName:           os.Getenv("APP_NAME"),
+		Namespace:         os.Getenv("NAMESPACE"),
 		ReconcileInterval: reconcileInterval,
 		BoltPort:          getEnvOrDefault("BOLT_PORT", "7687"),
 		ReplicationPort:   getEnvOrDefault("REPLICATION_PORT", "10000"),
 		HTTPPort:          getEnvOrDefault("HTTP_PORT", "8080"),
-		StatefulSetName:   getEnvOrDefault("STATEFULSET_NAME", "memgraph"),
+		StatefulSetName:   os.Getenv("STATEFULSET_NAME"),
 
 		// Gateway configuration
 		GatewayEnabled:     getEnvOrDefaultBool("GATEWAY_ENABLED", false),

@@ -37,8 +37,6 @@ spec:
         env:
         - name: APP_NAME
           value: "memgraph"
-        - name: NAMESPACE
-          value: "memgraph"
         - name: RECONCILE_INTERVAL
           value: "30s"
         - name: BOLT_PORT
@@ -52,6 +50,10 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.name
+        - name: NAMESPACE
+          valueFrom:
+            fieldRef:
+              fieldPath: metadata.namespace
         # Gateway configuration
         - name: GATEWAY_ENABLED
           value: "true"

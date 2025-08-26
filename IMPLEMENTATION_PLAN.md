@@ -1,128 +1,143 @@
-# Implementation Plan: Fix Controller Startup Issues
+# Controller HA Implementation Plan
 
-## Overview
-Fix two critical issues during controller startup:
-1. **Log spam** from multiple workers running concurrent reconciliations
-2. **False CRITICAL errors** from overly complex SYNC replica logic
+## Goal
+Enable memgraph-controller to scale out for High Availability by supporting multiple replicas with leader election.
 
-## Issues Analysis
+## Current State
+- Controller runs as single replica (replicas=1)
+- Maintains masterIndex in memory
+- Has robust BOOTSTRAP → OPERATIONAL phase logic
 
-### Issue 1: Log Spam During Startup
-**Root Cause**: 2 concurrent workers running identical full cluster reconciliations during pod state changes
-**Evidence**: Duplicate "Worker 0/1 processing reconcile request" messages during startup
-**Impact**: Confusing logs, race conditions, duplicated work
+## Proposed Design
 
-### Issue 2: False CRITICAL Errors
-**Root Cause**: Overly complex `demoteSyncToAsync` logic that violates design principles
-**Evidence**: "✅ SYNC replica configured" immediately followed by "🚨 CRITICAL: Manual intervention required"
-**Design Violation**: Controller should never demote pod-0/pod-1 from SYNC to ASYNC per README.md
+### Core Components
+1. **Leader Election**: Use Kubernetes leader election SDK
+2. **State Persistence**: Store masterIndex in ConfigMap  
+3. **Phase Logic**: ConfigMap existence determines startup phase
+   - ConfigMap missing → BOOTSTRAP phase (query Memgraph cluster)
+   - ConfigMap exists → OPERATIONAL phase (use cached masterIndex)
 
-## Stage 1: Fix Multiple Workers Issue
-**Goal**: Reduce workers from 2 to 1 to eliminate concurrent reconciliation
-**Success Criteria**: Single worker processes reconciliation, no duplicate logs
+## Implementation Stages
 
-### Changes
-- **File**: `pkg/controller/controller.go`
-- **Change**: `const numWorkers = 2` → `const numWorkers = 1`
+### Stage 1: Add Leader Election Infrastructure
+**Goal**: Implement basic leader election without changing core logic
+**Success Criteria**: 
+- Multiple controller replicas can run
+- Only one replica is active (leader)
+- Leader election works on pod restart/failure
+**Tests**: 
+- Deploy 3 controller replicas
+- Verify only 1 is active
+- Kill leader, verify new leader elected
+**Status**: Not Started
 
-### Tests
-- [ ] Deploy controller and verify single worker in logs
-- [ ] Confirm no duplicate reconciliation messages during startup
-- [ ] Verify reconciliation still works correctly
+### Stage 2: Add ConfigMap State Persistence
+**Goal**: Persist masterIndex to ConfigMap after bootstrap completion
+**Success Criteria**:
+- ConfigMap created/updated after successful bootstrap
+- ConfigMap contains masterIndex and timestamp
+- Bootstrap still works when ConfigMap doesn't exist
+**Tests**:
+- Bootstrap fresh cluster, verify ConfigMap created
+- Verify ConfigMap contains correct masterIndex
+- Delete ConfigMap, verify controller re-bootstraps
+**Status**: Not Started
 
-**Status**: ✅ Completed
+### Stage 3: Implement ConfigMap-based Phase Selection
+**Goal**: New leaders use ConfigMap to determine startup phase
+**Success Criteria**:
+- Leader reads ConfigMap on startup
+- ConfigMap exists → OPERATIONAL phase
+- ConfigMap missing → BOOTSTRAP phase
+- Existing bootstrap/operational logic unchanged
+**Tests**:
+- Kill leader with existing ConfigMap, verify new leader starts in OPERATIONAL
+- Delete ConfigMap and kill leader, verify new leader bootstraps
+- Verify masterIndex consistency across leader changes
+**Status**: Not Started
 
-## Stage 2: Simplify SYNC Replica Logic
-**Goal**: Remove unnecessary `demoteSyncToAsync` complexity that violates design principles
-**Success Criteria**: No false CRITICAL errors, simplified deterministic SYNC assignment
+### Stage 4: Update Helm Chart for Multi-Replica Deployment
+**Goal**: Enable multiple controller replicas in production
+**Success Criteria**:
+- Helm chart supports configurable replica count
+- RBAC permissions include coordination.k8s.io for leader election
+- Default remains replicas=1 for backward compatibility
+**Tests**:
+- Deploy with replicas=3, verify HA functionality
+- Verify RBAC permissions work
+- Test upgrade path from single replica
+**Status**: Not Started
 
-### Design Principles (from README.md)
-- **Two-Pod Authority**: Only pod-0 and pod-1 eligible for MAIN/SYNC roles
-- **pod-2, pod-3, ...**: ALWAYS ASYNC replicas only
-- **Deterministic**: SYNC replica determined by MAIN pod (pod-0→pod-1, pod-1→pod-0)
+### Stage 5: Integration Testing & Documentation
+**Goal**: Comprehensive testing and documentation
+**Success Criteria**:
+- E2E tests pass with multi-replica controller
+- Failover scenarios tested (leader kill during operations)
+- Documentation updated
+- Performance impact measured
+**Tests**:
+- Run existing e2e tests with HA controller
+- Test leader failover during Memgraph failover
+- Load testing with multiple replicas
+**Status**: Not Started
 
-### Changes
-- **File**: `pkg/controller/replication.go`
-- **Remove**: `demoteSyncToAsync()` function entirely
-- **Simplify**: `ensureCorrectSyncReplica()` to just configure target SYNC replica
-- **Remove**: Complex switching logic and `currentSyncReplica` parameter
+## Technical Details
 
-### Implementation Details
-
-#### Before (Overly Complex)
+### Leader Election Configuration
 ```go
-// Need to change SYNC replica assignment
-if currentSyncReplica != "" {
-    if err := c.demoteSyncToAsync(ctx, clusterState, currentSyncReplica); err != nil {
-        log.Printf("Warning: Failed to demote old SYNC replica %s: %v", currentSyncReplica, err)
-    }
+leaderElectionConfig := leaderelection.LeaderElectionConfig{
+    Lock: &resourcelock.LeaseLock{
+        LeaseMeta: metav1.ObjectMeta{
+            Name:      "memgraph-controller-leader",
+            Namespace: namespace,
+        },
+    },
+    LeaseDuration: 15 * time.Second,
+    RenewDeadline: 10 * time.Second,
+    RetryPeriod:   2 * time.Second,
 }
 ```
 
-#### After (Simple & Deterministic)
-```go
-func (c *MemgraphController) ensureCorrectSyncReplica(ctx context.Context, clusterState *ClusterState, targetSyncReplica string) error {
-    if targetSyncReplica == "" {
-        return fmt.Errorf("no target SYNC replica specified")
-    }
-
-    // Simply configure the target pod as SYNC replica (idempotent operation)
-    if err := c.configurePodAsSyncReplica(ctx, clusterState, targetSyncReplica); err != nil {
-        return fmt.Errorf("failed to configure SYNC replica %s: %w", targetSyncReplica, err)
-    }
-
-    log.Printf("✅ Configured %s as SYNC replica", targetSyncReplica)
-    return nil
-}
+### ConfigMap State Schema
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memgraph-controller-state
+data:
+  masterIndex: "0"
+  lastUpdated: "2025-08-26T01:15:00Z"
+  controllerVersion: "v1.0.0"
 ```
 
-### Why This Is Safe
-1. **Idempotent operations**: Configuring already-SYNC replica as SYNC is harmless
-2. **Deterministic assignment**: Controller always selects same SYNC replica for given MAIN
-3. **Bootstrap handles initial state**: Complex transitions handled during bootstrap
-4. **Memgraph handles conflicts**: Duplicate registrations succeed gracefully
+### RBAC Requirements
+```yaml
+- apiGroups: ["coordination.k8s.io"]
+  resources: ["leases"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+```
 
-### Tests
-- [ ] No false CRITICAL errors during bootstrap
-- [ ] SYNC replica configuration works correctly
-- [ ] No unnecessary replica mode changes between pod-0/pod-1
-- [ ] Cleaner, predictable logs
+## Risk Mitigation
 
-**Status**: ✅ Completed
+### Split-Brain Prevention
+- Kubernetes leader election prevents multiple active controllers
+- ConfigMap updates are atomic
+- Existing bootstrap logic handles state inconsistencies
 
-## Stage 3: Validation & Monitoring
-**Goal**: Ensure both fixes work correctly and no regressions
+### Backward Compatibility
+- Single replica deployment continues to work unchanged
+- No breaking changes to existing APIs
+- ConfigMap is optional (bootstrap fallback)
 
-### Validation Criteria
-- [ ] Single worker logged during startup
-- [ ] No duplicate reconciliation messages
-- [ ] No "CRITICAL: Manual intervention required" after successful SYNC replica configuration
-- [ ] SYNC replica health checks pass when replica is healthy
-- [ ] No regression in normal controller functionality
+### Performance Considerations
+- Leader election adds ~100ms overhead on startup
+- ConfigMap operations are lightweight
+- No impact on steady-state reconciliation performance
 
-### Manual Testing
-1. Deploy controller and monitor startup logs
-2. Verify clean bootstrap sequence
-3. Test with pod restarts during operational phase
-4. Confirm SYNC replica assignments follow deterministic rules
-
-**Status**: ✅ Completed
-
-## Risk Assessment
-
-### Low Risk Changes
-- **Single worker**: Simple constant change, easily reversible
-- **Simplify SYNC logic**: Removes complexity, aligns with design principles
-
-### Mitigation
-- **Incremental deployment**: Test single worker first, then simplify SYNC logic
-- **Rollback plan**: Both changes easily reversible
-- **Monitoring**: Watch for new errors or performance issues
-
-## Expected Outcome
-Both issues should be resolved:
-1. **Clean startup logs** with single reconciliation path
-2. **No false CRITICAL errors** due to simplified, correct SYNC replica logic
-3. **More predictable behavior** following README.md design principles
-
-The root cause is **over-engineering** - trying to handle dynamic cases that shouldn't exist in a deterministic system.
+## Rollback Plan
+- Revert helm chart to replicas=1
+- ConfigMap can be safely deleted (controller will re-bootstrap)
+- No persistent state changes that prevent rollback

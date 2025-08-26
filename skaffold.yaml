@@ -21,7 +21,8 @@ deploy:
       namespace: memgraph
       createNamespace: true
       wait: true
-
+  logs:
+    prefix: podAndContainer
 # Port forwarding for development (default profile - memgraph + controller)
 portForward:
 - resourceType: service

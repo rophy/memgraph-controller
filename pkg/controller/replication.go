@@ -354,7 +354,67 @@ func (c *MemgraphController) verifySyncReplicaConfiguration(ctx context.Context,
 		return fmt.Errorf("no SYNC replica configured")
 
 	case 1:
-		log.Printf("✅ SYNC replica verification passed: %s", syncReplicaName)
+		// Verify SYNC replica health from main's perspective
+		currentMain := clusterState.CurrentMain
+		if currentMain == "" {
+			log.Printf("⚠️  WARNING: Cannot verify SYNC replica health - no main available")
+			return fmt.Errorf("no main available to verify SYNC replica")
+		}
+
+		mainPod, exists := clusterState.Pods[currentMain]
+		if !exists {
+			return fmt.Errorf("main pod %s not found in cluster state", currentMain)
+		}
+
+		// Find the SYNC replica info from main's perspective
+		syncReplicaPodName := strings.ReplaceAll(syncReplicaName, "-", "_")
+		var syncReplicaInfo *ReplicaInfo
+		for _, replica := range mainPod.ReplicasInfo {
+			if replica.Name == syncReplicaPodName && replica.SyncMode == "sync" {
+				syncReplicaInfo = &replica
+				break
+			}
+		}
+
+		if syncReplicaInfo == nil {
+			log.Printf("❌ SYNC replica %s not found in main's replica list", syncReplicaName)
+			return fmt.Errorf("SYNC replica %s not registered with main", syncReplicaName)
+		}
+
+		// Verify data_info health status
+		if syncReplicaInfo.ParsedDataInfo != nil {
+			if !syncReplicaInfo.ParsedDataInfo.IsHealthy {
+				log.Printf("⚠️  SYNC replica %s is unhealthy: %s", syncReplicaName, syncReplicaInfo.ParsedDataInfo.ErrorReason)
+				return fmt.Errorf("SYNC replica %s unhealthy: %s", syncReplicaName, syncReplicaInfo.ParsedDataInfo.ErrorReason)
+			}
+			
+			// Check replication lag
+			if syncReplicaInfo.ParsedDataInfo.Behind > 0 {
+				log.Printf("⚠️  SYNC replica %s has replication lag: %d transactions behind", syncReplicaName, syncReplicaInfo.ParsedDataInfo.Behind)
+				// For SYNC replicas, any lag is concerning but not necessarily an error during initial setup
+				if syncReplicaInfo.ParsedDataInfo.Behind > 10 {
+					return fmt.Errorf("SYNC replica %s has excessive lag: %d transactions behind", syncReplicaName, syncReplicaInfo.ParsedDataInfo.Behind)
+				}
+			}
+
+			// Verify status is "ready"
+			if syncReplicaInfo.ParsedDataInfo.Status != "ready" {
+				log.Printf("⚠️  SYNC replica %s status is '%s', expected 'ready'", syncReplicaName, syncReplicaInfo.ParsedDataInfo.Status)
+				return fmt.Errorf("SYNC replica %s has non-ready status: %s", syncReplicaName, syncReplicaInfo.ParsedDataInfo.Status)
+			}
+
+			log.Printf("✅ SYNC replica verification passed: %s (status: %s, lag: %d)", 
+				syncReplicaName, syncReplicaInfo.ParsedDataInfo.Status, syncReplicaInfo.ParsedDataInfo.Behind)
+		} else {
+			// No parsed data info available, check raw data_info
+			if syncReplicaInfo.DataInfo == "" || syncReplicaInfo.DataInfo == "Null" {
+				log.Printf("⚠️  WARNING: SYNC replica %s has no data_info - may still be initializing", syncReplicaName)
+				// Don't fail immediately as replica might be initializing
+			} else {
+				log.Printf("✅ SYNC replica verification passed: %s (raw data_info: %s)", syncReplicaName, syncReplicaInfo.DataInfo)
+			}
+		}
+		
 		return nil
 
 	default:

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"strconv"
 	"time"
 
@@ -113,6 +114,19 @@ func (sm *StateManager) SaveState(ctx context.Context, state *ControllerState) e
 		"bootstrapCompleted": strconv.FormatBool(state.BootstrapCompleted),
 	}
 
+	// Get owner reference for the controller deployment
+	ownerRef, err := sm.getControllerDeploymentOwnerRef(ctx)
+	if err != nil {
+		log.Printf("Warning: Failed to get controller deployment owner reference: %v", err)
+		// Continue without owner reference rather than failing
+	}
+
+	// Prepare owner references slice
+	var ownerRefs []metav1.OwnerReference
+	if ownerRef != nil {
+		ownerRefs = []metav1.OwnerReference{*ownerRef}
+	}
+
 	configMap := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      StateConfigMapName,
@@ -121,6 +135,7 @@ func (sm *StateManager) SaveState(ctx context.Context, state *ControllerState) e
 				"app.kubernetes.io/name":      "memgraph-controller",
 				"app.kubernetes.io/component": "state",
 			},
+			OwnerReferences: ownerRefs,
 		},
 		Data: data,
 	}
@@ -129,8 +144,22 @@ func (sm *StateManager) SaveState(ctx context.Context, state *ControllerState) e
 	existingConfigMap, err := sm.clientset.CoreV1().ConfigMaps(sm.namespace).Get(
 		ctx, StateConfigMapName, metav1.GetOptions{})
 	if err == nil {
-		// Update existing ConfigMap
+		// Update existing ConfigMap with new data and owner reference
 		existingConfigMap.Data = data
+		// Add owner reference if we have one and it's not already set
+		if ownerRef != nil {
+			hasOwner := false
+			for _, existing := range existingConfigMap.OwnerReferences {
+				if existing.UID == ownerRef.UID {
+					hasOwner = true
+					break
+				}
+			}
+			if !hasOwner {
+				existingConfigMap.OwnerReferences = ownerRefs
+				log.Printf("Added owner reference to existing ConfigMap")
+			}
+		}
 		_, err = sm.clientset.CoreV1().ConfigMaps(sm.namespace).Update(ctx, existingConfigMap, metav1.UpdateOptions{})
 		if err != nil {
 			return fmt.Errorf("failed to update state ConfigMap: %w", err)
@@ -142,7 +171,11 @@ func (sm *StateManager) SaveState(ctx context.Context, state *ControllerState) e
 		if err != nil {
 			return fmt.Errorf("failed to create state ConfigMap: %w", err)
 		}
-		log.Printf("Created new state ConfigMap")
+		if ownerRef != nil {
+			log.Printf("Created new state ConfigMap with owner reference to Deployment %s", ownerRef.Name)
+		} else {
+			log.Printf("Created new state ConfigMap without owner reference")
+		}
 	}
 
 	return nil
@@ -180,6 +213,59 @@ func (sm *StateManager) GetStateVersion(ctx context.Context) (string, error) {
 		return "", err
 	}
 	return state.ControllerVersion, nil
+}
+
+// getControllerDeploymentOwnerRef gets the owner reference for the controller deployment
+func (sm *StateManager) getControllerDeploymentOwnerRef(ctx context.Context) (*metav1.OwnerReference, error) {
+	// Get pod name from environment variable (set by Kubernetes via fieldRef)
+	podName := os.Getenv("POD_NAME")
+	if podName == "" {
+		log.Printf("Warning: POD_NAME env var not set, ConfigMap will not have owner reference")
+		return nil, nil
+	}
+
+	// Get the pod to find its owner (the ReplicaSet)
+	pod, err := sm.clientset.CoreV1().Pods(sm.namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod %s: %w", podName, err)
+	}
+
+	// Find the ReplicaSet owner of the pod
+	var replicaSetRef *metav1.OwnerReference
+	for _, ownerRef := range pod.OwnerReferences {
+		if ownerRef.Kind == "ReplicaSet" && ownerRef.APIVersion == "apps/v1" {
+			replicaSetRef = &ownerRef
+			break
+		}
+	}
+
+	if replicaSetRef == nil {
+		log.Printf("Warning: Pod %s does not have a ReplicaSet owner, ConfigMap will not have owner reference", podName)
+		return nil, nil
+	}
+
+	// Get the ReplicaSet to find its owner (the Deployment)
+	replicaSet, err := sm.clientset.AppsV1().ReplicaSets(sm.namespace).Get(ctx, replicaSetRef.Name, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ReplicaSet %s: %w", replicaSetRef.Name, err)
+	}
+
+	// Find the Deployment owner of the ReplicaSet
+	var deploymentRef *metav1.OwnerReference
+	for _, ownerRef := range replicaSet.OwnerReferences {
+		if ownerRef.Kind == "Deployment" && ownerRef.APIVersion == "apps/v1" {
+			deploymentRef = &ownerRef
+			break
+		}
+	}
+
+	if deploymentRef == nil {
+		log.Printf("Warning: ReplicaSet %s does not have a Deployment owner, ConfigMap will not have owner reference", replicaSetRef.Name)
+		return nil, nil
+	}
+
+	log.Printf("Found controller Deployment owner: %s", deploymentRef.Name)
+	return deploymentRef, nil
 }
 
 // IsNotFoundError checks if the error is a Kubernetes not found error

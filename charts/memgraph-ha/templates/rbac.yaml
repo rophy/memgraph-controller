@@ -25,6 +25,10 @@ rules:
 - apiGroups: [""]
   resources: ["events"]
   verbs: ["create", "patch"]
+# Owner reference permissions (for ConfigMap owner reference)
+- apiGroups: ["apps"]
+  resources: ["replicasets", "deployments"]
+  verbs: ["get", "list", "watch"]
 # Leader election and state management permissions
 - apiGroups: ["coordination.k8s.io"]
   resources: ["leases"]

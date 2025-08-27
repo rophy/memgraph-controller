@@ -369,11 +369,8 @@ func TestE2E_FailoverReliability(t *testing.T) {
 	t.Logf("⏱️  Step 5: Wait %v for failover to stabilize", postFailoverDelay)
 	time.Sleep(postFailoverDelay)
 
-	// Verify new cluster topology after failover
-	status, err = getClusterStatus(ctx)
-	require.NoError(t, err, "Should get cluster status after failover")
-
-	newMain, newSync := validateTopology(t, status)
+	// Verify new cluster topology after failover (with retry for transient states)
+	newMain, newSync := validateTopologyWithRetry(t, ctx, 10, 2*time.Second)
 	require.NotEqual(t, currentMain, newMain, "Main should have changed after failover")
 	t.Logf("✓ Post-failover topology: Main=%s, Sync=%s (previous main %s is gone)",
 		newMain, newSync, currentMain)
@@ -403,6 +400,60 @@ func TestE2E_FailoverReliability(t *testing.T) {
 }
 
 // Helper functions for failover test
+
+// validateTopologyWithRetry validates cluster topology with retry logic for transient states
+func validateTopologyWithRetry(t *testing.T, ctx context.Context, maxRetries int, retryDelay time.Duration) (main, sync string) {
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		status, err := getClusterStatus(ctx)
+		require.NoError(t, err, "Should get cluster status on attempt %d", attempt)
+		
+		main, sync, valid := tryValidateTopology(status)
+		if valid {
+			t.Logf("✓ Topology validation succeeded on attempt %d: Main=%s, Sync=%s", attempt, main, sync)
+			return main, sync
+		}
+		
+		if attempt < maxRetries {
+			t.Logf("⚠️  Topology validation attempt %d failed, retrying in %v...", attempt, retryDelay)
+			time.Sleep(retryDelay)
+		}
+	}
+	
+	// Final attempt with assertions to produce clear error message
+	status, err := getClusterStatus(ctx)
+	require.NoError(t, err, "Should get cluster status for final validation")
+	return validateTopology(t, status)
+}
+
+// tryValidateTopology attempts topology validation without assertions, returns success status
+func tryValidateTopology(status *ClusterStatus) (main, sync string, valid bool) {
+	if len(status.Pods) != expectedPodCount {
+		return "", "", false
+	}
+
+	var mainCount, syncCount int
+	var mainPod, syncPod string
+
+	for _, pod := range status.Pods {
+		if !pod.Healthy {
+			continue // Skip unhealthy pods in topology validation
+		}
+
+		switch pod.MemgraphRole {
+		case "main":
+			mainCount++
+			mainPod = pod.Name
+		case "replica":
+			if pod.IsSyncReplica {
+				syncCount++
+				syncPod = pod.Name
+			}
+		}
+	}
+
+	// Check for valid topology: exactly 1 main and at least 1 sync replica
+	return mainPod, syncPod, (mainCount == 1 && syncCount >= 1)
+}
 
 func validateTopology(t *testing.T, status *ClusterStatus) (main, sync string) {
 	require.Len(t, status.Pods, expectedPodCount, "Should have %d pods", expectedPodCount)

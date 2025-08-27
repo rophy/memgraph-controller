@@ -84,9 +84,16 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 	} else if len(healthyReplicas) > 0 {
 		// Priority 2: Healthy replica (potential data loss warning)
 		newMain = c.selectBestAsyncReplica(healthyReplicas, clusterState.TargetMainIndex)
-		promotionReason = "ASYNC replica failover (potential data loss)"
-		log.Printf("⚠️  ASYNC REPLICA FAILOVER: Promoting %s (may have missing transactions)", newMain.Name)
-		log.Printf("⚠️  WARNING: Potential data loss - ASYNC replica may not have latest committed data")
+		if newMain != nil {
+			promotionReason = "ASYNC replica failover (potential data loss)"
+			log.Printf("⚠️  ASYNC REPLICA FAILOVER: Promoting %s (may have missing transactions)", newMain.Name)
+			log.Printf("⚠️  WARNING: Potential data loss - ASYNC replica may not have latest committed data")
+		} else {
+			// No main-eligible replicas (pods 0 and 1)
+			log.Printf("❌ CRITICAL: No main-eligible replicas available (only pods 0 and 1 can be main)")
+			log.Printf("Available replicas are not main-eligible - cluster will remain without main")
+			return fmt.Errorf("no main-eligible replicas available for failover (2-pod MAIN/SYNC strategy)")
+		}
 
 	} else {
 		// No healthy replicas available
@@ -172,13 +179,14 @@ func (c *MemgraphController) selectBestAsyncReplica(replicas []*PodInfo, targetI
 		}
 	}
 
-	// Fallback: select replica with lowest index (deterministic)
+	// Fallback: select replica with lowest index (deterministic, main-eligible pods only)
 	var bestReplica *PodInfo
 	bestIndex := 999
 
 	for _, replica := range replicas {
 		replicaIndex := c.config.ExtractPodIndex(replica.Name)
-		if replicaIndex >= 0 && replicaIndex < bestIndex {
+		// Only consider pods 0 and 1 as main-eligible (2-pod MAIN/SYNC strategy)
+		if replicaIndex >= 0 && replicaIndex <= 1 && replicaIndex < bestIndex {
 			bestIndex = replicaIndex
 			bestReplica = replica
 		}

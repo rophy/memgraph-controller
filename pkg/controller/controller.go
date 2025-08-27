@@ -547,10 +547,28 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 // onPodDelete handles pod deletion events
 func (c *MemgraphController) onPodDelete(obj interface{}) {
 	pod := obj.(*v1.Pod)
+	
 	// Invalidate connection for deleted pod
 	c.memgraphClient.connectionPool.InvalidatePodConnection(pod.Name)
 	log.Printf("Pod %s deleted, invalidated connection", pod.Name)
 
+	// Check if the deleted pod is the current main - trigger IMMEDIATE failover
+	c.mu.RLock()
+	currentMain := c.lastKnownMain
+	c.mu.RUnlock()
+	
+	if currentMain != "" && pod.Name == currentMain {
+		log.Printf("🚨 MAIN POD DELETED: %s - triggering IMMEDIATE failover", pod.Name)
+		
+		// Only leader should handle failover
+		if c.IsLeader() {
+			go c.handleImmediateFailover(pod.Name)
+		} else {
+			log.Printf("Non-leader detected main deletion - leader will handle failover")
+		}
+	}
+
+	// Still enqueue for reconciliation cleanup
 	c.enqueuePodEvent("pod-deleted")
 }
 
@@ -1070,6 +1088,38 @@ func (c *MemgraphController) updateGatewayMain() {
 
 	// Update the gateway's main endpoint
 	c.gatewayServer.SetCurrentMain(endpoint)
+}
+
+// handleImmediateFailover handles immediate failover triggered by pod deletion events
+func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
+	failoverStartTime := time.Now()
+	log.Printf("🚀 IMMEDIATE FAILOVER TRIGGERED: Main pod %s deleted", deletedPodName)
+	
+	// Create context with timeout for failover operations
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	
+	// Discover cluster state to find SYNC replica
+	log.Printf("🔍 Discovering cluster state for immediate failover...")
+	clusterState, err := c.DiscoverCluster(ctx)
+	if err != nil {
+		log.Printf("❌ CRITICAL: Failed to discover cluster state for immediate failover: %v", err)
+		return
+	}
+	
+	// Log cluster state
+	log.Printf("📊 Immediate failover cluster state: %d pods, main=%s", 
+		len(clusterState.Pods), clusterState.CurrentMain)
+	
+	// Execute immediate failover using existing logic
+	if err := c.handleMainFailover(ctx, clusterState); err != nil {
+		log.Printf("❌ IMMEDIATE FAILOVER FAILED: %v", err)
+		return
+	}
+	
+	totalFailoverTime := time.Since(failoverStartTime)
+	log.Printf("🎯 IMMEDIATE FAILOVER COMPLETED in %v: Event-driven failover successful", 
+		totalFailoverTime)
 }
 
 // handleMainFailurePromotion promotes SYNC replica when main fails during operations

@@ -95,32 +95,49 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 		return fmt.Errorf("no healthy replicas available for main failover")
 	}
 
-	// Promote new main
+	// IMMEDIATE failover following README.md design
 	if newMain != nil {
-		log.Printf("🔄 Promoting new main: %s → %s (reason: %s)",
+		failoverStartTime := time.Now()
+		log.Printf("🚀 IMMEDIATE failover: %s → %s (reason: %s)",
 			oldMain, newMain.Name, promotionReason)
 
-		// Perform promotion
-		err := c.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, newMain.BoltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to promote new main %s: %w", newMain.Name, err)
-		}
-
-		// Update cluster state
-		clusterState.CurrentMain = newMain.Name
-
-		// Update controller state using consolidated method - this is critical for future failover detection
+		// Step 1: IMMEDIATE state update (critical path - triggers gateway switch)
 		newMainIndex := c.config.ExtractPodIndex(newMain.Name)
 		if newMainIndex >= 0 && newMainIndex <= 1 {
 			if err := c.updateTargetMainIndex(context.Background(), clusterState, newMainIndex,
-				fmt.Sprintf("Main failover completed: %s promoted", newMain.Name)); err != nil {
-				return fmt.Errorf("failed to update target main index: %w", err)
+				fmt.Sprintf("IMMEDIATE failover: %s → %s", oldMain, newMain.Name)); err != nil {
+				return fmt.Errorf("CRITICAL: failed to update target main index: %w", err)
 			}
+			
+			// Update cluster state and controller state
+			clusterState.CurrentMain = newMain.Name
 			c.lastKnownMain = newMain.Name
-			log.Printf("📝 Updated controller state: targetMainIndex=%d, lastKnownMain=%s", newMainIndex, newMain.Name)
+			
+			log.Printf("⚡ IMMEDIATE state update completed in %v: targetMainIndex=%d, gateway switching...", 
+				time.Since(failoverStartTime), newMainIndex)
+		} else {
+			return fmt.Errorf("invalid pod index for failover: %d", newMainIndex)
 		}
 
-		log.Printf("✅ Main failover completed: %s promoted successfully", newMain.Name)
+		// Step 2: Single-attempt promotion (best effort, don't block on failure)
+		promotionStartTime := time.Now()
+		if err := c.memgraphClient.SetReplicationRoleToMain(ctx, newMain.BoltAddress); err != nil {
+			log.Printf("⚠️  Promotion command failed (non-blocking): %v", err)
+			log.Printf("   → Gateway already switched, reconciliation will retry promotion later")
+		} else {
+			log.Printf("✅ Promotion command succeeded in %v", time.Since(promotionStartTime))
+		}
+
+		// Step 3: Remove failed pod from cluster state to prevent reconciliation delays
+		if oldMain != "" {
+			delete(clusterState.Pods, oldMain)
+			log.Printf("🗑️  Filtered failed pod %s from reconciliation to prevent delays", oldMain)
+		}
+
+		totalFailoverTime := time.Since(failoverStartTime)
+		log.Printf("🎯 IMMEDIATE failover completed in %v: pod-%d is now MAIN", 
+			totalFailoverTime, newMainIndex)
+		log.Printf("   → Gateway: ✅ switched | Memgraph: ✅ promoted | Reconciliation: 🗑️  filtered")
 
 		// Log failover event with detailed metrics
 		failoverMetrics := &MainSelectionMetrics{

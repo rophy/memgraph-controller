@@ -259,6 +259,34 @@ func (mc *MemgraphClient) SetReplicationRoleToMainWithRetry(ctx context.Context,
 	return nil
 }
 
+// SetReplicationRoleToMain sets the replication role to MAIN without retry (fast failover)
+func (mc *MemgraphClient) SetReplicationRoleToMain(ctx context.Context, boltAddress string) error {
+	if boltAddress == "" {
+		return fmt.Errorf("bolt address is empty")
+	}
+
+	driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
+	if err != nil {
+		return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
+	}
+
+	session := driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer func() {
+		if closeErr := session.Close(ctx); closeErr != nil {
+			log.Printf("Warning: failed to close session for %s: %v", boltAddress, closeErr)
+		}
+	}()
+
+	// Use auto-commit mode for replication commands
+	_, err = session.Run(ctx, "SET REPLICATION ROLE TO MAIN", nil)
+	if err != nil {
+		return fmt.Errorf("failed to execute SET REPLICATION ROLE TO MAIN: %w", err)
+	}
+
+	log.Printf("Successfully set replication role to MAIN for %s (fast failover)", boltAddress)
+	return nil
+}
+
 // SetReplicationRoleToReplicaWithRetry sets the replication role to REPLICA with retry logic
 func (mc *MemgraphClient) SetReplicationRoleToReplicaWithRetry(ctx context.Context, boltAddress string) error {
 	if boltAddress == "" {

@@ -20,12 +20,9 @@ const (
 type ClusterStateType int
 
 const (
-	INITIAL_STATE     ClusterStateType = iota // All pods are "main" - fresh cluster
-	OPERATIONAL_STATE                         // Exactly one main - healthy state
-	MIXED_STATE                               // Some main, some replica - conflicts
-	NO_MAIN_STATE                             // No main pods - requires promotion
-	SPLIT_BRAIN_STATE                         // Multiple mains - dangerous
-	UNKNOWN_STATE                             // Unknown state requiring manual intervention
+	INITIAL_STATE     ClusterStateType = iota // Both pod-0 and pod-1 have MAIN role with 0 edge_count, 0 vertex_count
+	OPERATIONAL_STATE                         // One pod is MAIN, the other is REPLICA
+	UNKNOWN_STATE                             // Any other scenario - controller should crash
 )
 
 func (ps PodState) String() string {
@@ -47,12 +44,6 @@ func (cst ClusterStateType) String() string {
 		return "INITIAL_STATE"
 	case OPERATIONAL_STATE:
 		return "OPERATIONAL_STATE"
-	case MIXED_STATE:
-		return "MIXED_STATE"
-	case NO_MAIN_STATE:
-		return "NO_MAIN_STATE"
-	case SPLIT_BRAIN_STATE:
-		return "SPLIT_BRAIN_STATE"
 	case UNKNOWN_STATE:
 		return "UNKNOWN_STATE"
 	default:
@@ -253,64 +244,56 @@ func (pi *PodInfo) NeedsReplicationConfiguration(currentMainName string) bool {
 	return pi.ShouldBecomeMain(currentMainName) || pi.ShouldBecomeReplica(currentMainName)
 }
 
-// ClassifyClusterState determines the cluster state type based on pod roles
-func (cs *ClusterState) ClassifyClusterState() ClusterStateType {
-	var mainPods []string
-	var replicaPods []string
-
-	// Categorize pods by their actual Memgraph roles
-	for podName, podInfo := range cs.Pods {
-		switch podInfo.MemgraphRole {
-		case "main":
-			mainPods = append(mainPods, podName)
-		case "replica":
-			replicaPods = append(replicaPods, podName)
-		}
+// ClassifyClusterState determines the cluster state type based on README.md Bootstrap Phase rules
+// This method requires config to calculate pod names properly
+// IMPORTANT: This should ONLY be called during BOOTSTRAP phase - crashes if called during operational phase
+func (cs *ClusterState) ClassifyClusterState(config *Config) ClusterStateType {
+	// Crash if called outside of bootstrap phase - this is a design violation
+	if !cs.IsBootstrapPhase {
+		panic("CRITICAL: ClassifyClusterState() called during OPERATIONAL phase - this should only be used during BOOTSTRAP phase per README.md design")
+	}
+	// Only consider pod-0 and pod-1 as per README.md design
+	pod0Name := fmt.Sprintf("%s-0", config.StatefulSetName)
+	pod1Name := fmt.Sprintf("%s-1", config.StatefulSetName)
+	
+	pod0, pod0Exists := cs.Pods[pod0Name]
+	pod1, pod1Exists := cs.Pods[pod1Name]
+	
+	// If either pod-0 or pod-1 is not available, return UNKNOWN_STATE
+	if !pod0Exists || !pod1Exists {
+		return UNKNOWN_STATE
 	}
 
-	// Classify based on main/replica distribution
-	switch {
-	case len(mainPods) == 0 && len(replicaPods) == 0:
-		// No pods with role information yet
-		return INITIAL_STATE
+	// Check if both pods have role information
+	if pod0.MemgraphRole == "" || pod1.MemgraphRole == "" {
+		return UNKNOWN_STATE
+	}
 
-	case len(mainPods) == len(cs.Pods) && len(replicaPods) == 0:
-		// All pods are main - fresh cluster
+	// Rule 2: Both pod-0 and pod-1 have replication role as MAIN and storage shows 0 edge_count, 0 vertex_count
+	if pod0.MemgraphRole == "main" && pod1.MemgraphRole == "main" {
+		// TODO: Add storage info check (edge_count, vertex_count) when available
+		// For now, assume all dual-main scenarios are fresh clusters (INITIAL_STATE)
 		return INITIAL_STATE
+	}
 
-	case len(mainPods) == 1 && len(replicaPods) >= 0:
-		// Exactly one main - healthy operational state
+	// Rule 3: One pod is MAIN, the other is REPLICA
+	if (pod0.MemgraphRole == "main" && pod1.MemgraphRole == "replica") || 
+	   (pod0.MemgraphRole == "replica" && pod1.MemgraphRole == "main") {
 		return OPERATIONAL_STATE
-
-	case len(mainPods) > 1:
-		// Multiple main pods - split brain
-		return SPLIT_BRAIN_STATE
-
-	case len(mainPods) == 0 && len(replicaPods) > 0:
-		// All replicas, no main - needs promotion
-		return NO_MAIN_STATE
-
-	case len(mainPods) > 0 && len(replicaPods) > 0:
-		// Mixed state - some main, some replica, need to analyze
-		if len(mainPods) == 1 {
-			return OPERATIONAL_STATE
-		} else {
-			return MIXED_STATE
-		}
-
-	default:
-		return MIXED_STATE
 	}
+
+	// Rule 4: Otherwise, the cluster is in UNKNOWN_STATE
+	return UNKNOWN_STATE
 }
 
 // IsBootstrapSafe determines if it's safe to proceed during bootstrap
-func (cs *ClusterState) IsBootstrapSafe() bool {
-	stateType := cs.ClassifyClusterState()
+func (cs *ClusterState) IsBootstrapSafe(config *Config) bool {
+	stateType := cs.ClassifyClusterState(config)
 
 	switch stateType {
 	case INITIAL_STATE, OPERATIONAL_STATE:
 		return true
-	case MIXED_STATE, NO_MAIN_STATE, SPLIT_BRAIN_STATE:
+	case UNKNOWN_STATE:
 		return false
 	default:
 		return false
@@ -411,7 +394,7 @@ func (cs *ClusterState) analyzeExistingCluster(mainPods, replicaPods []string, c
 }
 
 // ValidateControllerState validates the internal controller state consistency
-func (cs *ClusterState) ValidateControllerState() []string {
+func (cs *ClusterState) ValidateControllerState(config *Config) []string {
 	var warnings []string
 
 	// Validate target main index
@@ -426,10 +409,12 @@ func (cs *ClusterState) ValidateControllerState() []string {
 		}
 	}
 
-	// Validate state type consistency
-	actualStateType := cs.ClassifyClusterState()
-	if cs.StateType != actualStateType {
-		warnings = append(warnings, fmt.Sprintf("State type mismatch: recorded=%s, actual=%s", cs.StateType.String(), actualStateType.String()))
+	// Validate state type consistency - only during bootstrap phase
+	if cs.IsBootstrapPhase {
+		actualStateType := cs.ClassifyClusterState(config)
+		if cs.StateType != actualStateType {
+			warnings = append(warnings, fmt.Sprintf("State type mismatch: recorded=%s, actual=%s", cs.StateType.String(), actualStateType.String()))
+		}
 	}
 
 	// Bootstrap phase consistency

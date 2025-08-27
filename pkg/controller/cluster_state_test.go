@@ -6,77 +6,93 @@ import (
 )
 
 func TestClassifyClusterState(t *testing.T) {
+	config := &Config{StatefulSetName: "memgraph-ha"}
+	
 	tests := []struct {
 		name         string
 		clusterState *ClusterState
 		expectedType ClusterStateType
 	}{
 		{
-			name: "initial_state_all_main",
+			name: "initial_state_both_main",
 			clusterState: &ClusterState{
+				IsBootstrapPhase: true,
 				Pods: map[string]*PodInfo{
-					"memgraph-0": {MemgraphRole: "main"},
-					"memgraph-1": {MemgraphRole: "main"},
-					"memgraph-2": {MemgraphRole: "main"},
+					"memgraph-ha-0": {MemgraphRole: "main"},
+					"memgraph-ha-1": {MemgraphRole: "main"},
 				},
 			},
 			expectedType: INITIAL_STATE,
 		},
 		{
-			name: "operational_state_one_main",
+			name: "operational_state_pod0_main_pod1_replica",
 			clusterState: &ClusterState{
+				IsBootstrapPhase: true,
 				Pods: map[string]*PodInfo{
-					"memgraph-0": {MemgraphRole: "main"},
-					"memgraph-1": {MemgraphRole: "replica"},
-					"memgraph-2": {MemgraphRole: "replica"},
+					"memgraph-ha-0": {MemgraphRole: "main"},
+					"memgraph-ha-1": {MemgraphRole: "replica"},
 				},
 			},
 			expectedType: OPERATIONAL_STATE,
 		},
 		{
-			name: "split_brain_multiple_mains",
+			name: "operational_state_pod0_replica_pod1_main",
 			clusterState: &ClusterState{
+				IsBootstrapPhase: true,
 				Pods: map[string]*PodInfo{
-					"memgraph-0": {MemgraphRole: "main"},
-					"memgraph-1": {MemgraphRole: "replica"},
-					"memgraph-2": {MemgraphRole: "main"},
+					"memgraph-ha-0": {MemgraphRole: "replica"},
+					"memgraph-ha-1": {MemgraphRole: "main"},
 				},
 			},
-			expectedType: SPLIT_BRAIN_STATE,
+			expectedType: OPERATIONAL_STATE,
 		},
 		{
-			name: "no_main_all_replicas",
+			name: "unknown_state_both_replica",
 			clusterState: &ClusterState{
+				IsBootstrapPhase: true,
 				Pods: map[string]*PodInfo{
-					"memgraph-0": {MemgraphRole: "replica"},
-					"memgraph-1": {MemgraphRole: "replica"},
-					"memgraph-2": {MemgraphRole: "replica"},
+					"memgraph-ha-0": {MemgraphRole: "replica"},
+					"memgraph-ha-1": {MemgraphRole: "replica"},
 				},
 			},
-			expectedType: NO_MAIN_STATE,
+			expectedType: UNKNOWN_STATE,
 		},
 		{
-			name: "initial_state_no_roles",
+			name: "unknown_state_no_roles",
 			clusterState: &ClusterState{
+				IsBootstrapPhase: true,
 				Pods: map[string]*PodInfo{
-					"memgraph-0": {MemgraphRole: ""},
-					"memgraph-1": {MemgraphRole: ""},
+					"memgraph-ha-0": {MemgraphRole: ""},
+					"memgraph-ha-1": {MemgraphRole: ""},
 				},
 			},
-			expectedType: INITIAL_STATE,
+			expectedType: UNKNOWN_STATE,
 		},
 		{
-			name: "empty_cluster",
+			name: "unknown_state_missing_pod0",
 			clusterState: &ClusterState{
-				Pods: map[string]*PodInfo{},
+				IsBootstrapPhase: true,
+				Pods: map[string]*PodInfo{
+					"memgraph-ha-1": {MemgraphRole: "main"},
+				},
 			},
-			expectedType: INITIAL_STATE,
+			expectedType: UNKNOWN_STATE,
+		},
+		{
+			name: "unknown_state_missing_pod1",
+			clusterState: &ClusterState{
+				IsBootstrapPhase: true,
+				Pods: map[string]*PodInfo{
+					"memgraph-ha-0": {MemgraphRole: "main"},
+				},
+			},
+			expectedType: UNKNOWN_STATE,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := tt.clusterState.ClassifyClusterState()
+			result := tt.clusterState.ClassifyClusterState(config)
 			if result != tt.expectedType {
 				t.Errorf("ClassifyClusterState() = %v, want %v", result, tt.expectedType)
 			}
@@ -85,48 +101,42 @@ func TestClassifyClusterState(t *testing.T) {
 }
 
 func TestIsBootstrapSafe(t *testing.T) {
+	config := &Config{StatefulSetName: "memgraph-ha"}
+	
 	tests := []struct {
 		name         string
 		clusterState *ClusterState
 		expectedSafe bool
 	}{
 		{
-			name: "fresh_cluster_safe",
+			name: "initial_state_safe",
 			clusterState: &ClusterState{
+				IsBootstrapPhase: true,
 				Pods: map[string]*PodInfo{
-					"memgraph-0": {MemgraphRole: "main"},
-					"memgraph-1": {MemgraphRole: "main"},
+					"memgraph-ha-0": {MemgraphRole: "main"},
+					"memgraph-ha-1": {MemgraphRole: "main"},
 				},
 			},
 			expectedSafe: true,
 		},
 		{
-			name: "operational_cluster_safe",
+			name: "operational_state_safe",
 			clusterState: &ClusterState{
+				IsBootstrapPhase: true,
 				Pods: map[string]*PodInfo{
-					"memgraph-0": {MemgraphRole: "main"},
-					"memgraph-1": {MemgraphRole: "replica"},
+					"memgraph-ha-0": {MemgraphRole: "main"},
+					"memgraph-ha-1": {MemgraphRole: "replica"},
 				},
 			},
 			expectedSafe: true,
 		},
 		{
-			name: "split_brain_unsafe",
+			name: "unknown_state_unsafe",
 			clusterState: &ClusterState{
+				IsBootstrapPhase: true,
 				Pods: map[string]*PodInfo{
-					"memgraph-0": {MemgraphRole: "main"},
-					"memgraph-1": {MemgraphRole: "main"},
-					"memgraph-2": {MemgraphRole: "replica"},
-				},
-			},
-			expectedSafe: false,
-		},
-		{
-			name: "no_main_unsafe",
-			clusterState: &ClusterState{
-				Pods: map[string]*PodInfo{
-					"memgraph-0": {MemgraphRole: "replica"},
-					"memgraph-1": {MemgraphRole: "replica"},
+					"memgraph-ha-0": {MemgraphRole: "replica"},
+					"memgraph-ha-1": {MemgraphRole: "replica"},
 				},
 			},
 			expectedSafe: false,
@@ -135,7 +145,7 @@ func TestIsBootstrapSafe(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := tt.clusterState.IsBootstrapSafe()
+			result := tt.clusterState.IsBootstrapSafe(config)
 			if result != tt.expectedSafe {
 				t.Errorf("IsBootstrapSafe() = %v, want %v", result, tt.expectedSafe)
 			}
@@ -224,9 +234,7 @@ func TestClusterStateString(t *testing.T) {
 	}{
 		{INITIAL_STATE, "INITIAL_STATE"},
 		{OPERATIONAL_STATE, "OPERATIONAL_STATE"},
-		{MIXED_STATE, "MIXED_STATE"},
-		{NO_MAIN_STATE, "NO_MAIN_STATE"},
-		{SPLIT_BRAIN_STATE, "SPLIT_BRAIN_STATE"},
+		{UNKNOWN_STATE, "UNKNOWN_STATE"},
 	}
 
 	for _, tt := range tests {

@@ -105,7 +105,7 @@ func TestMemgraphController_EnhancedMainSelection(t *testing.T) {
 			}
 
 			// Call the function
-			controller.enhancedMainSelection(clusterState)
+			controller.enhancedMainSelection(context.Background(), clusterState)
 
 			// Verify main selection
 			if clusterState.CurrentMain != tt.expectedMain {
@@ -328,7 +328,7 @@ func TestMemgraphController_ValidateMainSelection(t *testing.T) {
 				TargetMainIndex: tt.targetIndex,
 			}
 
-			controller.validateMainSelection(clusterState)
+			controller.validateMainSelection(context.Background(), clusterState)
 
 			if tt.expectClear && clusterState.CurrentMain != "" {
 				t.Errorf("Expected CurrentMain to be cleared, but got %s", clusterState.CurrentMain)
@@ -380,7 +380,7 @@ func TestMemgraphController_EnforceExpectedTopology(t *testing.T) {
 			expectCall: "none", // Should return nil for healthy operational state
 		},
 		{
-			name: "no_main_state",
+			name: "unknown_state_both_replicas",
 			pods: map[string]*PodInfo{
 				"memgraph-ha-0": {
 					Name:         "memgraph-ha-0",
@@ -391,7 +391,7 @@ func TestMemgraphController_EnforceExpectedTopology(t *testing.T) {
 					MemgraphRole: "replica",
 				},
 			},
-			expectCall: "promoteExpectedMain",
+			expectError: false, // Operational phase doesn't check state classification per README.md
 		},
 	}
 

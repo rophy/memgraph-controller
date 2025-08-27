@@ -39,6 +39,11 @@ func NewStateManager(clientset kubernetes.Interface, namespace string) *StateMan
 	}
 }
 
+// ConfigMapName returns the name of the ConfigMap used for state storage
+func (sm *StateManager) ConfigMapName() string {
+	return StateConfigMapName
+}
+
 // LoadState loads the controller state from ConfigMap
 func (sm *StateManager) LoadState(ctx context.Context) (*ControllerState, error) {
 	log.Printf("Loading controller state from ConfigMap %s/%s", sm.namespace, StateConfigMapName)

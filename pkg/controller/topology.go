@@ -8,7 +8,7 @@ import (
 )
 
 // enhancedMainSelection applies enhanced main selection logic with SYNC replica priority
-func (c *MemgraphController) enhancedMainSelection(clusterState *ClusterState) {
+func (c *MemgraphController) enhancedMainSelection(ctx context.Context, clusterState *ClusterState) {
 	log.Printf("Applying enhanced main selection logic...")
 
 	// Priority-based main selection strategy:
@@ -59,8 +59,9 @@ func (c *MemgraphController) enhancedMainSelection(clusterState *ClusterState) {
 		// Update target main index to match existing main
 		existingMainIndex := c.config.ExtractPodIndex(existingMain.Name)
 		if existingMainIndex >= 0 && existingMainIndex <= 1 {
-			clusterState.TargetMainIndex = existingMainIndex
-			log.Printf("Updated target main index to match existing: %d", existingMainIndex)
+			if err := c.updateTargetMainIndex(ctx, clusterState, existingMainIndex, "existing main discovered"); err != nil {
+				log.Printf("Warning: Failed to update target main index for existing main: %v", err)
+			}
 		}
 
 		// Priority 3: SYNC replica (guaranteed data consistency)
@@ -72,8 +73,9 @@ func (c *MemgraphController) enhancedMainSelection(clusterState *ClusterState) {
 		// Update target main index to match SYNC replica
 		syncReplicaIndex := c.config.ExtractPodIndex(syncReplica.Name)
 		if syncReplicaIndex >= 0 && syncReplicaIndex <= 1 {
-			clusterState.TargetMainIndex = syncReplicaIndex
-			log.Printf("Updated target main index to match SYNC replica: %d", syncReplicaIndex)
+			if err := c.updateTargetMainIndex(ctx, clusterState, syncReplicaIndex, "SYNC replica promotion"); err != nil {
+				log.Printf("Warning: Failed to update target main index for SYNC replica: %v", err)
+			}
 		}
 
 		// Priority 4: No safe automatic promotion available
@@ -209,7 +211,7 @@ func (c *MemgraphController) handleNoSafePromotion(clusterState *ClusterState, t
 }
 
 // validateMainSelection validates the main selection result
-func (c *MemgraphController) validateMainSelection(clusterState *ClusterState) {
+func (c *MemgraphController) validateMainSelection(ctx context.Context, clusterState *ClusterState) {
 	log.Printf("Validating main selection result...")
 
 	if clusterState.CurrentMain == "" {
@@ -238,8 +240,9 @@ func (c *MemgraphController) validateMainSelection(clusterState *ClusterState) {
 		log.Printf("⚠️  Main index mismatch: selected=%d, target=%d", mainIndex, clusterState.TargetMainIndex)
 		if mainIndex >= 0 && mainIndex <= 1 {
 			// Update target to match reality
-			clusterState.TargetMainIndex = mainIndex
-			log.Printf("Updated target main index to match selection: %d", mainIndex)
+			if err := c.updateTargetMainIndex(ctx, clusterState, mainIndex, "validation adjustment"); err != nil {
+				log.Printf("Warning: Failed to update target main index during validation: %v", err)
+			}
 		}
 	}
 
@@ -247,40 +250,20 @@ func (c *MemgraphController) validateMainSelection(clusterState *ClusterState) {
 		clusterState.CurrentMain, clusterState.TargetMainIndex)
 }
 
-// enforceExpectedTopology enforces expected topology against state drift
+// enforceExpectedTopology maintains cluster topology during operational phase
+// Per README.md: no state classification during operational phase - only event-driven responses
 func (c *MemgraphController) enforceExpectedTopology(ctx context.Context, clusterState *ClusterState) error {
-	log.Printf("Enforcing expected topology against state drift...")
+	log.Printf("Maintaining cluster topology (operational phase)...")
 
-	// Reclassify current state to detect drift
-	currentStateType := clusterState.ClassifyClusterState()
-
-	// Check for problematic states that need correction
-	switch currentStateType {
-	case SPLIT_BRAIN_STATE:
-		log.Printf("Split-brain detected during operational phase - applying resolution")
-		return c.resolveSplitBrain(ctx, clusterState)
-
-	case MIXED_STATE:
-		log.Printf("Mixed state detected during operational phase - enforcing known topology")
-		return c.enforceKnownTopology(ctx, clusterState)
-
-	case NO_MAIN_STATE:
-		log.Printf("No main detected - promoting expected main")
-		return c.promoteExpectedMain(ctx, clusterState)
-
-	case OPERATIONAL_STATE:
-		log.Printf("Cluster in healthy operational state")
-		return nil
-
-	case INITIAL_STATE:
-		log.Printf("Cluster reverted to initial state - reapplying deterministic roles")
-		c.applyDeterministicRoles(clusterState)
-		return nil
-
-	default:
-		log.Printf("Unknown cluster state during operational phase: %s", currentStateType.String())
-		return nil
-	}
+	// During operational phase: simple event-driven logic per README.md
+	// 1. Check if main is healthy
+	// 2. If not, promote SYNC replica if ready
+	// 3. If SYNC replica not ready, log error and wait
+	
+	// Operational phase assumes cluster is in healthy state
+	// Any major issues should be handled by main failover logic
+	log.Printf("Cluster in operational phase - topology maintained by event-driven failover")
+	return nil
 }
 
 // resolveSplitBrain resolves split-brain scenarios using lower-index precedence

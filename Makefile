@@ -30,6 +30,7 @@ run:
 down:
 	skaffold delete
 	kubectl delete pvc --all -n memgraph
+	kubectl delete configmap memgraph-controller-state -n memgraph --ignore-not-found
 
 check:
 	scripts/check.sh

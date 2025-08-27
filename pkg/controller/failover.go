@@ -10,31 +10,37 @@ import (
 
 // detectMainFailover detects if the current main has failed
 func (c *MemgraphController) detectMainFailover(clusterState *ClusterState) bool {
-	if clusterState.CurrentMain == "" {
-		// No main currently set - not a failover scenario
+	// Use lastKnownMain for operational phase failover detection
+	// This ensures we can detect failover even if CurrentMain was cleared by validation
+	lastKnownMain := c.lastKnownMain
+	if lastKnownMain == "" {
+		// No last known main - not a failover scenario (likely fresh bootstrap)
 		return false
 	}
 
-	// Check if current main pod still exists
-	mainPod, exists := clusterState.Pods[clusterState.CurrentMain]
+	log.Printf("Checking failover for last known main: %s", lastKnownMain)
+
+	// Check if last known main pod still exists
+	mainPod, exists := clusterState.Pods[lastKnownMain]
 	if !exists {
-		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s no longer exists", clusterState.CurrentMain)
+		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s no longer exists", lastKnownMain)
 		return true
 	}
 
-	// Check if current main is still healthy
+	// Check if last known main is still healthy
 	if !c.isPodHealthyForMain(mainPod) {
-		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s is no longer healthy", clusterState.CurrentMain)
+		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s is no longer healthy", lastKnownMain)
 		return true
 	}
 
-	// Check if current main still has MAIN role
+	// Check if last known main still has MAIN role
 	if mainPod.MemgraphRole != "main" {
 		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s no longer has MAIN role (current: %s)",
-			clusterState.CurrentMain, mainPod.MemgraphRole)
+			lastKnownMain, mainPod.MemgraphRole)
 		return true
 	}
 
+	log.Printf("✅ Last known main %s is still healthy and has MAIN role", lastKnownMain)
 	return false
 }
 
@@ -42,9 +48,9 @@ func (c *MemgraphController) detectMainFailover(clusterState *ClusterState) bool
 func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterState *ClusterState) error {
 	log.Printf("🔄 Handling main failover...")
 
-	// Clear failed main
-	oldMain := clusterState.CurrentMain
-	clusterState.CurrentMain = ""
+	// Get the failed main from last known main
+	oldMain := c.lastKnownMain
+	log.Printf("Handling failover for failed main: %s", oldMain)
 
 	// Find suitable replacement using SYNC replica priority
 	var syncReplica *PodInfo
@@ -103,10 +109,15 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 		// Update cluster state
 		clusterState.CurrentMain = newMain.Name
 
-		// Update target main index to match promoted main
+		// Update controller state using consolidated method - this is critical for future failover detection
 		newMainIndex := c.config.ExtractPodIndex(newMain.Name)
 		if newMainIndex >= 0 && newMainIndex <= 1 {
-			clusterState.TargetMainIndex = newMainIndex
+			if err := c.updateTargetMainIndex(context.Background(), clusterState, newMainIndex,
+				fmt.Sprintf("Main failover completed: %s promoted", newMain.Name)); err != nil {
+				return fmt.Errorf("failed to update target main index: %w", err)
+			}
+			c.lastKnownMain = newMain.Name
+			log.Printf("📝 Updated controller state: targetMainIndex=%d, lastKnownMain=%s", newMainIndex, newMain.Name)
 		}
 
 		log.Printf("✅ Main failover completed: %s promoted successfully", newMain.Name)
@@ -198,13 +209,23 @@ func (c *MemgraphController) handleMainFailurePromotion(clusterState *ClusterSta
 		return fmt.Errorf("failed to promote SYNC replica %s: %w", syncReplica, err)
 	}
 
-	// Update controller state
-	c.lastKnownMain = syncReplica
-	if syncReplica == c.config.StatefulSetName+"-0" {
-		c.targetMainIndex = 0
-	} else {
-		c.targetMainIndex = 1
+	// Update controller state using consolidated method
+	newMainIndex := 0
+	if syncReplica != c.config.StatefulSetName+"-0" {
+		newMainIndex = 1
 	}
+	
+	// Create temporary clusterState to pass to updateTargetMainIndex
+	tempClusterState := &ClusterState{
+		TargetMainIndex: c.targetMainIndex,
+	}
+	
+	if err := c.updateTargetMainIndex(context.Background(), tempClusterState, newMainIndex, 
+		fmt.Sprintf("SYNC replica %s promoted to main", syncReplica)); err != nil {
+		return fmt.Errorf("failed to update target main index: %w", err)
+	}
+	
+	c.lastKnownMain = syncReplica
 
 	// Notify gateway of main change (async to avoid blocking reconciliation)
 	go c.updateGatewayMain()

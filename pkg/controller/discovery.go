@@ -253,14 +253,22 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 	// Update SYNC replica information based on actual main's replica data
 	c.updateSyncReplicaInfo(clusterState)
 
-	// Classify cluster state and perform bootstrap safety validation
-	log.Println("Classifying cluster state for bootstrap safety...")
-	if err := c.performBootstrapValidation(clusterState); err != nil {
-		return nil, fmt.Errorf("bootstrap validation failed: %w", err)
+	// Operational phase - detect and handle main failover scenarios  
+	log.Println("Checking for main failover scenarios...")
+	if c.detectMainFailover(clusterState) {
+		log.Printf("Main failover detected - handling failover...")
+		if err := c.handleMainFailover(ctx, clusterState); err != nil {
+			log.Printf("⚠️  Failover handling failed: %v", err)
+			// Don't crash - log warning and continue as per design
+		}
 	}
+	
+	// Set operational phase properties
+	clusterState.IsBootstrapPhase = false
+	clusterState.StateType = OPERATIONAL_STATE
 
 	// Validate controller state consistency
-	if warnings := clusterState.ValidateControllerState(); len(warnings) > 0 {
+	if warnings := clusterState.ValidateControllerState(c.config); len(warnings) > 0 {
 		log.Printf("⚠️  Controller state validation warnings:")
 		for _, warning := range warnings {
 			log.Printf("  - %s", warning)
@@ -269,7 +277,7 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 
 	// NOW select main based on actual Memgraph state (not pod labels)
 	log.Println("Selecting main based on actual Memgraph replication state...")
-	c.selectMainAfterQuerying(clusterState)
+	c.selectMainAfterQuerying(ctx, clusterState)
 
 	// Log summary of query results
 	log.Printf("Cluster discovery complete: %d/%d pods successfully queried",
@@ -289,7 +297,7 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterState) error {
 	// Classify the current cluster state
 	oldStateType := clusterState.StateType
-	stateType := clusterState.ClassifyClusterState()
+	stateType := clusterState.ClassifyClusterState(c.config)
 	clusterState.StateType = stateType
 
 	// Log state transition if changed
@@ -303,63 +311,17 @@ func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterSta
 	log.Printf("Pod role distribution: %d main pods %v, %d replica pods %v",
 		len(mainPods), mainPods, len(replicaPods), replicaPods)
 
-	// Check if this is controller startup (bootstrap) or operational reconciliation
-	isControllerStartup := c.lastKnownMain == ""
 
 	// Check if bootstrap is safe to proceed
-	isBootstrapSafe := clusterState.IsBootstrapSafe()
+	isBootstrapSafe := clusterState.IsBootstrapSafe(c.config)
 	clusterState.BootstrapSafe = isBootstrapSafe
 
 	if !isBootstrapSafe {
-		// DANGEROUS states during bootstrap - refuse to continue
-		switch stateType {
-		case MIXED_STATE:
-			log.Printf("❌ BOOTSTRAP BLOCKED: Mixed replication state detected")
-			log.Printf("❌ Some pods are main, some are replica - unclear data freshness")
-			log.Printf("❌ Manual intervention required to determine safe main")
-			log.Printf("❌ Possible data divergence between pods")
-			log.Printf("🔧 Recovery options:")
-			log.Printf("  1. Check which pod has latest data using mgconsole")
-			log.Printf("  2. Manually set desired main to MAIN role")
-			log.Printf("  3. Set all other pods to REPLICA role")
-			log.Printf("  4. Restart controller after manual intervention")
-			return fmt.Errorf("unsafe mixed state during bootstrap: main=%v, replica=%v", mainPods, replicaPods)
-
-		case NO_MAIN_STATE:
-			if isControllerStartup {
-				log.Printf("❌ BOOTSTRAP BLOCKED: No main found, unclear data freshness")
-				log.Printf("❌ All pods are replicas - cannot determine which has latest data")
-				log.Printf("❌ Manual intervention required to select main")
-				log.Printf("🔧 Recovery options:")
-				log.Printf("  1. Identify pod with latest data (check STORAGE INFO)")
-				log.Printf("  2. Promote chosen pod: kubectl exec <pod> -- mgconsole -e 'SET REPLICATION ROLE TO MAIN;'")
-				log.Printf("  3. Restart controller after manual promotion")
-				return fmt.Errorf("no main during bootstrap: all %d pods are replicas", len(replicaPods))
-			} else {
-				log.Printf("🚨 OPERATIONAL: Main failure detected - promoting SYNC replica")
-				return c.handleMainFailurePromotion(clusterState, replicaPods)
-			}
-
-		case SPLIT_BRAIN_STATE:
-			if isControllerStartup {
-				log.Printf("❌ BOOTSTRAP BLOCKED: Multiple mains detected")
-				log.Printf("❌ Split-brain condition - potential data divergence")
-				log.Printf("❌ Manual intervention required to resolve conflicts")
-				log.Printf("🔧 Recovery options:")
-				log.Printf("  1. Compare data between mains using STORAGE INFO")
-				log.Printf("  2. Choose main with most recent data")
-				log.Printf("  3. Demote others: kubectl exec <pod> -- mgconsole -e 'SET REPLICATION ROLE TO REPLICA WITH PORT 10000;'")
-				log.Printf("  4. Restart controller after resolving split-brain")
-				return fmt.Errorf("split-brain during bootstrap: multiple mains %v", mainPods)
-			} else {
-				log.Printf("🔄 OPERATIONAL: Split-brain detected - enforcing current main authority")
-				return c.enforceMainAuthority(clusterState, mainPods)
-			}
-
-		default:
-			log.Printf("❌ BOOTSTRAP BLOCKED: Unknown unsafe state")
-			return fmt.Errorf("unknown unsafe cluster state: %s", stateType.String())
-		}
+		// UNKNOWN_STATE - controller should crash immediately per README.md
+		log.Printf("❌ CONTROLLER CRASH: UNKNOWN_STATE detected")
+		log.Printf("❌ Cluster is in an unknown state that requires manual intervention")
+		log.Printf("🔧 Recovery: Human must fix the cluster before controller can start")
+		return fmt.Errorf("controller crash: cluster in UNKNOWN_STATE, human intervention required")
 	}
 
 	// Safe states - proceed with bootstrap and determine target main index
@@ -388,8 +350,9 @@ func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterSta
 	return nil
 }
 
+
 // selectMainAfterQuerying selects main based on actual Memgraph replication state
-func (c *MemgraphController) selectMainAfterQuerying(clusterState *ClusterState) {
+func (c *MemgraphController) selectMainAfterQuerying(ctx context.Context, clusterState *ClusterState) {
 	// After bootstrap validation, we now have authority to make decisions
 	clusterState.IsBootstrapPhase = false
 
@@ -405,11 +368,11 @@ func (c *MemgraphController) selectMainAfterQuerying(clusterState *ClusterState)
 		c.learnExistingTopology(clusterState)
 	default:
 		// For other states, apply enhanced main selection logic
-		c.enhancedMainSelection(clusterState)
+		c.enhancedMainSelection(ctx, clusterState)
 	}
 
 	// Validate main selection result
-	c.validateMainSelection(clusterState)
+	c.validateMainSelection(ctx, clusterState)
 
 	// Log comprehensive cluster health summary
 	healthSummary := clusterState.GetClusterHealthSummary()
@@ -461,12 +424,15 @@ func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
 		// Notify gateway of main endpoint (async to avoid blocking reconciliation)
 		go c.updateGatewayMain()
 
-		// Extract current main index for tracking
+		// Extract current main index for tracking using consolidated method
 		currentMainIndex := c.config.ExtractPodIndex(currentMain)
 		if currentMainIndex >= 0 {
-			clusterState.TargetMainIndex = currentMainIndex
-			c.targetMainIndex = currentMainIndex
-			log.Printf("Updated target main index to match existing: %d", currentMainIndex)
+			if err := c.updateTargetMainIndex(context.Background(), clusterState, currentMainIndex,
+				fmt.Sprintf("Updating from discovered main %s", currentMain)); err != nil {
+				log.Printf("Warning: failed to update target main index: %v", err)
+			} else {
+				log.Printf("Updated target main index to match existing: %d", currentMainIndex)
+			}
 		}
 
 		// Log current SYNC replica

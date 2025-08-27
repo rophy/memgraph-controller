@@ -256,9 +256,12 @@ func (bc *BootstrapController) handleInitialState(ctx context.Context, clusterSt
 func (bc *BootstrapController) handleOperationalState(ctx context.Context, clusterState *ClusterState) error {
 	log.Printf("Handling OPERATIONAL_STATE: Learning existing topology with main %s", clusterState.CurrentMain)
 	
-	// Update controller's tracking state
+	// Update controller's tracking state using consolidated method
+	if err := bc.controller.updateTargetMainIndex(ctx, clusterState, clusterState.TargetMainIndex,
+		fmt.Sprintf("Learning from OPERATIONAL_STATE with main %s", clusterState.CurrentMain)); err != nil {
+		return fmt.Errorf("failed to update target main index: %w", err)
+	}
 	bc.controller.lastKnownMain = clusterState.CurrentMain
-	bc.controller.targetMainIndex = clusterState.TargetMainIndex
 	
 	log.Printf("✅ OPERATIONAL_STATE learning completed: main=%s, target_index=%d", 
 		clusterState.CurrentMain, clusterState.TargetMainIndex)

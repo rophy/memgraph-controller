@@ -65,6 +65,10 @@ func TestMainFailoverDetection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Set lastKnownMain to match CurrentMain for the test
+			// This simulates the operational phase where the controller has been tracking the main
+			controller.lastKnownMain = tt.clusterState.CurrentMain
+			
 			result := controller.detectMainFailover(tt.clusterState)
 			if result != tt.expectedFailover {
 				t.Errorf("detectMainFailover() = %v, want %v", result, tt.expectedFailover)
@@ -82,13 +86,19 @@ func TestValidateControllerState(t *testing.T) {
 		{
 			name: "valid_state_no_warnings",
 			clusterState: &ClusterState{
+				StateType:       OPERATIONAL_STATE,
 				TargetMainIndex: 0,
-				CurrentMain:     "memgraph-0",
+				CurrentMain:     "memgraph-ha-0",
 				Pods: map[string]*PodInfo{
-					"memgraph-0": {
-						Name:         "memgraph-0",
+					"memgraph-ha-0": {
+						Name:         "memgraph-ha-0",
 						BoltAddress:  "10.0.0.1:7687",
 						MemgraphRole: "main",
+					},
+					"memgraph-ha-1": {
+						Name:         "memgraph-ha-1",
+						BoltAddress:  "10.0.0.2:7687",
+						MemgraphRole: "replica",
 					},
 				},
 			},
@@ -114,7 +124,8 @@ func TestValidateControllerState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			warnings := tt.clusterState.ValidateControllerState()
+			config := &Config{StatefulSetName: "memgraph-ha"}
+			warnings := tt.clusterState.ValidateControllerState(config)
 			hasWarnings := len(warnings) > 0
 
 			if hasWarnings != tt.wantWarnings {

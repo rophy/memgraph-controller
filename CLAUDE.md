@@ -118,3 +118,59 @@ The controller implements a **SYNC replica strategy** for zero data loss failove
 - **pod-0 and pod-1**: Eligible for main OR SYNC replica roles
 - **pod-2, pod-3, ...**: ALWAYS ASYNC replicas only
 - **Controller Authority**: Maintains expected topology in-memory after bootstrap
+
+# CRITICAL CODE PATTERNS TO WATCH FOR
+
+## State Synchronization Anti-Pattern: Bypassing Consolidated State Updates
+
+**PROBLEM**: The codebase has a consolidated method `updateTargetMainIndex()` that properly updates both local state and ConfigMap, but most code paths bypass it with direct field assignments. This creates race conditions and state inconsistency between leader and non-leader controller pods.
+
+**CONSOLIDATED METHOD EXISTS**: `controller.go:479 - updateTargetMainIndex()`
+- ✅ Updates `c.targetMainIndex` 
+- ✅ Updates `clusterState.TargetMainIndex`
+- ✅ Persists to ConfigMap via `stateManager.SaveState()`
+- ✅ Handles rollback on failure
+
+**PLACES CORRECTLY USING CONSOLIDATED METHOD**:
+- ✅ `topology.go:62` - Existing main discovered
+- ✅ `topology.go:76` - SYNC replica promotion  
+- ✅ `topology.go:243` - Validation adjustment
+
+**PLACES BYPASSING CONSOLIDATED METHOD** (MUST FIX):
+- ❌ `failover.go:213-215` - **CRITICAL: Failover promotion** 
+- ❌ `failover.go:115-116` - Detection logic update
+- ❌ `bootstrap.go:260-261` - Learning from OPERATIONAL_STATE
+- ❌ `discovery.go:431` - Updating from existing main
+- ❌ `controller.go:467` - Loading from ConfigMap (acceptable)
+- ❌ `controller.go:501` - Rollback on failure (acceptable)  
+- ❌ `controller.go:982` - Split-brain resolution
+
+**SYMPTOMS OF THIS ANTI-PATTERN**:
+- Gateway routing failures during failover
+- "Write queries are forbidden on the replica instance" errors  
+- Non-leader controller pods have stale routing information
+- E2E test failures during failover scenarios
+- Race conditions between leader and non-leader pods
+
+**DETECTION COMMANDS**:
+```bash
+# Find all direct assignments (violations)
+grep -rn "targetMainIndex\s*=" pkg/controller/ | grep -v "func.*updateTargetMainIndex"
+
+# Find all correct usage (should be more common)
+grep -rn "\.updateTargetMainIndex" pkg/controller/
+```
+
+**ENFORCEMENT RULE**: 
+- NEVER assign `c.targetMainIndex` or `c.lastKnownMain` directly
+- ALWAYS use `c.updateTargetMainIndex()` for state changes
+- Only exceptions: initialization, rollback, and ConfigMap loading
+
+**IMMEDIATE ACTION REQUIRED**:
+- Fix `failover.go:213-215` to use `updateTargetMainIndex()` 
+- Fix `failover.go:115-116` to use consolidated method
+- Fix `bootstrap.go:260-261` to use consolidated method
+- Fix `discovery.go:431` to use consolidated method  
+- Fix `controller.go:982` to use consolidated method
+
+This anti-pattern is the root cause of the gateway routing race condition and MUST be eliminated.

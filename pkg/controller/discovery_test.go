@@ -169,18 +169,11 @@ func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) 
 			expectError:   false,
 		},
 		{
-			name:          "split_brain_state_unsafe",
-			stateType:     SPLIT_BRAIN_STATE,
+			name:          "unknown_state_unsafe",
+			stateType:     UNKNOWN_STATE,
 			bootstrapSafe: false,
 			expectError:   true,
-			errorContains: "split-brain during bootstrap",
-		},
-		{
-			name:          "no_main_state_unsafe",
-			stateType:     NO_MAIN_STATE,
-			bootstrapSafe: false,
-			expectError:   true,
-			errorContains: "no main during bootstrap",
+			errorContains: "UNKNOWN_STATE",
 		},
 	}
 
@@ -198,8 +191,9 @@ func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) 
 
 			// Create cluster state with specified state type
 			clusterState := &ClusterState{
-				StateType: tt.stateType,
-				Pods:      make(map[string]*PodInfo),
+				IsBootstrapPhase: true, // Bootstrap validation should only be called during bootstrap phase
+				StateType:       tt.stateType,
+				Pods:            make(map[string]*PodInfo),
 			}
 
 			// Mock the cluster state methods
@@ -208,8 +202,11 @@ func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) 
 					Name:         "memgraph-ha-0",
 					MemgraphRole: "main",
 				}
-			} else if tt.stateType == SPLIT_BRAIN_STATE {
-				// For SPLIT_BRAIN_STATE: multiple main pods (with some replicas to avoid INITIAL_STATE)
+				clusterState.Pods["memgraph-ha-1"] = &PodInfo{
+					Name:         "memgraph-ha-1",
+					MemgraphRole: "replica",
+				}
+			} else if tt.stateType == INITIAL_STATE {
 				clusterState.Pods["memgraph-ha-0"] = &PodInfo{
 					Name:         "memgraph-ha-0",
 					MemgraphRole: "main",
@@ -218,11 +215,8 @@ func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) 
 					Name:         "memgraph-ha-1",
 					MemgraphRole: "main",
 				}
-				clusterState.Pods["memgraph-ha-2"] = &PodInfo{
-					Name:         "memgraph-ha-2",
-					MemgraphRole: "replica",
-				}
-			} else if tt.stateType == NO_MAIN_STATE {
+			} else if tt.stateType == UNKNOWN_STATE {
+				// For UNKNOWN_STATE: both pods are replicas (not allowed per README.md)
 				clusterState.Pods["memgraph-ha-0"] = &PodInfo{
 					Name:         "memgraph-ha-0",
 					MemgraphRole: "replica",
@@ -410,12 +404,6 @@ func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
 			targetMainIndex: 1,
 			expectMethod:    "learnExistingTopology",
 		},
-		{
-			name:            "mixed_state_calls_enhanced_selection",
-			stateType:       MIXED_STATE,
-			targetMainIndex: 0,
-			expectMethod:    "enhancedMainSelection",
-		},
 	}
 
 	for _, tt := range tests {
@@ -432,7 +420,7 @@ func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
 			clusterState.Pods["memgraph-ha-1"] = &PodInfo{Name: "memgraph-ha-1"}
 
 			// Call the function (we can't easily mock internal method calls)
-			controller.selectMainAfterQuerying(clusterState)
+			controller.selectMainAfterQuerying(context.Background(), clusterState)
 
 			// Verify bootstrap phase was cleared - this is the main behavior we can test
 			if clusterState.IsBootstrapPhase {

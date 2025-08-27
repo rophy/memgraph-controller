@@ -1,50 +1,44 @@
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: memgraph-controller
-  namespace: memgraph
+  name: {{ .Values.controller.serviceAccount.name }}
+  namespace: {{ .Values.controller.namespace }}
   labels:
-    app: memgraph-controller
-    component: controller
+    {{- toYaml .Values.controller.labels | nindent 4 }}
+  {{- with .Values.controller.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 spec:
-  replicas: 3
+  replicas: {{ .Values.controller.replicaCount }}
   selector:
     matchLabels:
-      app: memgraph-controller
+      app: {{ .Values.controller.labels.app }}
   template:
     metadata:
       labels:
-        app: memgraph-controller
+        app: {{ .Values.controller.labels.app }}
     spec:
-      serviceAccountName: memgraph-controller
+      serviceAccountName: {{ .Values.controller.serviceAccount.name }}
       securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000
-        runAsGroup: 1000
-        fsGroup: 1000
+        {{- toYaml .Values.controller.securityContext | nindent 8 }}
       containers:
-      - name: memgraph-controller
+      - name: {{ .Values.controller.labels.app }}
         securityContext:
-          allowPrivilegeEscalation: false
-          capabilities:
-            drop:
-            - ALL
-          readOnlyRootFilesystem: true
-          runAsNonRoot: true
-          runAsUser: 1000
-        image: "memgraph-controller:latest"
-        imagePullPolicy: IfNotPresent
+          {{- toYaml .Values.controller.containerSecurityContext | nindent 10 }}
+        image: "{{ .Values.controller.image.repository }}:{{ .Values.controller.image.tag }}"
+        imagePullPolicy: {{ .Values.controller.image.pullPolicy }}
         env:
         - name: APP_NAME
-          value: "memgraph"
+          value: {{ .Values.controller.env.appName | quote }}
         - name: RECONCILE_INTERVAL
-          value: "30s"
+          value: {{ .Values.controller.env.reconcileInterval | quote }}
         - name: BOLT_PORT
-          value: "7687"
+          value: {{ .Values.controller.env.boltPort | quote }}
         - name: HTTP_PORT
-          value: "8080"
+          value: {{ .Values.controller.env.httpPort | quote }}
         - name: STATEFULSET_NAME
-          value: "memgraph-ha"
+          value: {{ .Values.controller.env.statefulsetName | quote }}
         # Leader election environment variables
         - name: POD_NAME
           valueFrom:
@@ -56,43 +50,43 @@ spec:
               fieldPath: metadata.namespace
         # Gateway configuration
         - name: GATEWAY_ENABLED
-          value: "true"
+          value: {{ .Values.controller.env.gateway.enabled | quote }}
         - name: GATEWAY_BIND_ADDRESS
-          value: "0.0.0.0:7687"
+          value: {{ .Values.controller.env.gateway.bindAddress | quote }}
         - name: GATEWAY_MAX_CONNECTIONS
-          value: "1000"
+          value: {{ .Values.controller.env.gateway.maxConnections | quote }}
         - name: GATEWAY_TIMEOUT
-          value: "30s"
+          value: {{ .Values.controller.env.gateway.timeout | quote }}
         - name: GATEWAY_BUFFER_SIZE
-          value: "32768"
+          value: {{ .Values.controller.env.gateway.bufferSize | quote }}
         - name: GATEWAY_HEALTH_CHECK_INTERVAL
-          value: "30s"
+          value: {{ .Values.controller.env.gateway.healthCheckInterval | quote }}
         - name: GATEWAY_CONNECTION_TIMEOUT
-          value: "10s"
+          value: {{ .Values.controller.env.gateway.connectionTimeout | quote }}
         - name: GATEWAY_IDLE_TIMEOUT
-          value: "5m"
+          value: {{ .Values.controller.env.gateway.idleTimeout | quote }}
         - name: GATEWAY_MAX_BYTES_PER_CONNECTION
-          value: "1073741824"
+          value: {{ .Values.controller.env.gateway.maxBytesPerConnection | quote }}
         - name: GATEWAY_CLEANUP_INTERVAL
-          value: "1m"
+          value: {{ .Values.controller.env.gateway.cleanupInterval | quote }}
         - name: GATEWAY_TLS_ENABLED
-          value: "false"
+          value: {{ .Values.controller.env.gateway.tls.enabled | quote }}
         - name: GATEWAY_TLS_CERT_PATH
-          value: "/etc/certs/tls.crt"
+          value: {{ .Values.controller.env.gateway.tls.certPath | quote }}
         - name: GATEWAY_TLS_KEY_PATH
-          value: "/etc/certs/tls.key"
+          value: {{ .Values.controller.env.gateway.tls.keyPath | quote }}
         - name: GATEWAY_RATE_LIMIT_ENABLED
-          value: "true"
+          value: {{ .Values.controller.env.gateway.rateLimit.enabled | quote }}
         - name: GATEWAY_RATE_LIMIT_RPS
-          value: "100"
+          value: {{ .Values.controller.env.gateway.rateLimit.rps | quote }}
         - name: GATEWAY_RATE_LIMIT_BURST
-          value: "200"
+          value: {{ .Values.controller.env.gateway.rateLimit.burst | quote }}
         - name: GATEWAY_RATE_LIMIT_WINDOW
-          value: "1m"
+          value: {{ .Values.controller.env.gateway.rateLimit.window | quote }}
         - name: GATEWAY_LOG_LEVEL
-          value: "info"
+          value: {{ .Values.controller.env.gateway.logging.level | quote }}
         - name: GATEWAY_TRACE_ENABLED
-          value: "false"
+          value: {{ .Values.controller.env.gateway.logging.traceEnabled | quote }}
         ports:
         - name: http
           containerPort: 8080
@@ -101,28 +95,11 @@ spec:
           containerPort: 7687
           protocol: TCP
         livenessProbe:
-          httpGet:
-            path: /health
-            port: http
-          initialDelaySeconds: 30
-          periodSeconds: 10
-          timeoutSeconds: 5
-          failureThreshold: 3
+          {{- toYaml .Values.controller.livenessProbe | nindent 10 }}
         readinessProbe:
-          httpGet:
-            path: /health
-            port: http
-          initialDelaySeconds: 5
-          periodSeconds: 5
-          timeoutSeconds: 3
-          failureThreshold: 3
+          {{- toYaml .Values.controller.readinessProbe | nindent 10 }}
         resources:
-          limits:
-            cpu: 500m
-            memory: 512Mi
-          requests:
-            cpu: 100m
-            memory: 128Mi
+          {{- toYaml .Values.controller.resources | nindent 10 }}
         volumeMounts:
         - name: tmp
           mountPath: /tmp

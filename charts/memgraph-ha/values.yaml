@@ -75,4 +75,112 @@ memgraph:
       tag: latest
       pullPolicy: IfNotPresent
 
-# No additional values needed for controller - it uses static manifests
+# Controller configuration
+controller:
+  # Image configuration
+  image:
+    repository: memgraph-controller
+    tag: latest
+    pullPolicy: IfNotPresent
+  
+  # Deployment configuration
+  replicaCount: 3
+  
+  # Namespace configuration
+  namespace: memgraph
+  
+  # Service account
+  serviceAccount:
+    create: true
+    name: memgraph-controller
+    annotations: {}
+  
+  # Service configuration
+  service:
+    type: ClusterIP
+    httpPort: 8080
+    boltPort: 7687
+  
+  # Environment variables
+  env:
+    appName: memgraph
+    reconcileInterval: "30s"
+    boltPort: "7687"
+    httpPort: "8080"
+    statefulsetName: memgraph-ha
+    
+    # Gateway configuration
+    gateway:
+      enabled: true
+      bindAddress: "0.0.0.0:7687"
+      maxConnections: 1000
+      timeout: "30s"
+      bufferSize: 32768
+      healthCheckInterval: "30s"
+      connectionTimeout: "10s"
+      idleTimeout: "5m"
+      maxBytesPerConnection: 1073741824
+      cleanupInterval: "1m"
+      tls:
+        enabled: false
+        certPath: "/etc/certs/tls.crt"
+        keyPath: "/etc/certs/tls.key"
+      rateLimit:
+        enabled: true
+        rps: 100
+        burst: 200
+        window: "1m"
+      logging:
+        level: "info"
+        traceEnabled: false
+  
+  # Security context
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+  
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop:
+      - ALL
+    readOnlyRootFilesystem: true
+    runAsNonRoot: true
+    runAsUser: 1000
+  
+  # Resource configuration
+  resources:
+    limits:
+      cpu: 500m
+      memory: 512Mi
+    requests:
+      cpu: 100m
+      memory: 128Mi
+  
+  # Probes configuration
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: http
+    initialDelaySeconds: 5
+    periodSeconds: 5
+    timeoutSeconds: 3
+    failureThreshold: 3
+  
+  # Labels and annotations
+  labels:
+    app: memgraph-controller
+    component: controller
+  
+  annotations: {}

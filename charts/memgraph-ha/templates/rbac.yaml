@@ -1,10 +1,13 @@
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
 metadata:
-  name: memgraph-controller
+  name: {{ .Values.controller.serviceAccount.name }}
   labels:
-    app: memgraph-controller
-    component: controller
+    {{- toYaml .Values.controller.labels | nindent 4 }}
+  {{- with .Values.controller.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 rules:
 # Core controller permissions
 - apiGroups: [""]
@@ -33,15 +36,18 @@ rules:
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
 metadata:
-  name: memgraph-controller
+  name: {{ .Values.controller.serviceAccount.name }}
   labels:
-    app: memgraph-controller
-    component: controller
+    {{- toYaml .Values.controller.labels | nindent 4 }}
+  {{- with .Values.controller.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole
-  name: memgraph-controller
+  name: {{ .Values.controller.serviceAccount.name }}
 subjects:
 - kind: ServiceAccount
-  name: memgraph-controller
-  namespace: memgraph
+  name: {{ .Values.controller.serviceAccount.name }}
+  namespace: {{ .Values.controller.namespace }}

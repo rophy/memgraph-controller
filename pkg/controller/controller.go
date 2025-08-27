@@ -19,6 +19,16 @@ import (
 	"k8s.io/client-go/tools/cache"
 )
 
+// generateStateConfigMapName creates a ConfigMap name based on the release name
+func generateStateConfigMapName() string {
+	releaseName := os.Getenv("RELEASE_NAME")
+	if releaseName == "" {
+		log.Printf("Warning: RELEASE_NAME env var not set, using default ConfigMap name")
+		return "memgraph-controller-state"
+	}
+	return fmt.Sprintf("%s-controller-state", releaseName)
+}
+
 // reconcileRequest represents a request to reconcile the cluster
 type reconcileRequest struct {
 	reason    string
@@ -96,8 +106,9 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	controller.leaderElection = NewLeaderElection(clientset, config)
 	controller.setupLeaderElectionCallbacks()
 
-	// Initialize state manager
-	controller.stateManager = NewStateManager(clientset, config.Namespace)
+	// Initialize state manager with release-based ConfigMap name
+	configMapName := generateStateConfigMapName()
+	controller.stateManager = NewStateManager(clientset, config.Namespace, configMapName)
 
 	// Initialize controller state
 	controller.maxFailures = 5

@@ -39,6 +39,8 @@ spec:
           value: {{ .Values.controller.env.httpPort | quote }}
         - name: STATEFULSET_NAME
           value: {{ .Values.controller.env.statefulsetName | quote }}
+        - name: RELEASE_NAME
+          value: {{ .Release.Name | quote }}
         # Leader election environment variables
         - name: POD_NAME
           valueFrom:

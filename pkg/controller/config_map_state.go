@@ -14,10 +14,6 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-const (
-	StateConfigMapName = "memgraph-controller-state"
-)
-
 // ControllerState represents the persistent state stored in ConfigMap
 type ControllerState struct {
 	MasterIndex        int       `json:"masterIndex"`
@@ -28,29 +24,31 @@ type ControllerState struct {
 
 // StateManager manages controller state persistence using ConfigMaps
 type StateManager struct {
-	clientset kubernetes.Interface
-	namespace string
+	clientset     kubernetes.Interface
+	namespace     string
+	configMapName string
 }
 
 // NewStateManager creates a new state manager
-func NewStateManager(clientset kubernetes.Interface, namespace string) *StateManager {
+func NewStateManager(clientset kubernetes.Interface, namespace string, configMapName string) *StateManager {
 	return &StateManager{
-		clientset: clientset,
-		namespace: namespace,
+		clientset:     clientset,
+		namespace:     namespace,
+		configMapName: configMapName,
 	}
 }
 
 // ConfigMapName returns the name of the ConfigMap used for state storage
 func (sm *StateManager) ConfigMapName() string {
-	return StateConfigMapName
+	return sm.configMapName
 }
 
 // LoadState loads the controller state from ConfigMap
 func (sm *StateManager) LoadState(ctx context.Context) (*ControllerState, error) {
-	log.Printf("Loading controller state from ConfigMap %s/%s", sm.namespace, StateConfigMapName)
+	log.Printf("Loading controller state from ConfigMap %s/%s", sm.namespace, sm.configMapName)
 
 	configMap, err := sm.clientset.CoreV1().ConfigMaps(sm.namespace).Get(
-		ctx, StateConfigMapName, metav1.GetOptions{})
+		ctx, sm.configMapName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get state ConfigMap: %w", err)
 	}
@@ -129,7 +127,7 @@ func (sm *StateManager) SaveState(ctx context.Context, state *ControllerState) e
 
 	configMap := &v1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      StateConfigMapName,
+			Name:      sm.configMapName,
 			Namespace: sm.namespace,
 			Labels: map[string]string{
 				"app.kubernetes.io/name":      "memgraph-controller",
@@ -142,7 +140,7 @@ func (sm *StateManager) SaveState(ctx context.Context, state *ControllerState) e
 
 	// Try to update existing ConfigMap first
 	existingConfigMap, err := sm.clientset.CoreV1().ConfigMaps(sm.namespace).Get(
-		ctx, StateConfigMapName, metav1.GetOptions{})
+		ctx, sm.configMapName, metav1.GetOptions{})
 	if err == nil {
 		// Update existing ConfigMap with new data and owner reference
 		existingConfigMap.Data = data
@@ -184,7 +182,7 @@ func (sm *StateManager) SaveState(ctx context.Context, state *ControllerState) e
 // StateExists checks if the state ConfigMap exists
 func (sm *StateManager) StateExists(ctx context.Context) (bool, error) {
 	_, err := sm.clientset.CoreV1().ConfigMaps(sm.namespace).Get(
-		ctx, StateConfigMapName, metav1.GetOptions{})
+		ctx, sm.configMapName, metav1.GetOptions{})
 	if err != nil {
 		// Check if it's a not found error
 		if IsNotFoundError(err) {
@@ -198,7 +196,7 @@ func (sm *StateManager) StateExists(ctx context.Context) (bool, error) {
 // DeleteState removes the state ConfigMap (useful for testing)
 func (sm *StateManager) DeleteState(ctx context.Context) error {
 	err := sm.clientset.CoreV1().ConfigMaps(sm.namespace).Delete(
-		ctx, StateConfigMapName, metav1.DeleteOptions{})
+		ctx, sm.configMapName, metav1.DeleteOptions{})
 	if err != nil && !IsNotFoundError(err) {
 		return fmt.Errorf("failed to delete state ConfigMap: %w", err)
 	}

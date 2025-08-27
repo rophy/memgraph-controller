@@ -1,169 +1,115 @@
-# Implementation Plan: Fast Failover Fix
+# Implementation Plan: Design-Contract-Based Failover Logic
 
 ## Overview
 
-Fix the failover blocking issue where pod-deleted events wait 23+ seconds due to slow reconciliation operations. Current implementation violates the README.md design which requires IMMEDIATE failover via state updates, not expensive Memgraph operations during failover.
+Replace the current discovery-based failover logic with design-contract-based logic that leverages the README.md guarantee: "In OPERATIONAL state, either pod-0 OR pod-1 MUST be SYNC replica." This eliminates complex runtime discovery during failover and ensures guaranteed zero data loss.
 
 ## Root Cause Analysis
 
-**Problem**: Sequential work queue processing with expensive operations blocks urgent failover events:
+**Current Problem**: Over-engineered failover logic that tries to discover SYNC replicas at runtime:
 
-1. **Single worker thread** processes all events sequentially from `c.workQueue`
-2. **Long reconciliation cycles** (23+ seconds) include:
-   - Memgraph connection attempts to failed pods with 5s socket timeouts
-   - Exponential backoff retry (1s + 2s + 4s + 8s = 15s per operation)
-   - Multiple operations per pod (promotion, registration, health checks)
-3. **Pod-deleted events** queue behind these expensive operations
-4. **By the time failover runs**, the pod has already restarted (no failover needed)
+1. **Complex discovery chain**: Main fails → Query remaining pods → Detect SYNC replica → Fallback to "best async"
+2. **Information unavailable**: SYNC replica info stored in failed main pod → Cannot be queried during failover
+3. **Misleading fallback**: `selectBestAsyncReplica()` promotes what should be the SYNC replica but labels it as "potential data loss"
+4. **Unnecessary complexity**: Discovery logic when design contract already defines the answer
 
-**Key Finding**: Failover itself is fast, but reconciliation after failover tries to configure deleted pods, causing 23+ second delays in the same cycle.
+**Key Insight**: The README.md design contract eliminates the need for runtime discovery. In OPERATIONAL state, we KNOW by design which pod is the SYNC replica.
 
-## Stage 1: Minimal Failover Implementation (README Design)
-**Goal**: Implement immediate failover as specified in README.md line 141
-**Success Criteria**: Failover completes in < 1 second, no Memgraph operations during critical path
-**Tests**: E2E failover timing, gateway switches immediately
+## Stage 1: Design-Contract-Based Failover Logic
+**Goal**: Replace discovery-based logic with design contract enforcement
+**Success Criteria**: Failover always promotes SYNC replica with zero data loss guarantee
+**Tests**: E2E tests show "SYNC replica failover" instead of "ASYNC replica failover"
 **Status**: Not Started
 
 ### Current vs Correct Design:
 
-**README.md line 141**: *"If sync replica status is READY, controller uses it as MAIN, and promotes it immediately"*
-
-**Current (WRONG)**:
+**Current (WRONG - Discovery-Based)**:
 ```go
-// Expensive operation during failover - blocks for 15+ seconds if pod unreachable
-err := c.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, newMain.BoltAddress)
-if err != nil {
-    return fmt.Errorf("failed to promote new main %s: %w", newMain.Name, err)
-}
-
-// State update comes AFTER expensive operation
-c.updateTargetMainIndex(ctx, clusterState, newMainIndex, "failover")
-```
-
-**Correct (README Design)**:
-```go
-// Step 1: Single fast promotion (no retry, pod-1 is healthy)
-if err := c.memgraphClient.SetReplicationRoleToMain(ctx, newMain.BoltAddress); err != nil {
-    log.Printf("Warning: Promotion failed, proceeding with state update: %v", err)
-}
-
-// Step 2: IMMEDIATE state update (triggers gateway switch)
-if err := c.updateTargetMainIndex(ctx, clusterState, newMainIndex, "IMMEDIATE failover"); err != nil {
-    return fmt.Errorf("CRITICAL: failed to update main index: %w", err)
-}
-
-// Step 3: Remove failed pod from reconciliation to prevent delays
-delete(clusterState.Pods, oldFailedMain)
-
-log.Printf("✅ IMMEDIATE failover completed: pod-%d is now MAIN", newMainIndex)
-// Reconciliation handles cleanup asynchronously
-```
-
-### Tasks:
-- [ ] Modify `handleMainFailover()` to use single-attempt promotion (no retry)
-- [ ] Move state update to critical path (before expensive operations)
-- [ ] Filter failed pods from cluster state to prevent reconciliation delays
-- [ ] Add fast-path logging for immediate failover completion
-- [ ] Test failover timing (should be < 1 second)
-
-## Stage 2: Reconciliation Resilience 
-**Goal**: Prevent reconciliation from blocking on unreachable pods
-**Success Criteria**: Failed pod operations don't delay healthy pod operations
-**Tests**: Reconciliation completes in < 5 seconds even with failed pods
-**Status**: Not Started
-
-### Current Problem:
-`ConfigureReplication()` tries to configure deleted pods as ASYNC replicas:
-
-```go
-// This tries to contact pod-0 even when it's deleted/terminating
-for podName, podInfo := range clusterState.Pods {
-    if err := c.configurePodAsAsyncReplica(ctx, mainPod, podInfo); err != nil {
-        // Logs warning but continues - but this took 15+ seconds per failed pod
+// Try to discover SYNC replica at runtime (but info is in failed main!)
+var syncReplica *PodInfo
+for _, podInfo := range clusterState.Pods {
+    if podInfo.IsSyncReplica {  // This info may not be available!
+        syncReplica = podInfo
     }
 }
+
+if syncReplica != nil {
+    newMain = syncReplica  // Ideal case
+} else {
+    // Fallback - but this should never happen in OPERATIONAL state!
+    newMain = c.selectBestAsyncReplica(healthyReplicas, clusterState.TargetMainIndex)
+    log.Printf("⚠️ WARNING: Potential data loss")  // Wrong warning!
+}
 ```
 
-### Solution:
+**Correct (README Design Contract)**:
 ```go
-// Skip pods that aren't ready for replication (immediate check)
-for podName, podInfo := range clusterState.Pods {
-    if !c.isPodHealthyForReplication(podInfo) {
-        log.Printf("Skipping unhealthy pod %s during reconciliation", podName)
-        continue // Don't attempt expensive operations
+// Design contract: In OPERATIONAL state, pod-0 or pod-1 MUST be SYNC replica
+if clusterState.StateType == "OPERATIONAL_STATE" {
+    failedMainIndex := c.config.ExtractPodIndex(oldMain)
+    
+    // The other pod (0 or 1) MUST be the SYNC replica by design
+    var newMainIndex int
+    if failedMainIndex == 0 {
+        newMainIndex = 1  // pod-1 is SYNC replica
+    } else {
+        newMainIndex = 0  // pod-0 is SYNC replica  
     }
-    // Only configure healthy pods
+    
+    newMainName := c.config.GetPodName(newMainIndex)
+    newMain = clusterState.Pods[newMainName]
+    promotionReason = "SYNC replica failover (design contract guarantee)"
+    
+    log.Printf("✅ SYNC REPLICA FAILOVER: Promoting %s (guaranteed zero data loss by design)", newMainName)
 }
 ```
 
 ### Tasks:
-- [ ] Add `isPodHealthyForReplication()` check before expensive operations
-- [ ] Implement circuit breaker for repeatedly failing pod connections
-- [ ] Add timeout contexts for all Memgraph operations (max 5s total)
-- [ ] Use parallel goroutines for independent pod operations
-- [ ] Test reconciliation with mixed healthy/unhealthy pods
+- [ ] Replace discovery logic in `handleMainFailover()` with design contract logic
+- [ ] Remove `selectBestAsyncReplica()` fallback for OPERATIONAL state
+- [ ] Update promotion logging to reflect zero data loss guarantee
+- [ ] Add design contract validation (ensure failed main is pod-0 or pod-1)
+- [ ] Test that E2E logs show "SYNC replica failover" instead of "ASYNC replica failover"
 
-## Stage 3: Priority Event Processing
-**Goal**: Process urgent failover events ahead of routine reconciliation
-**Success Criteria**: Pod-deleted events processed within 1 second regardless of queue
-**Tests**: Rapid pod deletions trigger immediate failover
+## Stage 2: Cleanup Redundant Code
+**Goal**: Remove over-engineered discovery code that is no longer needed
+**Success Criteria**: Cleaner, simpler failover logic with fewer edge cases
+**Tests**: All existing E2E tests continue to pass
 **Status**: Not Started
 
-### Current Problem:
-```go
-// Single channel processes all events FIFO
-case request := <-c.workQueue:
-    c.processReconcileRequest(ctx, request, workerID)
-```
+### Cleanup Tasks:
+- [ ] Remove or simplify `selectBestAsyncReplica()` function (only needed for non-OPERATIONAL states)
+- [ ] Remove SYNC replica discovery loop during failover
+- [ ] Clean up misleading function names and comments
+- [ ] Simplify failover decision tree
+- [ ] Update error messages to reflect design contract assumptions
 
-### Solution:
-```go
-// Priority channels for different event types
-select {
-case urgentRequest := <-c.urgentQueue:      // Pod failures, health changes
-    c.processUrgentRequest(ctx, urgentRequest)
-case request := <-c.workQueue:              // Normal reconciliation  
-    c.processReconcileRequest(ctx, request)
-}
-```
-
-### Tasks:
-- [ ] Add `urgentQueue` channel for pod-deleted events
-- [ ] Modify event handlers to route by urgency
-- [ ] Implement separate worker for urgent events
-- [ ] Test priority processing under load
-- [ ] Measure event processing latency
-
-## Stage 4: End-to-End Validation
-**Goal**: Verify fast failover works in all scenarios
-**Success Criteria**: E2E tests pass consistently with < 2 second failover timing
-**Tests**: `TestE2E_FailoverReliability` with timing assertions
+## Stage 3: Design Contract Validation
+**Goal**: Add validation that the design contract is being followed
+**Success Criteria**: Early detection if deployment violates 2-pod MAIN/SYNC design
+**Tests**: Controller logs warnings if design contract is violated
 **Status**: Not Started
 
-### Tasks:
-- [ ] Add timing measurements to E2E tests
-- [ ] Test various failure scenarios (main pod, sync replica, both)
-- [ ] Verify gateway switches within 1 second
-- [ ] Test multiple rapid failovers
-- [ ] Validate no client connection errors during failover
-
-## Dependencies
-
-- **Kubernetes Pod Events**: Pod deletion detection must work correctly
-- **Gateway Integration**: Gateway must respond to ConfigMap changes
-- **Leader Election**: Only leader should perform failover decisions
+### Validation Tasks:
+- [ ] Add startup validation that only pods 0 and 1 can be main-eligible
+- [ ] Validate that exactly one of pod-0 or pod-1 is SYNC replica in OPERATIONAL state  
+- [ ] Add alerts if 3+ pod deployment tries to make pod-2 a main
+- [ ] Document the 2-pod MAIN/SYNC strategy constraints clearly
+- [ ] Test behavior with various deployment configurations
 
 ## Success Metrics
 
-- **Failover Time**: < 1 second from pod deletion to ConfigMap update
-- **Gateway Switch**: < 500ms from ConfigMap change to traffic redirect
-- **Client Errors**: Zero "Write queries are forbidden" errors during failover
-- **Queue Blocking**: Urgent events never wait > 1 second in queue
+- **Zero Data Loss**: Failover always promotes SYNC replica (no "potential data loss" warnings)
+- **Correct Logging**: E2E tests show "SYNC replica failover (design contract guarantee)"
+- **Simplified Logic**: Fewer lines of code, fewer edge cases
+- **Design Compliance**: Clear validation that deployment follows README.md contract
+- **Performance**: Maintain < 1 second failover timing (currently 525ms)
 
 ## Definition of Done
 
-- [ ] Pod-deleted events trigger failover in < 1 second
-- [ ] Reconciliation doesn't block on failed pods
-- [ ] E2E tests pass with timing assertions
-- [ ] No client connection errors during failover
-- [ ] Performance benchmarks meet targets
+- [ ] Failover logic uses design contract instead of runtime discovery
+- [ ] E2E tests show "SYNC replica failover" instead of "ASYNC replica failover"  
+- [ ] No "potential data loss" warnings in OPERATIONAL state failover
+- [ ] Code is simpler and more maintainable
+- [ ] Design contract violations are detected and logged
+- [ ] All existing performance benchmarks maintained

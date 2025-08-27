@@ -161,18 +161,16 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 		return clusterState, nil
 	}
 
-	// Determine if this is truly a bootstrap phase or operational reconciliation
-	// Only mark as bootstrap if:
-	// 1. Controller has no last known main (first run)
-	// 2. Controller hasn't established operational state before
-	isBootstrap := c.lastKnownMain == "" && c.targetMainIndex < 0
-
-	if isBootstrap {
-		log.Printf("First run detected - entering bootstrap phase for safety validation")
+	// CRITICAL: During OPERATIONAL phase, NEVER trigger bootstrap logic
+	// Only controller.isBootstrap should determine bootstrap vs operational mode
+	// This prevents inappropriate bootstrap classification during immediate failover
+	if c.isBootstrap {
+		log.Printf("Controller in bootstrap phase - will perform bootstrap validation")
 		clusterState.IsBootstrapPhase = true
 	} else {
-		log.Printf("Operational reconciliation - maintaining authority over cluster state")
+		log.Printf("Controller in operational phase - maintaining OPERATIONAL_STATE authority")
 		clusterState.IsBootstrapPhase = false
+		clusterState.StateType = OPERATIONAL_STATE // Explicitly preserve OPERATIONAL state
 		// Preserve target main index from controller state
 		if c.targetMainIndex >= 0 {
 			clusterState.TargetMainIndex = c.targetMainIndex

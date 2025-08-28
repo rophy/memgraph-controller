@@ -4,15 +4,19 @@ kind: Config
 metadata:
   name: memgraph-cluster
 
-# Build configuration for the controller
+# Build configuration for the controller and test client
 build:
   artifacts:
   - image: memgraph-controller
     context: .
     docker:
       dockerfile: Dockerfile
+  - image: neo4j-client
+    context: tests/client
+    docker:
+      dockerfile: Dockerfile
 
-# Default deploy configuration (memgraph + controller)
+# Default deploy configuration (memgraph + controller + test client)
 deploy:
   helm:
     releases:
@@ -21,6 +25,14 @@ deploy:
       namespace: memgraph
       createNamespace: true
       wait: true
+    - name: test-client
+      chartPath: tests/client/charts/test-client
+      namespace: memgraph
+      createNamespace: false
+      wait: false
+      setValues:
+        neo4j.uri: "bolt://memgraph-controller:7687"
+        writeInterval: "1000"
   logs:
     prefix: podAndContainer
 # Port forwarding for development (default profile - memgraph + controller)
@@ -35,6 +47,11 @@ portForward:
   namespace: memgraph
   port: 8080
   localPort: 8080
+- resourceType: service
+  resourceName: memgraph-ha
+  namespace: memgraph
+  port: 7687
+  localPort: 7688
 
 # Profiles for different deployment scenarios
 profiles:

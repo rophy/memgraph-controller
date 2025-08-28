@@ -1,0 +1,15 @@
+apiVersion: v2
+name: test-client
+description: A Neo4j/Memgraph test client for load testing and metrics collection
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - neo4j
+  - memgraph
+  - testing
+  - metrics
+  - load-testing
+maintainers:
+  - name: memgraph-controller
+home: https://github.com/memgraph/memgraph-controller

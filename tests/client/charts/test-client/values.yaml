@@ -1,0 +1,30 @@
+# Default values for test-client
+# This is a placeholder values file for the test client
+
+replicaCount: 1
+
+image:
+  repository: neo4j-client
+  tag: latest
+  pullPolicy: IfNotPresent
+
+# Neo4j/Memgraph connection settings
+neo4j:
+  uri: "bolt://memgraph-controller:7687"  # Connect via gateway
+  username: ""
+  password: ""
+
+# Write interval in milliseconds
+writeInterval: 1000
+
+# Resource limits
+resources:
+  requests:
+    memory: "128Mi"
+    cpu: "100m"
+  limits:
+    memory: "256Mi"
+    cpu: "200m"
+
+# Namespace
+namespace: memgraph

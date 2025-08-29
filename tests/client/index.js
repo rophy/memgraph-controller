@@ -65,6 +65,10 @@ class Neo4jClient {
                 logger: (level, message) => {
                     if (level === 'error') {
                         console.error(`[Neo4j] ${message}`);
+                        // Count driver-level errors in metrics
+                        this.metrics.recordError();
+                        const stats = this.metrics.getStats();
+                        console.error(`Driver error counted | Stats:`, JSON.stringify(stats, null, 2));
                     }
                 }
             }
@@ -81,7 +85,10 @@ class Neo4jClient {
             console.log('✓ Successfully connected to Neo4j');
             return true;
         } catch (error) {
-            console.error('✗ Failed to connect to Neo4j:', error.message);
+            this.metrics.recordError();
+            const stats = this.metrics.getStats();
+            console.error(`✗ Failed to connect to Neo4j: ${error.message} | Stats:`, 
+                JSON.stringify(stats, null, 2));
             return false;
         }
     }

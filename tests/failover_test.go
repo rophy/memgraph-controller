@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,16 +24,28 @@ func TestE2E_DataReplicationVerification(t *testing.T) {
 	testID := fmt.Sprintf("replication-test-%d", time.Now().Unix())
 	testValue := "replication-verification-data"
 
-	// First write test data through gateway
-	driver, err := neo4j.NewDriverWithContext(gatewayURL, neo4j.NoAuth())
+	// First write test data through gateway with retry configuration
+	driver, err := neo4j.NewDriverWithContext(
+		gatewayURL,
+		neo4j.NoAuth(),
+		func(conf *config.Config) {
+			conf.MaxTransactionRetryTime = 60 * time.Second
+			conf.SocketConnectTimeout = 10 * time.Second
+			conf.ConnectionAcquisitionTimeout = 30 * time.Second
+		})
 	require.NoError(t, err, "Should connect to gateway")
 	defer driver.Close(ctx)
 
 	session := driver.NewSession(ctx, neo4j.SessionConfig{})
-	_, err = session.Run(ctx,
-		"CREATE (n:TestNode {id: $id, value: $value, timestamp: datetime()})",
-		map[string]interface{}{"id": testID, "value": testValue})
-	session.Close(ctx)
+	defer session.Close(ctx)
+	
+	// Use ExecuteWrite for automatic retry on connection failures
+	_, err = session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		_, err := tx.Run(ctx,
+			"CREATE (n:TestNode {id: $id, value: $value, timestamp: datetime()})",
+			map[string]interface{}{"id": testID, "value": testValue})
+		return nil, err
+	})
 	require.NoError(t, err, "Should write test data through gateway")
 
 	// Get cluster status to find all pod endpoints
@@ -44,7 +57,14 @@ func TestE2E_DataReplicationVerification(t *testing.T) {
 
 	// For this test, we'll verify replication by reading from the gateway multiple times
 	// This is more realistic than trying to connect to individual pod IPs from outside the cluster
-	gatewayDriver, err := neo4j.NewDriverWithContext(gatewayURL, neo4j.NoAuth())
+	gatewayDriver, err := neo4j.NewDriverWithContext(
+		gatewayURL,
+		neo4j.NoAuth(),
+		func(conf *config.Config) {
+			conf.MaxTransactionRetryTime = 60 * time.Second
+			conf.SocketConnectTimeout = 10 * time.Second
+			conf.ConnectionAcquisitionTimeout = 30 * time.Second
+		})
 	require.NoError(t, err, "Should connect to gateway")
 	defer gatewayDriver.Close(ctx)
 
@@ -52,16 +72,22 @@ func TestE2E_DataReplicationVerification(t *testing.T) {
 	gatewaySession := gatewayDriver.NewSession(ctx, neo4j.SessionConfig{})
 	defer gatewaySession.Close(ctx)
 
-	result, err := gatewaySession.Run(ctx,
-		"MATCH (n:TestNode {id: $id}) RETURN n.id, n.value",
-		map[string]interface{}{"id": testID})
+	// Use ExecuteRead for automatic retry on connection failures
+	records, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		result, err := tx.Run(ctx,
+			"MATCH (n:TestNode {id: $id}) RETURN n.id, n.value",
+			map[string]interface{}{"id": testID})
+		if err != nil {
+			return nil, err
+		}
+		return result.Collect(ctx)
+	})
 	require.NoError(t, err, "Should read data through gateway")
+	
+	recordList := records.([]*neo4j.Record)
+	require.Len(t, recordList, 1, "Should find exactly one test record")
 
-	records, err := result.Collect(ctx)
-	require.NoError(t, err, "Should collect query results")
-	require.Len(t, records, 1, "Should find exactly one test record")
-
-	record := records[0]
+	record := recordList[0]
 	assert.Equal(t, testID, record.Values[0], "ID should match")
 	assert.Equal(t, testValue, record.Values[1], "Value should match")
 
@@ -116,8 +142,15 @@ func TestE2E_FailoverReliability(t *testing.T) {
 	initialMain, initialSync := validateTopology(t, status)
 	t.Logf("✓ Cluster topology: Main=%s, Sync=%s", initialMain, initialSync)
 
-	// Connect to gateway for data operations
-	driver, err := neo4j.NewDriverWithContext(gatewayURL, neo4j.NoAuth())
+	// Connect to gateway for data operations with retry configuration
+	driver, err := neo4j.NewDriverWithContext(
+		gatewayURL,
+		neo4j.NoAuth(),
+		func(conf *config.Config) {
+			conf.MaxTransactionRetryTime = 60 * time.Second
+			conf.SocketConnectTimeout = 10 * time.Second
+			conf.ConnectionAcquisitionTimeout = 30 * time.Second
+		})
 	require.NoError(t, err, "Should connect to gateway")
 	defer driver.Close(ctx)
 
@@ -178,29 +211,12 @@ func TestE2E_FailoverReliability(t *testing.T) {
 	postFailoverID := fmt.Sprintf("post-failover-%d", time.Now().UnixNano())
 	postFailoverValue := "data-after-failover"
 
-	// Try to write data immediately - may fail initially during failover
-	var writeSuccess bool
-	writeAttempts := 0
-	maxWriteAttempts := 30 // 30 seconds of attempts
+	// Write data immediately - ExecuteWrite will automatically retry on connection failures
+	err = writeTimestampedData(ctx, driver, postFailoverID, postFailoverValue)
+	require.NoError(t, err, "Should write data after failover (with automatic retry)")
+	t.Logf("✓ Post-failover data written: %s", postFailoverID)
 
-	for writeAttempts < maxWriteAttempts && !writeSuccess {
-		writeAttempts++
-		err = writeTimestampedData(ctx, driver, postFailoverID, postFailoverValue)
-		if err == nil {
-			writeSuccess = true
-			t.Logf("✓ Post-failover data written on attempt %d: %s", writeAttempts, postFailoverID)
-			break
-		}
-
-		if writeAttempts%5 == 0 {
-			t.Logf("⏳ Write attempt %d failed, retrying... (error: %v)", writeAttempts, err)
-		}
-		time.Sleep(1 * time.Second)
-	}
-
-	require.True(t, writeSuccess, "Should eventually write data after failover within %d attempts", maxWriteAttempts)
-
-	// Immediately verify the post-failover data
+	// Immediately verify the post-failover data - ExecuteRead will automatically retry
 	verifyDataExists(t, ctx, driver, postFailoverID, postFailoverValue)
 	t.Log("✓ Post-failover data verified via query")
 
@@ -331,13 +347,17 @@ func writeTimestampedData(ctx context.Context, driver neo4j.DriverWithContext, i
 	session := driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 
-	_, err := session.Run(ctx,
-		"CREATE (n:FailoverTest {id: $id, value: $value, timestamp: datetime(), created_at: $created_at})",
-		map[string]interface{}{
-			"id":         id,
-			"value":      value,
-			"created_at": time.Now().Format(time.RFC3339),
-		})
+	// Use ExecuteWrite for automatic retry on connection failures
+	_, err := session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		_, err := tx.Run(ctx,
+			"CREATE (n:FailoverTest {id: $id, value: $value, timestamp: datetime(), created_at: $created_at})",
+			map[string]interface{}{
+				"id":         id,
+				"value":      value,
+				"created_at": time.Now().Format(time.RFC3339),
+			})
+		return nil, err
+	})
 
 	return err
 }
@@ -347,16 +367,22 @@ func verifyDataExists(t *testing.T, ctx context.Context, driver neo4j.DriverWith
 	session := driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 
-	result, err := session.Run(ctx,
-		"MATCH (n:FailoverTest {id: $id}) RETURN n.id, n.value, n.created_at",
-		map[string]interface{}{"id": expectedID})
+	// Use ExecuteRead for automatic retry on connection failures
+	records, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		result, err := tx.Run(ctx,
+			"MATCH (n:FailoverTest {id: $id}) RETURN n.id, n.value, n.created_at",
+			map[string]interface{}{"id": expectedID})
+		if err != nil {
+			return nil, err
+		}
+		return result.Collect(ctx)
+	})
 	require.NoError(t, err, "Should query for data %s", expectedID)
+	
+	recordList := records.([]*neo4j.Record)
+	require.Len(t, recordList, 1, "Should find exactly one record for %s", expectedID)
 
-	records, err := result.Collect(ctx)
-	require.NoError(t, err, "Should collect results for %s", expectedID)
-	require.Len(t, records, 1, "Should find exactly one record for %s", expectedID)
-
-	record := records[0]
+	record := recordList[0]
 	assert.Equal(t, expectedID, record.Values[0], "ID should match")
 	assert.Equal(t, expectedValue, record.Values[1], "Value should match")
 }

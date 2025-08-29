@@ -96,28 +96,36 @@ func TestE2E_DataWriteThoughGateway(t *testing.T) {
 	testID := fmt.Sprintf("test_%d", time.Now().Unix())
 	testValue := fmt.Sprintf("value_%d", time.Now().Unix())
 
-	// Write test data
-	_, err = session.Run(ctx,
-		"CREATE (n:TestNode {id: $id, value: $value, timestamp: $ts}) RETURN n.id",
-		map[string]interface{}{
-			"id":    testID,
-			"value": testValue,
-			"ts":    time.Now().Unix(),
-		})
+	// Write test data using ExecuteWrite for automatic retry
+	_, err = session.ExecuteWrite(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		_, err := tx.Run(ctx,
+			"CREATE (n:TestNode {id: $id, value: $value, timestamp: $ts}) RETURN n.id",
+			map[string]interface{}{
+				"id":    testID,
+				"value": testValue,
+				"ts":    time.Now().Unix(),
+			})
+		return nil, err
+	})
 	require.NoError(t, err, "Should write data through gateway")
 
-	// Verify data was written by reading it back
-	result, err := session.Run(ctx,
-		"MATCH (n:TestNode {id: $id}) RETURN n.id, n.value, n.timestamp",
-		map[string]interface{}{"id": testID})
+	// Verify data was written by reading it back using ExecuteRead for automatic retry
+	records, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (any, error) {
+		result, err := tx.Run(ctx,
+			"MATCH (n:TestNode {id: $id}) RETURN n.id, n.value, n.timestamp",
+			map[string]interface{}{"id": testID})
+		if err != nil {
+			return nil, err
+		}
+		return result.Collect(ctx)
+	})
 	require.NoError(t, err, "Should read data through gateway")
 
 	// Validate the written data
-	records, err := result.Collect(ctx)
-	require.NoError(t, err, "Should collect query results")
-	require.Len(t, records, 1, "Should find exactly one test record")
+	recordList := records.([]*neo4j.Record)
+	require.Len(t, recordList, 1, "Should find exactly one test record")
 
-	record := records[0]
+	record := recordList[0]
 	assert.Equal(t, testID, record.Values[0], "ID should match")
 	assert.Equal(t, testValue, record.Values[1], "Value should match")
 

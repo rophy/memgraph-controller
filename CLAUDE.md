@@ -59,8 +59,6 @@ kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --outp
 
 **Do NOT rely on the memgraph-controller status API for debugging** - always verify the actual Memgraph state directly using the above commands.
 
-
-
 ### Emergency Recovery Procedures
 
 #### Scenario: SYNC Replica Down, Writes Blocked
@@ -174,3 +172,21 @@ grep -rn "\.updateTargetMainIndex" pkg/controller/
 - Fix `controller.go:982` to use consolidated method
 
 This anti-pattern is the root cause of the gateway routing race condition and MUST be eliminated.
+
+# Known Issues Documentation
+
+**All known issues are documented in `KNOWN_ISSUES.md`**
+
+## Protocol for Claude
+
+1. **Before investigating new issues**: ALWAYS read `KNOWN_ISSUES.md` first to check if the problem is already documented
+2. **When encountering test failures or bugs**: Check against documented known issues to avoid duplicate investigation
+3. **When documenting new issues**: Add them to `KNOWN_ISSUES.md` with:
+   - Clear description and reproduction steps
+   - Root cause analysis
+   - Evidence (logs, error messages)
+   - Proposed solutions
+   - Impact assessment
+4. **When fixing issues**: Update the status in `KNOWN_ISSUES.md` and reference the fix commit
+
+This ensures we maintain a comprehensive knowledge base of system behavior and avoid repeatedly investigating the same problems.

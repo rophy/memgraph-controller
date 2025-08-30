@@ -578,11 +578,40 @@ func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 	}
 	
 	log.Printf("🔄 ConfigMap added: %s", configMap.Name)
+	
+	// Extract masterIndex from ConfigMap
+	masterIndexStr, exists := configMap.Data["masterIndex"]
+	if !exists {
+		log.Printf("Warning: ConfigMap %s missing masterIndex", configMap.Name)
+		return
+	}
+	
+	// Parse masterIndex
+	var newMasterIndex int
+	if _, err := fmt.Sscanf(masterIndexStr, "%d", &newMasterIndex); err != nil {
+		log.Printf("Failed to parse masterIndex from ConfigMap: %v", err)
+		return
+	}
+	
+	// Check if this is different from our current state
+	c.mu.RLock()
+	currentIndex := c.targetMainIndex
+	c.mu.RUnlock()
+	
+	if currentIndex != newMasterIndex {
+		log.Printf("Target main index changed: %d -> %d", currentIndex, newMasterIndex)
+		c.handleTargetMainChanged(newMasterIndex)
+	}
+	
+	// Transition gateway to operational phase for non-leaders
+	if !c.IsLeader() && c.gatewayServer != nil {
+		c.gatewayServer.SetBootstrapPhase(false)
+		log.Printf("✅ Gateway transitioned to operational phase (ConfigMap created, bootstrap complete)")
+	}
 }
 
 // onConfigMapUpdate handles ConfigMap update events
 func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
-	oldConfigMap := oldObj.(*v1.ConfigMap)
 	newConfigMap := newObj.(*v1.ConfigMap)
 	
 	// Only process our controller state ConfigMap
@@ -590,17 +619,32 @@ func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 		return
 	}
 	
-	// Check if masterIndex changed
-	oldMasterIndex, oldExists := oldConfigMap.Data["masterIndex"]
-	newMasterIndex, newExists := newConfigMap.Data["masterIndex"]
-	
-	if (!oldExists && !newExists) || (oldExists && newExists && oldMasterIndex == newMasterIndex) {
-		// No change in MasterIndex, ignore
+	// Extract new masterIndex from ConfigMap
+	newMasterIndexStr, exists := newConfigMap.Data["masterIndex"]
+	if !exists {
+		log.Printf("Warning: ConfigMap %s missing masterIndex", newConfigMap.Name)
 		return
 	}
 	
-	log.Printf("🔄 ConfigMap state change detected: MasterIndex %s -> %s", oldMasterIndex, newMasterIndex)
-	c.handleConfigMapStateChange(newConfigMap)
+	// Parse new masterIndex
+	var newMasterIndex int
+	if _, err := fmt.Sscanf(newMasterIndexStr, "%d", &newMasterIndex); err != nil {
+		log.Printf("Failed to parse masterIndex from ConfigMap: %v", err)
+		return
+	}
+	
+	// Compare with our current state (not old ConfigMap)
+	c.mu.RLock()
+	currentIndex := c.targetMainIndex
+	c.mu.RUnlock()
+	
+	if currentIndex == newMasterIndex {
+		// No change from our perspective, ignore
+		return
+	}
+	
+	log.Printf("🔄 ConfigMap state change detected: MasterIndex %d -> %d", currentIndex, newMasterIndex)
+	c.handleTargetMainChanged(newMasterIndex)
 }
 
 // onConfigMapDelete handles ConfigMap deletion events
@@ -615,33 +659,14 @@ func (c *MemgraphController) onConfigMapDelete(obj interface{}) {
 	log.Printf("⚠️ ConfigMap deleted: %s", configMap.Name)
 }
 
-// handleConfigMapStateChange processes ConfigMap state changes and coordinates controller pods
-func (c *MemgraphController) handleConfigMapStateChange(configMap *v1.ConfigMap) {
+// handleTargetMainChanged processes target main index changes and coordinates controller pods
+func (c *MemgraphController) handleTargetMainChanged(newMasterIndex int) {
 	coordinationStartTime := time.Now()
 	
 	// Don't process our own changes if we're the leader
 	if c.IsLeader() {
-		log.Printf("⚠️ Leader ignoring ConfigMap change (likely caused by own update)")
+		log.Printf("⚠️ Leader ignoring target main change (likely caused by own update)")
 		return
-	}
-	
-	// Extract coordination metadata from ConfigMap
-	masterIndexStr, exists := configMap.Data["masterIndex"]
-	if !exists {
-		log.Printf("⚠️ ConfigMap has no masterIndex field, ignoring")
-		return
-	}
-	
-	lastUpdated := configMap.Data["lastUpdated"]
-	controllerVersion := configMap.Data["controllerVersion"]
-	
-	newMasterIndex := -1
-	if masterIndexStr != "" && masterIndexStr != "-1" {
-		if masterIndexStr == "0" {
-			newMasterIndex = 0
-		} else if masterIndexStr == "1" {
-			newMasterIndex = 1
-		}
 	}
 	
 	c.mu.Lock()
@@ -651,14 +676,13 @@ func (c *MemgraphController) handleConfigMapStateChange(configMap *v1.ConfigMap)
 	
 	// Check if this is actually a change
 	if oldTargetIndex == newMasterIndex {
-		log.Printf("📋 ConfigMap change but targetMainIndex unchanged (%d), ignoring", newMasterIndex)
+		log.Printf("📋 Target main index unchanged (%d), ignoring", newMasterIndex)
 		return
 	}
 	
 	// Log detailed coordination information
 	log.Printf("🔄 COORDINATION EVENT: Non-leader detected MasterIndex change")
-	log.Printf("   📊 Change: %d -> %d (lastUpdated: %s, version: %s)", 
-		oldTargetIndex, newMasterIndex, lastUpdated, controllerVersion)
+	log.Printf("   📊 Change: %d -> %d", oldTargetIndex, newMasterIndex)
 	log.Printf("   🏷️ Pod Identity: %s", c.getPodIdentity())
 	
 	// Phase 1: Update local controller state atomically

@@ -47,39 +47,58 @@ Ground Rules:
 5. All controller pods watch same set of events.
 6. It is assumed that all parts of this document clearly classify controller as leader or not.
 
-## Controller Lifecycle
+## Controller Code Flow
 
-Controller has two phases throughout its lifecycle: Bootstrap and Operational.
+1. Initialization:
+  - Setup informers.
+  - Start HTTP service.
+  - Start gateway service.
+  - Start leader election.
+2. Start reconciliation loop, which is described in section "Reconciliation Loop"
 
-### Bootstrap Phase
+### Reconciliation Loop
 
-Controller starts up as Bootstrap phase, which goal is load or discover current state of target memgraph-ha cluster.
+1. If not leader then stop current iteration, otherwise continue next steps.
 
-During this phase, Gateway REJECTS any bolt client connections.
+2. If configmap does not exist, perform actions in section "Discover Cluster State", which expects to get `TargetMainPod` and configmap.
 
-Below describes the rules, which are expected to be deterministic.
+3. Call kubernetes api to list all memgraph pods, along with their kubernetes status (ready or not).
 
-1. Presumption: a configmap is used to persist state of memgraph-ha cluster under control.
+4. If `TargetMainPod` is not ready, log error, end the reconciliation.
 
-2. If the configmap exists, load state from configmap, and ends Bootstrap Phase and go into Operational Phase. Otherwise continues.
+5. Run `SHOW REPLICAS` to `TargetMainPod` to check replication status.
 
-3. If controller pod not leader, do nothing. Waits for either (a) leader creates configmap or (b) controller became leader and run following steps.
+6. If `data_info` of `TargetSyncReplica` is not "ready", drop the replication.
 
-If configmap does not exist, and controller is leader:
+7. If pod status of `TargetSyncReplica` is not "ready", log warning.
 
-4. If kubernetes status of either pod-0 or pod-1 is not ready, wait. Proceed to next step ONLY after pod-0 and pod-1 are ready.
+8. If `data_info` for any ASYNC replica is not `ready`, drop the replication.
 
-5. If both pod-0 and pod-1 have replication role as `MAIN` and storage shows 0 edge_count, 0 vertex_count, perform "Initializing Memgraph Cluster" as described in next section, and then go into Operational Phase.
+9. If replication for any pod which outside pod-0/pod-1 is missing (could be dropped in step 3 or 4):
 
-6. If one of pod-0 and pod-1 has replication role as `REPLICA`, the other one as `MAIN`, set the `MAIN` pod as `TargetMainPod`, creating the configmap, and go into Operational Phase.
+   1. If the pod is not ready (i.e. not in the list of step 3), log warning
+   2. If the pod is ready, check replication role of the pod, if it is `MAIN`, demote it into `REPLICA`.
+   3. Register ASYNC replica for the pod.
 
-7. Otherwise, memgraph-ha is in an unknown state, controller log error and crash immediately, expecting human to fix the cluster.
+10. Once all register done, run `SHOW REPLICAS` to check final result:
 
-#### Initializing Memgraph Cluster
+   - If `data_info` of SYNC replica is not `ready`, log big error.
+   - If `data_info` of ASYNC replica is not `ready`, log warning.
+
+
+### Discover Cluster State
+
+1. If kubernetes status of either pod-0 or pod-1 is not ready, log warning and stop.
+
+2. If both pod-0 and pod-1 have replication role as `MAIN` and storage shows 0 edge_count, 0 vertex_count, perform "Initialize Memgraph Cluster" as described in next section, and create configmaps.
+
+3. If one of pod-0 and pod-1 has replication role as `REPLICA`, the other one as `MAIN`, set the `MAIN` pod as `TargetMainPod`, and create configmap.
+
+4. Otherwise, memgraph-ha is in an unknown state, controller log error and crash immediately, expecting human to fix the cluster.
+
+### Initialize Memgraph Cluster
 
 Controller always use pod-0 as MAIN, pod-1 as SYNC REPLICA.
-
-Controller will perform following steps to set up the cluster, and then go into OPERATIONAL phase.
 
 1. Run this command against pod-1 to demote it into replica:
 
@@ -104,21 +123,15 @@ Replication `<pod_1_name>` should show following in `data_info` field:
 {memgraph: {behind: 0, status: "ready", ts: 0}}
 ```
 
-In case replica status of `<pod_1_name>` is not "ready", log warning and do exponential retry. In such case, memgraph-controller will stay in INITIAL_STATE.
+Once replication is good, controller picks pod-0 as MAIN, and create configmap.
 
-Once replication is good, controller picks pod-0 as MAIN, and then go into OPERATIONAL phase.
 
-### Operational Phase
-
-Once controller enters OPERATIONAL phase, controller continuously reconciles the cluster into expected status.
-
-In this phase, controller receive events to kubernetes and do things as necessary to fix things.
-
-#### Actions to Kubernetes Events
+### Actions to Kubernetes Events
 
 - Memgraph pod IP changes:
   - Controller updates pod IP information, and wait for pod ready event.
 - Memgraph pod status changed to "not ready":
+  - If configmap not exist yet, do nothing.
   - If pod is `TargetMainPod`:
     - [all controllers] Disconnect and reject all gateway connections.
     - If `TargetSyncReplica` pod status is "ready":
@@ -130,38 +143,6 @@ In this phase, controller receive events to kubernetes and do things as necessar
     - Controller logs warning, drops the replication from `TargetMainPod`, and waits for async replica to recover.
 - Memgraph pod status changed to "ready":
   - Controller performs reconciliation.
-
-### Actions for Reconciliation
-
-> **IMPLEMENTATION REQUIREMENT**: This section defines the EXACT reconciliation algorithm that MUST be implemented in code.
-
-1. If controller is not in OPERATIONAL phase, do nothing, end the reconciliation.
-
-2. Presumption: since controller is in OPERATIONAL phase, it knows which memgraph pod is expected to be MAIN from BOOTSTRAP phase.
-   Let's define this pod as `TargetMainPod`, and the other pod-0/pod-1 pair as `TargetSyncReplica`
-
-3. Call kubernetes api to list all memgraph pods, along with their kubernetes status (ready or not).
-
-4. If `TargetMainPod` is not ready, log error, end the reconciliation.
-
-5. Run `SHOW REPLICAS` to `TargetMainPod` to check replication status.
-
-6. If `data_info` of `TargetSyncReplica` is not "ready", drop the replication.
-
-7. If pod status of `TargetSyncReplica` is not "ready", log warning.
-
-8. If `data_info` for any ASYNC replica is not `ready`, drop the replication.
-
-9. If replication for any pod which outside pod-0/pod-1 is missing (could be dropped in step 3 or 4):
-
-   1. If the pod is not ready (i.e. not in the list of step 3), log warning
-   2. If the pod is ready, check replication role of the pod, if it is `MAIN`, demote it into `REPLICA`.
-   3. Register ASYNC replica for the pod.
-
-10. Once all register done, run `SHOW REPLICAS` to check final result:
-
-   - If `data_info` of SYNC replica is not `ready`, log big error.
-   - If `data_info` of ASYNC replica is not `ready`, log warning.
 
 ## Gateway Design
 

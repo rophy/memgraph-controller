@@ -41,9 +41,11 @@ Controller uses the [Lease API](https://kubernetes.io/docs/concepts/architecture
 Ground Rules:
 
 1. Controller can scale out multiple pods, only one will be leader at any time.
-2. Only leader take control of the memgraph-ha cluster, performing failover etc.
-3. All controller pods can act as the gateway, forwarding traffic.
-4. It is assumed that all parts of this document clearly classify controller as leader or not.
+2. Reconciliation: Leader performs reconciliation logics, non-leader no-op silently.
+3. Configmap: Leader writes configmap, non-leader read and update their in-memory `TargetMainPod` info.
+4. All controller pods can act as the gateway, forwarding traffic.
+5. All controller pods watch same set of events.
+6. It is assumed that all parts of this document clearly classify controller as leader or not.
 
 ## Controller Lifecycle
 
@@ -138,19 +140,19 @@ In this phase, controller receive events to kubernetes and do things as necessar
 2. Presumption: since controller is in OPERATIONAL phase, it knows which memgraph pod is expected to be MAIN from BOOTSTRAP phase.
    Let's define this pod as `TargetMainPod`, and the other pod-0/pod-1 pair as `TargetSyncReplica`
 
-3. Call kubernetes api to get memgraph pods which status is "ready", available to receive traffic.
+3. Call kubernetes api to list all memgraph pods, along with their kubernetes status (ready or not).
 
 4. If `TargetMainPod` is not ready, log error, end the reconciliation.
 
 5. Run `SHOW REPLICAS` to `TargetMainPod` to check replication status.
 
-6. If `data_info` of `TargetSyncReplica` is not `ready`, drop the replication.
+6. If `data_info` of `TargetSyncReplica` is not "ready", drop the replication.
 
-7. If `TargetSyncReplica` is not in "ready" status (i.e. not in the list of step 3), log warning.
+7. If pod status of `TargetSyncReplica` is not "ready", log warning.
 
 8. If `data_info` for any ASYNC replica is not `ready`, drop the replication.
 
-9. If replication for any pod which is not `TargetSyncReplica` is missing (could be dropped in step 3 or 4):
+9. If replication for any pod which outside pod-0/pod-1 is missing (could be dropped in step 3 or 4):
 
    1. If the pod is not ready (i.e. not in the list of step 3), log warning
    2. If the pod is ready, check replication role of the pod, if it is `MAIN`, demote it into `REPLICA`.
@@ -165,10 +167,8 @@ In this phase, controller receive events to kubernetes and do things as necessar
 
 The controller includes an embedded TCP gateway that provides transparent failover for client connections.
 
-The gateway handler:
-
-1. Proxies all traffic to `TargetMainPod`.
-2. Disconnect all connections when `TargetMainPod` changed.
+1. On new connection: if pod status of `TargetMainPod` is ready, proxy to `TargetMainPod`, otherwise reject connection.
+2. When `TargetMainPod` has changed (failover happening): immediately disconnect all connections.
 
 ## Deployment Characteristics
 

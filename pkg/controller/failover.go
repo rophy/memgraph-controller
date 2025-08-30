@@ -108,7 +108,7 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 		}
 
 		if len(healthyReplicas) > 0 {
-			newMain = c.selectBestReplicaForPromotion(healthyReplicas, clusterState.TargetMainIndex)
+			newMain = c.selectBestReplicaForPromotion(healthyReplicas, c.getTargetMainIndex())
 			if newMain != nil {
 				promotionReason = "Discovery-based replica failover (non-operational state)"
 				log.Printf("⚠️  DISCOVERY FAILOVER: Promoting %s (cluster not in operational state)", newMain.Name)
@@ -131,7 +131,7 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 		// Step 1: IMMEDIATE state update (critical path - triggers gateway switch)
 		newMainIndex := c.config.ExtractPodIndex(newMain.Name)
 		if newMainIndex >= 0 && newMainIndex <= 1 {
-			if err := c.updateTargetMainIndex(context.Background(), clusterState, newMainIndex,
+			if err := c.updateTargetMainIndex(context.Background(), newMainIndex,
 				fmt.Sprintf("IMMEDIATE failover: %s → %s", oldMain, newMain.Name)); err != nil {
 				return fmt.Errorf("CRITICAL: failed to update target main index: %w", err)
 			}
@@ -171,7 +171,6 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 		failoverMetrics := &MainSelectionMetrics{
 			Timestamp:            time.Now(),
 			StateType:            clusterState.StateType,
-			TargetMainIndex:      clusterState.TargetMainIndex,
 			SelectedMain:         newMain.Name,
 			SelectionReason:      promotionReason,
 			HealthyPodsCount:     len(clusterState.Pods) - 1, // Total pods minus failed main
@@ -262,12 +261,7 @@ func (c *MemgraphController) handleMainFailurePromotion(clusterState *ClusterSta
 		newMainIndex = 1
 	}
 	
-	// Create temporary clusterState to pass to updateTargetMainIndex
-	tempClusterState := &ClusterState{
-		TargetMainIndex: c.targetMainIndex,
-	}
-	
-	if err := c.updateTargetMainIndex(context.Background(), tempClusterState, newMainIndex, 
+	if err := c.updateTargetMainIndex(context.Background(), newMainIndex, 
 		fmt.Sprintf("SYNC replica %s promoted to main", syncReplica)); err != nil {
 		return fmt.Errorf("failed to update target main index: %w", err)
 	}

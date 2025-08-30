@@ -173,7 +173,7 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 		clusterState.StateType = OPERATIONAL_STATE // Explicitly preserve OPERATIONAL state
 		// Preserve target main index from controller state
 		if c.targetMainIndex >= 0 {
-			clusterState.TargetMainIndex = c.targetMainIndex
+			// Target main index is now managed in controller state, not ClusterState
 		}
 	}
 
@@ -341,7 +341,7 @@ func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterSta
 		return fmt.Errorf("failed to determine target main index: %w", err)
 	}
 
-	clusterState.TargetMainIndex = targetMainIndex
+	// Target main index is now managed in controller state (targetMainIndex)
 	log.Printf("Target main index determined: %d (pod: %s)",
 		targetMainIndex, c.config.GetPodName(targetMainIndex))
 
@@ -355,8 +355,9 @@ func (c *MemgraphController) selectMainAfterQuerying(ctx context.Context, cluste
 	clusterState.IsBootstrapPhase = false
 
 	// Enhanced main selection using controller state authority
+	targetMainIndex := c.getTargetMainIndex()
 	log.Printf("Enhanced main selection: state=%s, target_index=%d",
-		clusterState.StateType.String(), clusterState.TargetMainIndex)
+		clusterState.StateType.String(), targetMainIndex)
 
 	// Use controller state authority based on cluster state
 	switch clusterState.StateType {
@@ -382,18 +383,19 @@ func (c *MemgraphController) applyDeterministicRoles(clusterState *ClusterState)
 	log.Printf("Applying deterministic role assignment for fresh cluster")
 
 	// Use the determined target main index
-	targetMainName := c.config.GetPodName(clusterState.TargetMainIndex)
+	targetMainIndex := c.getTargetMainIndex()
+	targetMainName := c.config.GetPodName(targetMainIndex)
 	clusterState.CurrentMain = targetMainName
 
 	log.Printf("Deterministic main assignment: %s (index %d)",
-		targetMainName, clusterState.TargetMainIndex)
+		targetMainName, targetMainIndex)
 
 	// Log planned topology
-	syncReplicaIndex := 1 - clusterState.TargetMainIndex // 0->1, 1->0
+	syncReplicaIndex := 1 - targetMainIndex // 0->1, 1->0
 	syncReplicaName := c.config.GetPodName(syncReplicaIndex)
 
 	log.Printf("Planned topology:")
-	log.Printf("  Main: %s (index %d)", targetMainName, clusterState.TargetMainIndex)
+	log.Printf("  Main: %s (index %d)", targetMainName, targetMainIndex)
 	log.Printf("  SYNC replica: %s (index %d)", syncReplicaName, syncReplicaIndex)
 
 	// Mark remaining pods as ASYNC replicas
@@ -425,7 +427,7 @@ func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
 		// Extract current main index for tracking using consolidated method
 		currentMainIndex := c.config.ExtractPodIndex(currentMain)
 		if currentMainIndex >= 0 {
-			if err := c.updateTargetMainIndex(context.Background(), clusterState, currentMainIndex,
+			if err := c.updateTargetMainIndex(context.Background(), currentMainIndex,
 				fmt.Sprintf("Updating from discovered main %s", currentMain)); err != nil {
 				log.Printf("Warning: failed to update target main index: %v", err)
 			} else {
@@ -446,7 +448,8 @@ func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
 			len(mainPods), mainPods)
 
 		// Use the determined target main as fallback
-		targetMainName := c.config.GetPodName(clusterState.TargetMainIndex)
+		targetMainIndex := c.getTargetMainIndex()
+	targetMainName := c.config.GetPodName(targetMainIndex)
 		clusterState.CurrentMain = targetMainName
 		log.Printf("Using determined target main as fallback: %s", targetMainName)
 	}

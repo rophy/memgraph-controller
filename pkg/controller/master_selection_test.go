@@ -15,7 +15,6 @@ func TestMainFailoverDetection(t *testing.T) {
 			name: "healthy_main_no_failover",
 			clusterState: &ClusterState{
 				CurrentMain:     "memgraph-0",
-				TargetMainIndex: 0,
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main", BoltAddress: "memgraph-0:7687"},
 					"memgraph-1": {MemgraphRole: "replica", BoltAddress: "memgraph-1:7687"},
@@ -27,7 +26,6 @@ func TestMainFailoverDetection(t *testing.T) {
 			name: "main_pod_missing_should_failover",
 			clusterState: &ClusterState{
 				CurrentMain:     "memgraph-0",
-				TargetMainIndex: 0,
 				Pods: map[string]*PodInfo{
 					"memgraph-1": {MemgraphRole: "replica", BoltAddress: "memgraph-1:7687"},
 				},
@@ -38,7 +36,6 @@ func TestMainFailoverDetection(t *testing.T) {
 			name: "main_not_main_role_should_failover",
 			clusterState: &ClusterState{
 				CurrentMain:     "memgraph-0",
-				TargetMainIndex: 0,
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "replica", BoltAddress: "memgraph-0:7687"},
 					"memgraph-1": {MemgraphRole: "main", BoltAddress: "memgraph-1:7687"},
@@ -50,7 +47,6 @@ func TestMainFailoverDetection(t *testing.T) {
 			name: "main_no_bolt_address_should_failover",
 			clusterState: &ClusterState{
 				CurrentMain:     "memgraph-0",
-				TargetMainIndex: 0,
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main", BoltAddress: ""},
 					"memgraph-1": {MemgraphRole: "replica", BoltAddress: "memgraph-1:7687"},
@@ -87,7 +83,6 @@ func TestValidateControllerState(t *testing.T) {
 			name: "valid_state_no_warnings",
 			clusterState: &ClusterState{
 				StateType:       OPERATIONAL_STATE,
-				TargetMainIndex: 0,
 				CurrentMain:     "memgraph-ha-0",
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
@@ -107,7 +102,6 @@ func TestValidateControllerState(t *testing.T) {
 		{
 			name: "invalid_target_index_should_warn",
 			clusterState: &ClusterState{
-				TargetMainIndex: 5,
 				CurrentMain:     "memgraph-0",
 			},
 			wantWarnings: true,
@@ -115,7 +109,6 @@ func TestValidateControllerState(t *testing.T) {
 		{
 			name: "negative_target_index_should_warn",
 			clusterState: &ClusterState{
-				TargetMainIndex: -1,
 				CurrentMain:     "memgraph-0",
 			},
 			wantWarnings: true,
@@ -263,7 +256,6 @@ func TestMainSelectionMetrics(t *testing.T) {
 	metrics := &MainSelectionMetrics{
 		Timestamp:            time.Now(),
 		StateType:            OPERATIONAL_STATE,
-		TargetMainIndex:      0,
 		SelectedMain:         "memgraph-0",
 		SelectionReason:      "promote_sync_replica",
 		HealthyPodsCount:     2,
@@ -272,10 +264,7 @@ func TestMainSelectionMetrics(t *testing.T) {
 		DecisionFactors:      []string{"existing_main_unhealthy", "sync_replica_available"},
 	}
 
-	// Test metrics validation
-	if metrics.TargetMainIndex < 0 || metrics.TargetMainIndex > 1 {
-		t.Errorf("Invalid TargetMainIndex: %d", metrics.TargetMainIndex)
-	}
+	// TargetMainIndex validation removed - now managed in controller state
 
 	if metrics.SelectionReason == "" {
 		t.Error("SelectionReason should not be empty")

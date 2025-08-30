@@ -280,7 +280,6 @@ func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			clusterState := &ClusterState{
-				TargetMainIndex: tt.targetMainIndex,
 				Pods:            make(map[string]*PodInfo),
 			}
 
@@ -289,6 +288,9 @@ func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 				podName := fmt.Sprintf("memgraph-ha-%d", i)
 				clusterState.Pods[podName] = &PodInfo{Name: podName}
 			}
+
+			// Set the target main index for this test case
+			controller.targetMainIndex = tt.targetMainIndex
 
 			controller.applyDeterministicRoles(clusterState)
 
@@ -335,8 +337,10 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			// Reset targetMainIndex to 0 for each test
+			controller.targetMainIndex = 0
+			
 			clusterState := &ClusterState{
-				TargetMainIndex: 0,
 				Pods:            make(map[string]*PodInfo),
 			}
 
@@ -410,7 +414,6 @@ func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			clusterState := &ClusterState{
 				StateType:        tt.stateType,
-				TargetMainIndex:  tt.targetMainIndex,
 				IsBootstrapPhase: true, // Should be set to false
 				Pods:             make(map[string]*PodInfo),
 			}

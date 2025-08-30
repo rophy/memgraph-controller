@@ -17,7 +17,8 @@ func (c *MemgraphController) enhancedMainSelection(ctx context.Context, clusterS
 	// 3. SYNC replica (guaranteed data consistency)
 	// 4. Manual intervention required (no safe automatic promotion)
 
-	targetMainName := c.config.GetPodName(clusterState.TargetMainIndex)
+	targetMainIndex := c.getTargetMainIndex()
+	targetMainName := c.config.GetPodName(targetMainIndex)
 	var targetMain *PodInfo
 	var existingMain *PodInfo
 	var syncReplica *PodInfo
@@ -47,7 +48,7 @@ func (c *MemgraphController) enhancedMainSelection(ctx context.Context, clusterS
 	// Priority 1: Controller's target main (if healthy)
 	if targetMain != nil && c.isPodHealthyForMain(targetMain) {
 		selectedMain = targetMain
-		selectionReason = fmt.Sprintf("controller target main (index %d)", clusterState.TargetMainIndex)
+		selectionReason = fmt.Sprintf("controller target main (index %d)", targetMainIndex)
 		log.Printf("✅ Using controller's target main: %s", targetMainName)
 
 		// Priority 2: Existing MAIN node (avoid unnecessary failover)
@@ -59,7 +60,7 @@ func (c *MemgraphController) enhancedMainSelection(ctx context.Context, clusterS
 		// Update target main index to match existing main
 		existingMainIndex := c.config.ExtractPodIndex(existingMain.Name)
 		if existingMainIndex >= 0 && existingMainIndex <= 1 {
-			if err := c.updateTargetMainIndex(ctx, clusterState, existingMainIndex, "existing main discovered"); err != nil {
+			if err := c.updateTargetMainIndex(ctx, existingMainIndex, "existing main discovered"); err != nil {
 				log.Printf("Warning: Failed to update target main index for existing main: %v", err)
 			}
 		}
@@ -73,7 +74,7 @@ func (c *MemgraphController) enhancedMainSelection(ctx context.Context, clusterS
 		// Update target main index to match SYNC replica
 		syncReplicaIndex := c.config.ExtractPodIndex(syncReplica.Name)
 		if syncReplicaIndex >= 0 && syncReplicaIndex <= 1 {
-			if err := c.updateTargetMainIndex(ctx, clusterState, syncReplicaIndex, "SYNC replica promotion"); err != nil {
+			if err := c.updateTargetMainIndex(ctx, syncReplicaIndex, "SYNC replica promotion"); err != nil {
 				log.Printf("Warning: Failed to update target main index for SYNC replica: %v", err)
 			}
 		}
@@ -95,7 +96,6 @@ func (c *MemgraphController) enhancedMainSelection(ctx context.Context, clusterS
 	metrics := &MainSelectionMetrics{
 		Timestamp:            time.Now(),
 		StateType:            clusterState.StateType,
-		TargetMainIndex:      clusterState.TargetMainIndex,
 		SelectedMain:         clusterState.CurrentMain,
 		SelectionReason:      selectionReason,
 		HealthyPodsCount:     c.countHealthyPods(clusterState),
@@ -236,18 +236,19 @@ func (c *MemgraphController) validateMainSelection(ctx context.Context, clusterS
 
 	// Validate main index consistency
 	mainIndex := c.config.ExtractPodIndex(clusterState.CurrentMain)
-	if mainIndex != clusterState.TargetMainIndex {
-		log.Printf("⚠️  Main index mismatch: selected=%d, target=%d", mainIndex, clusterState.TargetMainIndex)
+	targetMainIndex := c.getTargetMainIndex()
+	if mainIndex != targetMainIndex {
+		log.Printf("⚠️  Main index mismatch: selected=%d, target=%d", mainIndex, targetMainIndex)
 		if mainIndex >= 0 && mainIndex <= 1 {
 			// Update target to match reality
-			if err := c.updateTargetMainIndex(ctx, clusterState, mainIndex, "validation adjustment"); err != nil {
+			if err := c.updateTargetMainIndex(ctx, mainIndex, "validation adjustment"); err != nil {
 				log.Printf("Warning: Failed to update target main index during validation: %v", err)
 			}
 		}
 	}
 
 	log.Printf("✅ Main selection validation passed: %s (index %d)",
-		clusterState.CurrentMain, clusterState.TargetMainIndex)
+		clusterState.CurrentMain, c.getTargetMainIndex())
 }
 
 // enforceExpectedTopology maintains cluster topology during operational phase
@@ -272,7 +273,7 @@ func (c *MemgraphController) resolveSplitBrain(ctx context.Context, clusterState
 	log.Printf("Resolving split-brain: multiple mains detected: %v", mainPods)
 
 	// Apply lower-index precedence rule
-	expectedMainName := c.config.GetPodName(clusterState.TargetMainIndex)
+	expectedMainName := c.config.GetPodName(c.getTargetMainIndex())
 
 	// Demote all mains except the expected one
 	var demotionErrors []error
@@ -306,9 +307,10 @@ func (c *MemgraphController) resolveSplitBrain(ctx context.Context, clusterState
 
 // enforceKnownTopology enforces the controller's known topology
 func (c *MemgraphController) enforceKnownTopology(ctx context.Context, clusterState *ClusterState) error {
-	log.Printf("Enforcing known topology: target main index %d", clusterState.TargetMainIndex)
+	targetMainIndex := c.getTargetMainIndex()
+	log.Printf("Enforcing known topology: target main index %d", targetMainIndex)
 
-	expectedMainName := c.config.GetPodName(clusterState.TargetMainIndex)
+	expectedMainName := c.config.GetPodName(targetMainIndex)
 	clusterState.CurrentMain = expectedMainName
 
 	log.Printf("Enforcing expected main: %s", expectedMainName)
@@ -317,7 +319,7 @@ func (c *MemgraphController) enforceKnownTopology(ctx context.Context, clusterSt
 
 // promoteExpectedMain promotes the expected main when no mains exist
 func (c *MemgraphController) promoteExpectedMain(ctx context.Context, clusterState *ClusterState) error {
-	expectedMainName := c.config.GetPodName(clusterState.TargetMainIndex)
+	expectedMainName := c.config.GetPodName(c.getTargetMainIndex())
 
 	log.Printf("Promoting expected main: %s", expectedMainName)
 

@@ -215,7 +215,7 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 	log.Printf("  - Total pods: %d", len(clusterState.Pods))
 	log.Printf("  - Current main: %s", clusterState.CurrentMain)
 	log.Printf("  - State type: %s", clusterState.StateType.String())
-	log.Printf("  - Target main index: %d", clusterState.TargetMainIndex)
+	log.Printf("  - Target main index: %d", c.getTargetMainIndex())
 
 	// Log pod states
 	for podName, podInfo := range clusterState.Pods {
@@ -498,14 +498,19 @@ func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) e
 	return nil
 }
 
-// updateTargetMainIndex synchronizes target main index across in-memory state, cluster state, and ConfigMap
-func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, clusterState *ClusterState, newTargetIndex int, reason string) error {
+// getTargetMainIndex returns the current target main index
+func (c *MemgraphController) getTargetMainIndex() int {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.targetMainIndex
+}
+
+// updateTargetMainIndex synchronizes target main index across in-memory state and ConfigMap
+func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, newTargetIndex int, reason string) error {
 	c.mu.Lock()
 	oldTargetIndex := c.targetMainIndex
 	c.targetMainIndex = newTargetIndex
 	c.mu.Unlock()
-
-	clusterState.TargetMainIndex = newTargetIndex
 
 	// Only persist to ConfigMap if stateManager is available (not in tests)
 	if c.stateManager != nil {
@@ -520,7 +525,6 @@ func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, clusterS
 			c.mu.Lock()
 			c.targetMainIndex = oldTargetIndex
 			c.mu.Unlock()
-			clusterState.TargetMainIndex = oldTargetIndex
 			return fmt.Errorf("failed to persist target main index change: %w", err)
 		}
 	}
@@ -1225,11 +1229,7 @@ func (c *MemgraphController) enforceMainAuthority(clusterState *ClusterState, ma
 
 	// Update controller state tracking using consolidated method
 	newMainIndex := c.config.ExtractPodIndex(correctMain)
-	// Create a temporary clusterState for the consolidated method
-	tempClusterState := &ClusterState{
-		TargetMainIndex: c.targetMainIndex,
-	}
-	if err := c.updateTargetMainIndex(context.Background(), tempClusterState, newMainIndex,
+	if err := c.updateTargetMainIndex(context.Background(), newMainIndex,
 		fmt.Sprintf("Split-brain resolved: %s is main", correctMain)); err != nil {
 		log.Printf("Warning: failed to update target main index: %v", err)
 	}

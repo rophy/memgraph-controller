@@ -161,7 +161,10 @@ func (bc *BootstrapController) classifyBootstrapState(ctx context.Context, clust
 		if bc.hasEmptyStorage(ctx, pod0Info) && bc.hasEmptyStorage(ctx, pod1Info) {
 			log.Println("✅ Bootstrap Rule 2: INITIAL_STATE detected (both main, empty storage)")
 			clusterState.StateType = INITIAL_STATE
-			clusterState.TargetMainIndex = 0 // Always use pod-0 as main
+			// Target main index will be set to 0 (always use pod-0 as main)
+			if err := bc.controller.updateTargetMainIndex(ctx, 0, "initial state detection"); err != nil {
+				return fmt.Errorf("failed to set target main index: %w", err)
+			}
 			return nil
 		}
 	}
@@ -187,12 +190,16 @@ func (bc *BootstrapController) classifyBootstrapState(ctx context.Context, clust
 		clusterState.CurrentMain = currentMain
 		
 		// Set target main index based on current main
+		var targetIndex int
 		if currentMain == pod0Name {
-			clusterState.TargetMainIndex = 0
+			targetIndex = 0
 		} else if currentMain == pod1Name {
-			clusterState.TargetMainIndex = 1
+			targetIndex = 1
 		} else {
 			return fmt.Errorf("main %s is not pod-0 or pod-1 - invalid operational state", currentMain)
+		}
+		if err := bc.controller.updateTargetMainIndex(ctx, targetIndex, "operational state detection"); err != nil {
+			return fmt.Errorf("failed to set target main index: %w", err)
 		}
 		return nil
 	}
@@ -257,14 +264,15 @@ func (bc *BootstrapController) handleOperationalState(ctx context.Context, clust
 	log.Printf("Handling OPERATIONAL_STATE: Learning existing topology with main %s", clusterState.CurrentMain)
 	
 	// Update controller's tracking state using consolidated method
-	if err := bc.controller.updateTargetMainIndex(ctx, clusterState, clusterState.TargetMainIndex,
+	targetMainIndex := bc.controller.getTargetMainIndex()
+	if err := bc.controller.updateTargetMainIndex(ctx, targetMainIndex,
 		fmt.Sprintf("Learning from OPERATIONAL_STATE with main %s", clusterState.CurrentMain)); err != nil {
 		return fmt.Errorf("failed to update target main index: %w", err)
 	}
 	bc.controller.lastKnownMain = clusterState.CurrentMain
 	
 	log.Printf("✅ OPERATIONAL_STATE learning completed: main=%s, target_index=%d", 
-		clusterState.CurrentMain, clusterState.TargetMainIndex)
+		clusterState.CurrentMain, bc.controller.getTargetMainIndex())
 	return nil
 }
 

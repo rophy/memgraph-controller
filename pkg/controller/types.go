@@ -57,7 +57,6 @@ type ClusterState struct {
 
 	// Controller state tracking
 	StateType        ClusterStateType
-	TargetMainIndex  int  // 0 or 1 - which of pod-0/pod-1 should be main
 	IsBootstrapPhase bool // True during initial discovery
 	BootstrapSafe    bool // True if bootstrap can proceed safely
 	LastStateChange  time.Time
@@ -398,9 +397,7 @@ func (cs *ClusterState) ValidateControllerState(config *Config) []string {
 	var warnings []string
 
 	// Validate target main index
-	if cs.TargetMainIndex < 0 || cs.TargetMainIndex > 1 {
-		warnings = append(warnings, fmt.Sprintf("Invalid target main index: %d (should be 0 or 1)", cs.TargetMainIndex))
-	}
+	// Target main index validation removed - now managed in controller state
 
 	// Validate current main exists in pods
 	if cs.CurrentMain != "" {
@@ -438,7 +435,7 @@ func (cs *ClusterState) LogStateTransition(oldState ClusterStateType, reason str
 type MainSelectionMetrics struct {
 	Timestamp            time.Time
 	StateType            ClusterStateType
-	TargetMainIndex      int
+	// TargetMainIndex removed - now accessed via controller.getTargetMainIndex()
 	SelectedMain         string
 	SelectionReason      string
 	HealthyPodsCount     int
@@ -452,7 +449,7 @@ func (cs *ClusterState) LogMainSelectionDecision(metrics *MainSelectionMetrics) 
 	log.Printf("📊 MAIN SELECTION METRICS:")
 	log.Printf("  Timestamp: %s", metrics.Timestamp.Format(time.RFC3339))
 	log.Printf("  State Type: %s", metrics.StateType.String())
-	log.Printf("  Target Main Index: %d", metrics.TargetMainIndex)
+	// Target main index logging moved to controller
 	log.Printf("  Selected Main: %s", metrics.SelectedMain)
 	log.Printf("  Selection Reason: %s", metrics.SelectionReason)
 	log.Printf("  Healthy Pods: %d", metrics.HealthyPodsCount)
@@ -494,7 +491,7 @@ func (cs *ClusterState) GetClusterHealthSummary() map[string]interface{} {
 		"replica_pods":    replicaPods,
 		"sync_replicas":   syncReplicaCount,
 		"current_main":    cs.CurrentMain,
-		"target_index":    cs.TargetMainIndex,
+		// target_index now retrieved from controller
 		"state_type":      cs.StateType.String(),
 		"bootstrap_phase": cs.IsBootstrapPhase,
 		"last_change":     cs.LastStateChange,

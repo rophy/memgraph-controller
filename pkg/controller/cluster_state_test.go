@@ -268,7 +268,6 @@ func TestClusterStateSummary(t *testing.T) {
 			},
 		},
 		CurrentMain:      "memgraph-0",
-		TargetMainIndex:  0,
 		StateType:        OPERATIONAL_STATE,
 		IsBootstrapPhase: false,
 		LastStateChange:  now,
@@ -298,9 +297,7 @@ func TestClusterStateSummary(t *testing.T) {
 	if summary["current_main"] != "memgraph-0" {
 		t.Errorf("Summary current_main = %v, want memgraph-0", summary["current_main"])
 	}
-	if summary["target_index"] != 0 {
-		t.Errorf("Summary target_index = %v, want 0", summary["target_index"])
-	}
+	// target_index removed - now managed in controller state
 	if summary["state_type"] != "OPERATIONAL_STATE" {
 		t.Errorf("Summary state_type = %v, want OPERATIONAL_STATE", summary["state_type"])
 	}

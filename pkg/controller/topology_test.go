@@ -100,7 +100,6 @@ func TestMemgraphController_EnhancedMainSelection(t *testing.T) {
 			}
 
 			clusterState := &ClusterState{
-				TargetMainIndex: tt.targetMainIndex,
 				Pods:            tt.pods,
 			}
 
@@ -325,7 +324,6 @@ func TestMemgraphController_ValidateMainSelection(t *testing.T) {
 			clusterState := &ClusterState{
 				CurrentMain:     tt.currentMain,
 				Pods:            tt.pods,
-				TargetMainIndex: tt.targetIndex,
 			}
 
 			controller.validateMainSelection(context.Background(), clusterState)
@@ -405,7 +403,6 @@ func TestMemgraphController_EnforceExpectedTopology(t *testing.T) {
 
 			clusterState := &ClusterState{
 				Pods:            tt.pods,
-				TargetMainIndex: 0,
 			}
 
 			ctx := context.Background()
@@ -431,7 +428,6 @@ func TestMemgraphController_ResolveSplitBrain(t *testing.T) {
 	}
 
 	clusterState := &ClusterState{
-		TargetMainIndex: 0,
 		Pods: map[string]*PodInfo{
 			"memgraph-ha-0": {
 				Name:         "memgraph-ha-0",
@@ -461,13 +457,13 @@ func TestMemgraphController_ResolveSplitBrain(t *testing.T) {
 
 func TestMemgraphController_EnforceKnownTopology(t *testing.T) {
 	controller := &MemgraphController{
+		targetMainIndex: 1,  // Set to 1 to test pod-1 as main
 		config: &Config{
 			StatefulSetName: "memgraph-ha",
 		},
 	}
 
 	clusterState := &ClusterState{
-		TargetMainIndex: 1,
 		CurrentMain:     "",
 	}
 
@@ -518,7 +514,6 @@ func TestMemgraphController_PromoteExpectedMain(t *testing.T) {
 			}
 
 			clusterState := &ClusterState{
-				TargetMainIndex: 0,
 				Pods:            tt.pods,
 			}
 

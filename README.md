@@ -6,21 +6,25 @@ A Kubernetes controller that manages Memgraph clusters with built-in TCP gateway
 
 This controller implements a **MAIN-SYNC-ASYNC** replication topology that provides robust write conflict protection and automatic failover capabilities.
 
-### Cluster Topology
-
-```
-┌─────────────┐    SYNC     ┌──────────────┐
-│   Pod-0     │◄───────────►│   Pod-1      │
-│  (MAIN)   │             │(SYNC Replica)│
-└─────┬───────┘             └──────────────┘
-      │
-      │ ASYNC     
-      │
-      ▼
-┌───────────────┐
-│   Pod-2       │
-│(ASYNC Replica)│
-└───────────────┘
+```mermaid
+graph TD
+    Clients[Clients] -->|Bolt 7687| Controllers[Controllers<br/>Gateway]
+    Controllers -->|Proxy to<br/>Current Main| Pod0
+    
+    subgraph MemgraphCluster[Memgraph StatefulSet]
+        Pod0[Pod-0<br/>MAIN]
+        Pod1[Pod-1<br/>SYNC Replica]
+        Pod2[Pod-2<br/>ASYNC Replica]
+    end
+    
+    Pod0 -->|SYNC| Pod1
+    Pod0 -->|ASYNC| Pod2
+    
+    style Clients fill:#e1f5fe
+    style Controllers fill:#fff3e0
+    style Pod0 fill:#e8f5e8
+    style Pod1 fill:#fff9c4
+    style Pod2 fill:#f3e5f5
 ```
 
 ### Key Design Principles

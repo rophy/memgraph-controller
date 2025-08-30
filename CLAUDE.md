@@ -117,61 +117,134 @@ The controller implements a **SYNC replica strategy** for zero data loss failove
 - **pod-2, pod-3, ...**: ALWAYS ASYNC replicas only
 - **Controller Authority**: Maintains expected topology in-memory after bootstrap
 
-# CRITICAL CODE PATTERNS TO WATCH FOR
+# DESIGN COMPLIANCE FRAMEWORK
 
-## State Synchronization Anti-Pattern: Bypassing Consolidated State Updates
+> **CRITICAL**: All code MUST implement specific parts of [DESIGN.md](./DESIGN.md)  
+> **CRITICAL**: All code MUST NOT contradict any part of [DESIGN.md](./DESIGN.md)  
+> **CRITICAL**: Before making code changes, identify which design section is being implemented  
+> **CRITICAL**: All code changes MUST comply with [DESIGN.md](./DESIGN.md)
 
-**PROBLEM**: The codebase has a consolidated method `updateTargetMainIndex()` that properly updates both local state and ConfigMap, but most code paths bypass it with direct field assignments. This creates race conditions and state inconsistency between leader and non-leader controller pods.
+## Mandatory Design Compliance Process
 
-**CONSOLIDATED METHOD EXISTS**: `controller.go:479 - updateTargetMainIndex()`
-- ✅ Updates `c.targetMainIndex` 
-- ✅ Updates `clusterState.TargetMainIndex`
-- ✅ Persists to ConfigMap via `stateManager.SaveState()`
-- ✅ Handles rollback on failure
+### Before ANY Code Changes
 
-**PLACES CORRECTLY USING CONSOLIDATED METHOD**:
-- ✅ `topology.go:62` - Existing main discovered
-- ✅ `topology.go:76` - SYNC replica promotion  
-- ✅ `topology.go:243` - Validation adjustment
-
-**PLACES BYPASSING CONSOLIDATED METHOD** (MUST FIX):
-- ❌ `failover.go:213-215` - **CRITICAL: Failover promotion** 
-- ❌ `failover.go:115-116` - Detection logic update
-- ❌ `bootstrap.go:260-261` - Learning from OPERATIONAL_STATE
-- ❌ `discovery.go:431` - Updating from existing main
-- ❌ `controller.go:467` - Loading from ConfigMap (acceptable)
-- ❌ `controller.go:501` - Rollback on failure (acceptable)  
-- ❌ `controller.go:982` - Split-brain resolution
-
-**SYMPTOMS OF THIS ANTI-PATTERN**:
-- Gateway routing failures during failover
-- "Write queries are forbidden on the replica instance" errors  
-- Non-leader controller pods have stale routing information
-- E2E test failures during failover scenarios
-- Race conditions between leader and non-leader pods
-
-**DETECTION COMMANDS**:
+**STEP 1: Read Design Section**
 ```bash
-# Find all direct assignments (violations)
-grep -rn "targetMainIndex\s*=" pkg/controller/ | grep -v "func.*updateTargetMainIndex"
-
-# Find all correct usage (should be more common)
-grep -rn "\.updateTargetMainIndex" pkg/controller/
+# ALWAYS identify which DESIGN.md section you're implementing
+# Example: "Implementing DESIGN.md section 'Actions for Reconciliation' steps 1-3"
 ```
 
-**ENFORCEMENT RULE**: 
-- NEVER assign `c.targetMainIndex` or `c.lastKnownMain` directly
-- ALWAYS use `c.updateTargetMainIndex()` for state changes
-- Only exceptions: initialization, rollback, and ConfigMap loading
+**STEP 2: Quote Exact Requirements** 
+```
+DESIGN.md says: "[exact quote from design document]"
+My code will implement: "[specific implementation approach]"
+```
 
-**IMMEDIATE ACTION REQUIRED**:
-- Fix `failover.go:213-215` to use `updateTargetMainIndex()` 
-- Fix `failover.go:115-116` to use consolidated method
-- Fix `bootstrap.go:260-261` to use consolidated method
-- Fix `discovery.go:431` to use consolidated method  
-- Fix `controller.go:982` to use consolidated method
+**STEP 3: Check for Contradictions**
+- MUST verify implementation doesn't contradict ANY part of DESIGN.md
+- If ANY contradiction found: STOP and request human review
+- NO exceptions - design consistency is mandatory
 
-This anti-pattern is the root cause of the gateway routing race condition and MUST be eliminated.
+### Implementation Rules
+
+#### ✅ ALLOWED Code Patterns
+- Code that directly implements a specific DESIGN.md section
+- Code that references which design requirement it fulfills  
+- Simple implementations that follow design steps exactly
+
+#### ❌ FORBIDDEN Code Patterns
+- "Discovery-based" logic not specified in design
+- Complex algorithms not mentioned in DESIGN.md
+- "Smart" logic that tries to handle edge cases beyond design scope
+- Any code that contradicts or works around design specifications
+
+### Examples
+
+#### ✅ CORRECT Implementation
+```go
+// Implements DESIGN.md "Actions for Reconciliation" Step 2
+func (c *Controller) showReplicas(ctx context.Context, mainPod string) error {
+    // Run `SHOW REPLICAS` to main pod to check replication status
+    return c.memgraphClient.QueryReplicasWithRetry(ctx, mainPodAddress)
+}
+```
+
+#### ❌ INCORRECT Implementation  
+```go
+// FORBIDDEN: Discovery-based logic not in DESIGN.md
+func (c *Controller) findCurrentMain(clusterState *ClusterState) string {
+    // Try to discover which pod is currently main...
+    for podName, podInfo := range clusterState.Pods {
+        if podInfo.MemgraphRole == "main" {
+            return podName  // CONTRADICTION: Design uses controller authority, not discovery
+        }
+    }
+}
+```
+
+## Contradiction Detection Protocol
+
+### When Code Contradicts Design
+
+1. **IMMEDIATE STOP**: Halt implementation 
+2. **FLAG FOR HUMAN**: Report exact contradiction found
+3. **DESIGN REVIEW**: Work with human to resolve design vs implementation conflict
+4. **UPDATE DESIGN FIRST**: Fix DESIGN.md before continuing with code
+
+### Design Update Process
+
+1. **Human Approval**: All DESIGN.md changes require human review
+2. **Consistency Check**: Verify change doesn't break other design sections  
+3. **Code Update**: Only implement after design is updated and approved
+
+## Design Compliance Rules
+
+### For Implementation
+
+1. **Reference Requirement**: Every function/method MUST reference which design section it implements
+2. **No Contradiction**: Code MUST NOT implement logic that contradicts this design
+3. **Complete Coverage**: All design sections marked as "IMPLEMENTATION REQUIREMENT" MUST have corresponding code
+4. **Single Source**: DESIGN.md is the authoritative design source - README.md is user documentation only
+
+### For Modifications
+
+1. **Design First**: Design changes MUST be approved in DESIGN.md before code implementation
+2. **Consistency Check**: Any design change MUST be verified against all existing sections for conflicts
+3. **Human Review**: Design contradictions MUST be resolved with human review before proceeding
+
+### For Code Review
+
+1. **Design Mapping**: Every code change MUST identify which design section is being implemented
+2. **Contradiction Detection**: Any code that might contradict design MUST be flagged for human review
+3. **Coverage Verification**: All "IMPLEMENTATION REQUIREMENT" sections MUST have test coverage
+
+## Quality Gates
+
+### Pre-Commit Checklist
+
+- [ ] Code implements specific DESIGN.md section (documented in code)
+- [ ] No contradictions with ANY part of DESIGN.md
+- [ ] Design section quoted in commit message
+- [ ] Implementation approach explained and justified
+
+### Code Review Focus Areas
+
+1. **Design Mapping**: Which exact DESIGN.md section does this implement?
+2. **Contradiction Check**: Does this contradict any design principle?
+3. **Simplicity**: Is this the simplest possible implementation of the design?
+4. **Completeness**: Are ALL design requirements for this section implemented?
+
+## Emergency Procedures
+
+### If You Catch Claude Violating Design
+
+**STOP IMMEDIATELY** and say:
+> "DESIGN VIOLATION: This contradicts DESIGN.md section [X]. Please quote the exact design requirement and explain how your code implements it."
+
+### If Design Seems Wrong or Incomplete
+
+**DO NOT work around it in code**. Instead:
+> "DESIGN ISSUE: The design doesn't cover [scenario]. Should we update DESIGN.md to specify the correct behavior?"
 
 # Known Issues Documentation
 

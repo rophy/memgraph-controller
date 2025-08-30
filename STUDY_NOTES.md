@@ -74,6 +74,20 @@ REGISTER REPLICA <replica_name> SYNC TO "<replica_ip>:10000"
 REGISTER REPLICA <replica_name> ASYNC TO "<replica_ip>:10000"
 ```
 
+**Port specification:**
+- If port is omitted, it defaults to 10000
+- `REGISTER REPLICA replica1 SYNC TO "192.168.1.100"` is equivalent to `REGISTER REPLICA replica1 SYNC TO "192.168.1.100:10000"`
+
+**Replica naming constraints:**
+- `replica_name` only accepts lowercase alphanumeric characters ([a-z0-9]) and underscores
+- Kubernetes pod names like `memgraph-ha-0` must be normalized to `memgraph_ha_0`
+- Hyphens (-) are NOT allowed and will cause registration to fail with parsing error:
+
+```
+Failed query: REGISTER REPLICA memgraph-ha-0 ASYNC TO "127.0.0.1"
+Client received query exception: Error on line 1 position 26. The underlying parsing error is mismatched input '-' expecting {ASYNC, SYNC}
+```
+
 **Drop a replica registration:**
 ```mgcommand
 DROP REPLICA <replica_name>

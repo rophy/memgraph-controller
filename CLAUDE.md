@@ -17,7 +17,8 @@ make test
 
 1. Run `make down` to remove skaffold resources. If kubectl context failed to connect to a kubernetes cluster, FAIL IMMEDIATELY and prompt human to fix kubectl context.
 2. Run `make run` at background, which should buils and deploy a memgraph-ha cluster with skaffold.
-3. Wait for the memgraph-ha cluster to stablize. Can check memgraph-controller pod logs to assist.
+3. Wait for the memgraph-ha cluster to stablize. Docker build takes around 120s, other parts around 30s.
+   Can check memgraph-controller pod logs to assist.
 4. Run `make test-e2e`, which run the e2e tests in tests/ folder.
 
 ## Standard Development Process
@@ -58,64 +59,6 @@ kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --outp
 ```
 
 **Do NOT rely on the memgraph-controller status API for debugging** - always verify the actual Memgraph state directly using the above commands.
-
-### Emergency Recovery Procedures
-
-#### Scenario: SYNC Replica Down, Writes Blocked
-
-**Option 1: Fast SYNC Replica Recovery (Preferred)**
-```bash
-# Force restart of SYNC replica pod
-kubectl delete pod <sync-replica-pod>
-# Wait for pod to restart - writes will resume automatically
-```
-
-**Option 2: Promote ASYNC Replica to SYNC (Emergency)**
-```bash
-# Step 1: Drop the failed SYNC replica
-kubectl exec <main-pod> -- bash -c 'echo "DROP REPLICA <failed_sync_replica_name>;" | mgconsole --output-format csv --username=memgraph'
-
-# Step 2: Promote healthy ASYNC replica to SYNC
-kubectl exec <main-pod> -- bash -c 'echo "DROP REPLICA <async_replica_name>;" | mgconsole --username=memgraph'
-kubectl exec <main-pod> -- bash -c 'echo "REGISTER REPLICA <async_replica_name> SYNC TO \"<replica_ip>:10000\";" | mgconsole --output-format csv --username=memgraph'
-
-# Step 3: Verify new SYNC replica
-kubectl exec <main-pod> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
-```
-
-#### Scenario: Split-Brain Resolution
-
-**Manual Split-Brain Resolution (if controller fails to resolve automatically):**
-```bash
-# Step 1: Identify all mains
-kubectl exec memgraph-ha-0 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=memgraph'
-kubectl exec memgraph-ha-1 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=memgraph'
-
-# Step 2: Choose main with most recent data (check storage info)
-kubectl exec <pod> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --output-format csv --username=memgraph'
-
-# Step 3: Demote incorrect mains (keep lowest index pod as main by convention)
-kubectl exec <incorrect-main-pod> -- bash -c 'echo "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;" | mgconsole --output-format csv --username=memgraph'
-
-# Step 4: Restart controller after manual resolution
-kubectl rollout restart deployment/memgraph-controller -n memgraph
-```
-
-## Controller Design: SYNC Replica Strategy
-
-### Overview
-
-The controller implements a **SYNC replica strategy** for zero data loss failover:
-
-- **1 SYNC replica**: Guaranteed to have all committed transactions (blocks main until confirmed)
-- **N-1 ASYNC replicas**: May lag behind but provide read scalability  
-- **MAIN failure**: Always promote the SYNC replica (guaranteed zero data loss)
-
-### Two-Pod MAIN/SYNC Strategy
-
-- **pod-0 and pod-1**: Eligible for main OR SYNC replica roles
-- **pod-2, pod-3, ...**: ALWAYS ASYNC replicas only
-- **Controller Authority**: Maintains expected topology in-memory after bootstrap
 
 # DESIGN COMPLIANCE FRAMEWORK
 

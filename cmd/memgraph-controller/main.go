@@ -54,20 +54,8 @@ func main() {
 
 	var wg sync.WaitGroup
 
-	// Start leader election and controller loop
-	wg.Add(2)
-
-	// Start leader election
-	go func() {
-		defer wg.Done()
-		log.Println("Starting leader election...")
-		if err := ctrl.RunLeaderElection(ctx); err != nil && err != context.Canceled {
-			log.Printf("Leader election failed: %v", err)
-			cancel()
-		}
-	}()
-
-	// Start controller loop
+	// Start controller loop (which includes leader election)
+	wg.Add(1)
 	go func() {
 		defer wg.Done()
 		log.Println("Starting controller main loop...")

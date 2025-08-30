@@ -768,10 +768,6 @@ func (c *MemgraphController) enqueuePodEvent(reason string) {
 	log.Printf("Pod event detected: %s (reconciliation will occur on next timer cycle)", reason)
 }
 
-// RunLeaderElection starts the leader election process
-func (c *MemgraphController) RunLeaderElection(ctx context.Context) error {
-	return c.leaderElection.Run(ctx)
-}
 
 // Run starts the main controller loop
 func (c *MemgraphController) Run(ctx context.Context) error {

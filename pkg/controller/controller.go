@@ -4,8 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
-	"math/rand"
 	"os"
 	"strings"
 	"sync"
@@ -29,11 +27,6 @@ func generateStateConfigMapName() string {
 	return fmt.Sprintf("%s-controller-state", releaseName)
 }
 
-// reconcileRequest represents a request to reconcile the cluster
-type reconcileRequest struct {
-	reason    string
-	timestamp time.Time
-}
 
 type MemgraphController struct {
 	clientset      kubernetes.Interface
@@ -61,13 +54,11 @@ type MemgraphController struct {
 	// Controller state tracking
 	lastKnownMain   string
 	targetMainIndex int
-	isBootstrap     bool // Always starts as true, set to false after bootstrap completes
 
 	// Event-driven reconciliation
 	podInformer       cache.SharedInformer
 	configMapInformer cache.SharedInformer
 	informerFactory   informers.SharedInformerFactory
-	workQueue         chan reconcileRequest
 	stopCh            chan struct{}
 
 	// Reconciliation metrics
@@ -113,8 +104,6 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	// Initialize controller state
 	controller.maxFailures = 5
 	controller.targetMainIndex = -1
-	controller.isBootstrap = true // Controller starts in bootstrap phase
-	controller.workQueue = make(chan reconcileRequest, 100)
 	controller.stopCh = make(chan struct{})
 
 	// Initialize reconciliation metrics
@@ -196,12 +185,12 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 	return nil
 }
 
-// Reconcile performs a full reconciliation cycle
+// Reconcile performs a full reconciliation cycle (simplified operational phase only)
 func (c *MemgraphController) Reconcile(ctx context.Context) error {
-	log.Println("Starting reconciliation cycle...")
+	log.Println("Starting operational reconciliation cycle...")
 
-	// Discover the current cluster state
-	clusterState, err := c.DiscoverCluster(ctx)
+	// Discover current cluster state (operational mode only)
+	clusterState, err := c.discoverOperationalCluster(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to discover cluster state: %w", err)
 	}
@@ -214,7 +203,6 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 	log.Printf("Current cluster state discovered:")
 	log.Printf("  - Total pods: %d", len(clusterState.Pods))
 	log.Printf("  - Current main: %s", clusterState.CurrentMain)
-	log.Printf("  - State type: %s", clusterState.StateType.String())
 	log.Printf("  - Target main index: %d", c.getTargetMainIndex())
 
 	// Log pod states
@@ -223,21 +211,18 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 			podName, podInfo.State, podInfo.MemgraphRole, len(podInfo.Replicas))
 	}
 
-	// Operational phase: detect failover and enforce expected topology
-	if !clusterState.IsBootstrapPhase {
-		// Check for main failover first
-		if c.detectMainFailover(clusterState) {
-			log.Printf("Main failover detected - initiating failover procedure...")
-			if err := c.handleMainFailover(ctx, clusterState); err != nil {
-				log.Printf("❌ Main failover failed: %v", err)
-				// Continue with topology enforcement to handle partial failures
-			}
+	// Check for main failover first
+	if c.detectMainFailover(clusterState) {
+		log.Printf("Main failover detected - initiating failover procedure...")
+		if err := c.handleMainFailover(ctx, clusterState); err != nil {
+			log.Printf("❌ Main failover failed: %v", err)
+			// Continue with topology enforcement to handle partial failures
 		}
+	}
 
-		// Enforce expected topology against drift
-		if err := c.enforceExpectedTopology(ctx, clusterState); err != nil {
-			return fmt.Errorf("failed to enforce expected topology: %w", err)
-		}
+	// Enforce expected topology against drift
+	if err := c.enforceExpectedTopology(ctx, clusterState); err != nil {
+		return fmt.Errorf("failed to enforce expected topology: %w", err)
 	}
 
 	// Configure replication if needed
@@ -283,7 +268,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	log.Println("Collecting cluster status for API...")
 
 	// Discover current cluster state with all Memgraph queries
-	clusterState, err := c.DiscoverCluster(ctx)
+	clusterState, err := c.discoverOperationalCluster(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover cluster state: %w", err)
 	}
@@ -483,7 +468,6 @@ func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) e
 
 	// If state exists, assume bootstrap is completed and start in OPERATIONAL phase
 	c.mu.Lock()
-	c.isBootstrap = false // Start in OPERATIONAL phase
 	c.targetMainIndex = state.MasterIndex
 	c.mu.Unlock()
 
@@ -779,14 +763,9 @@ func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
 	return false
 }
 
-// enqueuePodEvent adds a reconcile request to the work queue
+// enqueuePodEvent logs pod events - reconciliation now happens on timer
 func (c *MemgraphController) enqueuePodEvent(reason string) {
-	select {
-	case c.workQueue <- reconcileRequest{reason: reason, timestamp: time.Now()}:
-		log.Printf("Enqueued reconcile request: %s", reason)
-	default:
-		log.Printf("Work queue full, dropping reconcile request: %s", reason)
-	}
+	log.Printf("Pod event detected: %s (reconciliation will occur on next timer cycle)", reason)
 }
 
 // RunLeaderElection starts the leader election process
@@ -806,6 +785,9 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	c.isRunning = true
 	c.mu.Unlock()
 
+	// STEP 1: Setup informers, HTTP server, gateway, leader election
+	log.Println("Setting up controller components...")
+
 	// Start informers
 	log.Println("Starting Kubernetes informers...")
 	c.informerFactory.Start(c.stopCh)
@@ -817,154 +799,131 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	}
 	log.Println("Informer caches synced successfully")
 
-	// Start gateway server immediately on all controller pods per DESIGN.md line 46
-	// Gateway will reject connections during bootstrap phase, proxy during operational phase
+	// Start HTTP server for status API
+	if c.httpServer != nil {
+		log.Println("Starting HTTP server...")
+		if err := c.httpServer.Start(); err != nil {
+			log.Printf("Failed to start HTTP server: %v", err)
+			c.stop()
+			return fmt.Errorf("failed to start HTTP server: %w", err)
+		}
+		log.Println("HTTP server started successfully")
+	}
+
+	// Start gateway server
 	if c.gatewayServer != nil {
-		log.Println("Starting gateway server (will reject connections during bootstrap phase)...")
+		log.Println("Starting gateway server...")
 		if err := c.gatewayServer.Start(ctx); err != nil {
 			log.Printf("Failed to start gateway server: %v", err)
 			c.stop()
 			return fmt.Errorf("failed to start gateway server: %w", err)
 		}
-		log.Printf("Gateway server started - bootstrap phase: %t", c.gatewayServer.IsBootstrapPhase())
-	} else {
-		log.Println("Gateway server is disabled")
+		log.Println("Gateway server started successfully")
 	}
 
-	// Initial reconciliation
-	c.enqueueReconcile("initial-reconciliation")
+	// Start leader election in goroutine
+	log.Println("Starting leader election...")
+	go func() {
+		if err := c.leaderElection.Run(ctx); err != nil {
+			log.Printf("Leader election failed: %v", err)
+		}
+	}()
+	log.Println("Leader election started successfully")
 
-	// Start worker goroutine
-	const numWorkers = 1
-	var wg sync.WaitGroup
-	for i := 0; i < numWorkers; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			c.worker(ctx, workerID)
-		}(i)
-	}
+	// STEP 2: Start reconciliation loop
+	log.Println("Starting reconciliation loop...")
 
 	// Start periodic reconciliation timer
 	ticker := time.NewTicker(c.config.ReconcileInterval)
 	defer ticker.Stop()
 
-	log.Printf("Controller loop started with %d workers, reconcile interval: %s",
-		numWorkers, c.config.ReconcileInterval)
+	log.Printf("Controller setup complete, starting reconciliation loop with interval: %s", c.config.ReconcileInterval)
 
-	// Main controller loop
+	// Main reconciliation loop - implements DESIGN.md simplified flow
 	for {
 		select {
 		case <-ctx.Done():
 			log.Println("Context cancelled, stopping controller...")
 			c.stop()
-			wg.Wait()
 			return ctx.Err()
 
 		case <-ticker.C:
-			c.enqueueReconcile("periodic-reconciliation")
+			// Reconciliation logic per DESIGN.md:
+			// if leader:
+			//   if configmap not ready then discoverClusterAndCreateConfigMap()
+			//   reconcile()
+			// else (non-leader): noop
+			if c.IsLeader() {
+				if err := c.performLeaderReconciliation(ctx); err != nil {
+					log.Printf("Leader reconciliation failed: %v", err)
+				}
+			} else {
+				log.Printf("Not leader, skipping reconciliation cycle")
+			}
 		}
 	}
 }
 
-// worker processes reconcile requests from the work queue
-func (c *MemgraphController) worker(ctx context.Context, workerID int) {
-	log.Printf("Worker %d started", workerID)
+// performLeaderReconciliation implements the simplified DESIGN.md reconciliation logic
+func (c *MemgraphController) performLeaderReconciliation(ctx context.Context) error {
+	log.Println("Performing leader reconciliation...")
 
-	for {
-		select {
-		case <-ctx.Done():
-			log.Printf("Worker %d stopping due to context cancellation", workerID)
-			return
-
-		case <-c.stopCh:
-			log.Printf("Worker %d stopping due to stop signal", workerID)
-			return
-
-		case request := <-c.workQueue:
-			c.processReconcileRequest(ctx, request, workerID)
-		}
-	}
-}
-
-// processReconcileRequest handles a single reconcile request
-func (c *MemgraphController) processReconcileRequest(ctx context.Context, request reconcileRequest, workerID int) {
-	startTime := time.Now()
-	log.Printf("Worker %d processing reconcile request: %s (queued at %s)",
-		workerID, request.reason, request.timestamp.Format(time.RFC3339))
-
-	// Only process reconciliation if we are the leader
-	if !c.IsLeader() {
-		log.Printf("Worker %d: Not leader, skipping reconciliation request: %s", workerID, request.reason)
-		return
-	}
-
-	// Execute reconciliation with retry logic
-	err := c.reconcileWithBackoff(ctx)
-	duration := time.Since(startTime)
-
-	// Update reconciliation metrics
-	c.updateReconciliationMetrics(request.reason, duration, err)
-
-	c.mu.Lock()
-	c.lastReconcile = time.Now()
+	// Check if ConfigMap is ready (exists and has valid state)
+	configMapReady, err := c.isConfigMapReady(ctx)
 	if err != nil {
-		c.failureCount++
-		log.Printf("Worker %d reconciliation failed (%d/%d failures): %v",
-			workerID, c.failureCount, c.maxFailures, err)
-
-		// Check if we've exceeded max failures
-		if c.failureCount >= c.maxFailures {
-			log.Printf("Worker %d: Maximum failures (%d) reached, will attempt recovery on next cycle",
-				workerID, c.maxFailures)
-		}
-	} else {
-		c.failureCount = 0 // Reset failure count on success
-		log.Printf("Worker %d reconciliation completed successfully in %s",
-			workerID, duration)
+		return fmt.Errorf("failed to check ConfigMap readiness: %w", err)
 	}
-	c.mu.Unlock()
+
+	if !configMapReady {
+		log.Println("ConfigMap not ready - performing discovery and creating ConfigMap...")
+		if err := c.discoverClusterAndCreateConfigMap(ctx); err != nil {
+			return fmt.Errorf("failed to discover cluster and create ConfigMap: %w", err)
+		}
+		log.Println("✅ Cluster discovered and ConfigMap created")
+	}
+
+	// Perform regular reconciliation
+	log.Println("Performing reconciliation...")
+	if err := c.Reconcile(ctx); err != nil {
+		return fmt.Errorf("reconciliation failed: %w", err)
+	}
+
+	log.Println("✅ Leader reconciliation completed successfully")
+	return nil
 }
 
-// reconcileWithBackoff performs reconciliation with exponential backoff
-func (c *MemgraphController) reconcileWithBackoff(ctx context.Context) error {
-	const maxRetries = 3
-	const baseDelay = time.Second * 2
-
-	for attempt := 0; attempt < maxRetries; attempt++ {
-		if attempt > 0 {
-			// Exponential backoff with jitter
-			delay := time.Duration(float64(baseDelay) * math.Pow(2, float64(attempt-1)))
-			jitter := time.Duration(rand.Intn(1000)) * time.Millisecond
-			totalDelay := delay + jitter
-
-			log.Printf("Reconciliation retry %d/%d after %s delay", attempt+1, maxRetries, totalDelay)
-
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-time.After(totalDelay):
-				// Continue to retry
-			}
-		}
-
-		err := c.Reconcile(ctx)
-		if err == nil {
-			if attempt > 0 {
-				log.Printf("Reconciliation succeeded on attempt %d", attempt+1)
-			}
-			return nil
-		}
-
-		log.Printf("Reconciliation attempt %d failed: %v", attempt+1, err)
-
-		// Don't retry on certain types of errors
-		if c.isNonRetryableError(err) {
-			return err
-		}
+// isConfigMapReady checks if the controller state ConfigMap exists and is valid
+func (c *MemgraphController) isConfigMapReady(ctx context.Context) (bool, error) {
+	state, err := c.stateManager.LoadState(ctx)
+	if err != nil {
+		// ConfigMap doesn't exist or is invalid
+		log.Printf("ConfigMap not ready: %v", err)
+		return false, nil
 	}
 
-	return fmt.Errorf("reconciliation failed after %d attempts", maxRetries)
+	// Validate that the state contains required information
+	if state.MasterIndex < 0 || state.MasterIndex > 1 {
+		log.Printf("ConfigMap contains invalid MasterIndex: %d", state.MasterIndex)
+		return false, nil
+	}
+
+	log.Printf("ConfigMap is ready with MasterIndex: %d", state.MasterIndex)
+	return true, nil
+}
+
+// discoverClusterAndCreateConfigMap implements DESIGN.md "Discover Cluster State" section
+func (c *MemgraphController) discoverClusterAndCreateConfigMap(ctx context.Context) error {
+	log.Println("=== CLUSTER DISCOVERY ===")
+
+	// Use bootstrap logic to discover and initialize cluster
+	bootstrapController := NewBootstrapController(c)
+	clusterState, err := bootstrapController.ExecuteBootstrap(ctx)
+	if err != nil {
+		return fmt.Errorf("cluster discovery failed: %w", err)
+	}
+
+	log.Printf("✅ Cluster discovery completed - main: %s", clusterState.CurrentMain)
+	return nil
 }
 
 // isNonRetryableError determines if an error should not be retried
@@ -1009,15 +968,6 @@ func (c *MemgraphController) GetReconciliationMetrics() ReconciliationMetrics {
 	return *c.metrics
 }
 
-// enqueueReconcile adds a reconcile request to the work queue
-func (c *MemgraphController) enqueueReconcile(reason string) {
-	select {
-	case c.workQueue <- reconcileRequest{reason: reason, timestamp: time.Now()}:
-		// Successfully enqueued
-	default:
-		log.Printf("Work queue full, dropping reconcile request: %s", reason)
-	}
-}
 
 // stop gracefully stops the controller
 func (c *MemgraphController) stop() {
@@ -1041,7 +991,6 @@ func (c *MemgraphController) stop() {
 
 	// Signal stop to all components
 	close(c.stopCh)
-	close(c.workQueue)
 
 	log.Println("Controller stopped")
 }
@@ -1056,7 +1005,6 @@ func (c *MemgraphController) GetControllerStatus() map[string]interface{} {
 		"last_reconcile":  c.lastReconcile,
 		"failure_count":   c.failureCount,
 		"max_failures":    c.maxFailures,
-		"work_queue_size": len(c.workQueue),
 	}
 }
 
@@ -1129,7 +1077,7 @@ func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
 	
 	// Discover cluster state to find SYNC replica
 	log.Printf("🔍 Discovering cluster state for immediate failover...")
-	clusterState, err := c.DiscoverCluster(ctx)
+	clusterState, err := c.discoverOperationalCluster(ctx)
 	if err != nil {
 		log.Printf("❌ CRITICAL: Failed to discover cluster state for immediate failover: %v", err)
 		return

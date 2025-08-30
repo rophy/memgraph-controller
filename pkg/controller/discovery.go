@@ -80,65 +80,9 @@ func (pd *PodDiscovery) GetPodsByLabel(ctx context.Context, labelSelector string
 }
 
 // DiscoverCluster discovers the current state of the Memgraph cluster
-func (c *MemgraphController) DiscoverCluster(ctx context.Context) (*ClusterState, error) {
-	if c.isBootstrap {
-		log.Println("=== BOOTSTRAP PHASE ===")
-		log.Println("Controller starts up as BOOTSTRAP phase (per README.md)")
-
-		// Use bootstrap controller which implements proper readiness checks
-		bootstrapController := NewBootstrapController(c)
-		clusterState, err := bootstrapController.ExecuteBootstrap(ctx)
-		if err != nil {
-			return nil, err
-		}
-		
-		// Mark bootstrap as complete
-		c.isBootstrap = false
-		
-		// Save controller state after successful bootstrap (only if leader)
-		if err := c.saveControllerStateAfterBootstrap(ctx); err != nil {
-			log.Printf("Warning: Failed to save controller state after bootstrap: %v", err)
-		}
-		
-		// IMPORTANT: Re-query cluster state to get fresh replication configuration
-		// Bootstrap just configured new roles, so we need to refresh our view
-		log.Println("Bootstrap completed - re-querying cluster state to refresh internal view...")
-		freshClusterState, err := c.discoverOperationalCluster(ctx)
-		if err != nil {
-			log.Printf("Warning: Failed to refresh cluster state after bootstrap: %v", err)
-			log.Println("Returning bootstrap state as fallback")
-			return clusterState, nil
-		}
-		
-		log.Println("✅ Cluster state refreshed after bootstrap completion")
-		return freshClusterState, nil
-	}
-
-	// Operational phase - existing logic
-	log.Println("=== OPERATIONAL PHASE ===")
-	clusterState, err := c.discoverOperationalCluster(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	// Ensure gateway is operational if cluster is stable
-	if c.gatewayServer != nil && c.gatewayServer.IsBootstrapPhase() {
-		// Check if cluster is in a healthy operational state
-		if clusterState != nil && clusterState.StateType == OPERATIONAL_STATE && clusterState.CurrentMain != "" {
-			log.Println("Cluster is in healthy operational state - transitioning gateway to operational phase")
-			c.gatewayServer.SetBootstrapPhase(false)
-
-			// Start gateway if not already started
-			if err := c.gatewayServer.Start(ctx); err != nil {
-				log.Printf("Warning: Failed to start gateway after transitioning to operational: %v", err)
-			} else {
-				log.Println("✅ Gateway started successfully after operational phase transition")
-			}
-		}
-	}
-
-	return clusterState, nil
-}
+// DiscoverCluster method removed - replaced by simplified ConfigMap-based logic
+// Bootstrap discovery is now handled by discoverClusterAndCreateConfigMap()
+// Operational discovery is handled by discoverOperationalCluster()
 
 // discoverOperationalCluster handles operational phase discovery (existing logic)
 func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*ClusterState, error) {
@@ -161,25 +105,14 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 		return clusterState, nil
 	}
 
-	// CRITICAL: During OPERATIONAL phase, NEVER trigger bootstrap logic
-	// Only controller.isBootstrap should determine bootstrap vs operational mode
-	// This prevents inappropriate bootstrap classification during immediate failover
-	if c.isBootstrap {
-		log.Printf("Controller in bootstrap phase - will perform bootstrap validation")
-		clusterState.IsBootstrapPhase = true
-	} else {
-		log.Printf("Controller in operational phase - maintaining OPERATIONAL_STATE authority")
-		clusterState.IsBootstrapPhase = false
-		clusterState.StateType = OPERATIONAL_STATE // Explicitly preserve OPERATIONAL state
-		// Preserve target main index from controller state
-		if c.targetMainIndex >= 0 {
-			// Target main index is now managed in controller state, not ClusterState
-		}
-	}
+	// Always operational phase since bootstrap is handled separately
+	log.Printf("Controller in operational phase - maintaining OPERATIONAL_STATE authority")
+	clusterState.IsBootstrapPhase = false
+	clusterState.StateType = OPERATIONAL_STATE
 
 	clusterState.LastStateChange = time.Now()
 
-	log.Printf("Discovered %d pods, starting bootstrap discovery...", len(clusterState.Pods))
+	log.Printf("Discovered %d pods, querying Memgraph state...", len(clusterState.Pods))
 
 	// Track errors for comprehensive reporting
 	var queryErrors []error

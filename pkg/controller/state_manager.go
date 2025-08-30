@@ -6,7 +6,6 @@ import (
 	"log"
 	"os"
 	"strconv"
-	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
@@ -16,10 +15,7 @@ import (
 
 // ControllerState represents the persistent state stored in ConfigMap
 type ControllerState struct {
-	MasterIndex        int       `json:"masterIndex"`
-	LastUpdated        time.Time `json:"lastUpdated"`
-	ControllerVersion  string    `json:"controllerVersion"`
-	BootstrapCompleted bool      `json:"bootstrapCompleted"`
+	MasterIndex int `json:"masterIndex"`
 }
 
 // StateManager manages controller state persistence using ConfigMaps
@@ -64,52 +60,22 @@ func (sm *StateManager) LoadState(ctx context.Context) (*ControllerState, error)
 		return nil, fmt.Errorf("failed to parse masterIndex: %w", err)
 	}
 
-	// Parse lastUpdated
-	lastUpdatedStr, exists := configMap.Data["lastUpdated"]
-	if !exists {
-		return nil, fmt.Errorf("lastUpdated not found in ConfigMap")
-	}
-
-	lastUpdated, err := time.Parse(time.RFC3339, lastUpdatedStr)
-	if err != nil {
-		return nil, fmt.Errorf("failed to parse lastUpdated: %w", err)
-	}
-
-	// Parse controllerVersion (optional)
-	controllerVersion := configMap.Data["controllerVersion"]
-
-	// Parse bootstrapCompleted (optional, default to true if missing)
-	bootstrapCompleted := true
-	if bootstrapCompletedStr, exists := configMap.Data["bootstrapCompleted"]; exists {
-		if parsed, err := strconv.ParseBool(bootstrapCompletedStr); err == nil {
-			bootstrapCompleted = parsed
-		}
-	}
-
 	state := &ControllerState{
-		MasterIndex:        masterIndex,
-		LastUpdated:        lastUpdated,
-		ControllerVersion:  controllerVersion,
-		BootstrapCompleted: bootstrapCompleted,
+		MasterIndex: masterIndex,
 	}
 
-	log.Printf("Loaded controller state: masterIndex=%d, lastUpdated=%s, bootstrapCompleted=%t",
-		state.MasterIndex, state.LastUpdated.Format(time.RFC3339), state.BootstrapCompleted)
+	log.Printf("Loaded controller state: masterIndex=%d", state.MasterIndex)
 
 	return state, nil
 }
 
 // SaveState persists the controller state to ConfigMap
 func (sm *StateManager) SaveState(ctx context.Context, state *ControllerState) error {
-	log.Printf("Saving controller state: masterIndex=%d, bootstrapCompleted=%t",
-		state.MasterIndex, state.BootstrapCompleted)
+	log.Printf("Saving controller state: masterIndex=%d", state.MasterIndex)
 
 	// Create ConfigMap data
 	data := map[string]string{
-		"masterIndex":        strconv.Itoa(state.MasterIndex),
-		"lastUpdated":        state.LastUpdated.Format(time.RFC3339),
-		"controllerVersion":  state.ControllerVersion,
-		"bootstrapCompleted": strconv.FormatBool(state.BootstrapCompleted),
+		"masterIndex": strconv.Itoa(state.MasterIndex),
 	}
 
 	// Get owner reference for the controller deployment
@@ -204,14 +170,6 @@ func (sm *StateManager) DeleteState(ctx context.Context) error {
 	return nil
 }
 
-// GetStateVersion returns the controller version from the stored state
-func (sm *StateManager) GetStateVersion(ctx context.Context) (string, error) {
-	state, err := sm.LoadState(ctx)
-	if err != nil {
-		return "", err
-	}
-	return state.ControllerVersion, nil
-}
 
 // getControllerDeploymentOwnerRef gets the owner reference for the controller deployment
 func (sm *StateManager) getControllerDeploymentOwnerRef(ctx context.Context) (*metav1.OwnerReference, error) {

@@ -15,12 +15,16 @@ import (
 // MainEndpointProvider is a function that returns the current main endpoint
 type MainEndpointProvider func(ctx context.Context) (string, error)
 
+// BootstrapPhaseProvider is a function that returns true if gateway should reject connections (bootstrap phase)
+type BootstrapPhaseProvider func() bool
+
 // Server represents the gateway server that proxies Bolt protocol connections
 type Server struct {
-	config       *Config
-	listener     net.Listener
-	connections  *ConnectionTracker
-	mainProvider MainEndpointProvider
+	config           *Config
+	listener         net.Listener
+	connections      *ConnectionTracker
+	mainProvider     MainEndpointProvider
+	bootstrapProvider BootstrapPhaseProvider
 
 	// Current main endpoint
 	currentMain string
@@ -50,7 +54,7 @@ type Server struct {
 }
 
 // NewServer creates a new gateway server with the given configuration
-func NewServer(config *Config, mainProvider MainEndpointProvider) *Server {
+func NewServer(config *Config, mainProvider MainEndpointProvider, bootstrapProvider BootstrapPhaseProvider) *Server {
 	// Create rate limiter
 	rateLimiter := NewRateLimiter(
 		config.RateLimitEnabled,
@@ -63,13 +67,14 @@ func NewServer(config *Config, mainProvider MainEndpointProvider) *Server {
 	logger := NewLogger(config.LogLevel, config.TraceEnabled)
 
 	return &Server{
-		config:       config,
-		connections:  NewConnectionTracker(config.MaxConnections),
-		mainProvider: mainProvider,
-		shutdownCh:   make(chan struct{}),
-		healthStatus: "unknown",
-		rateLimiter:  rateLimiter,
-		logger:       logger,
+		config:           config,
+		connections:      NewConnectionTracker(config.MaxConnections),
+		mainProvider:     mainProvider,
+		bootstrapProvider: bootstrapProvider,
+		shutdownCh:       make(chan struct{}),
+		healthStatus:     "unknown",
+		rateLimiter:      rateLimiter,
+		logger:           logger,
 	}
 }
 
@@ -323,6 +328,17 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 
 	atomic.AddInt64(&s.activeConnections, 1)
 	defer atomic.AddInt64(&s.activeConnections, -1)
+
+	// Check bootstrap phase - reject connections during bootstrap per DESIGN.md line 58
+	if s.bootstrapProvider != nil && s.bootstrapProvider() {
+		s.logger.LogConnectionEvent("rejected-bootstrap", clientAddr, map[string]interface{}{
+			"client_ip": clientIP,
+			"reason":    "bootstrap-phase",
+		})
+		atomic.AddInt64(&s.rejectedConnections, 1)
+		// Connection will be closed by defer above - implements DESIGN.md bootstrap rejection
+		return
+	}
 
 	s.logger.LogConnectionEvent("established", clientAddr, map[string]interface{}{
 		"client_ip": clientIP,

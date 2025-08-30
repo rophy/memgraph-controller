@@ -451,10 +451,7 @@ func (c *MemgraphController) saveControllerStateAfterBootstrap(ctx context.Conte
 	}
 
 	state := &ControllerState{
-		MasterIndex:        targetMainIndex,
-		LastUpdated:        time.Now(),
-		ControllerVersion:  "v1.0.0", // TODO: Get from build info
-		BootstrapCompleted: true,
+		MasterIndex: targetMainIndex,
 	}
 
 	if err := c.stateManager.SaveState(ctx, state); err != nil {
@@ -484,16 +481,19 @@ func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) e
 		return nil // Don't fail startup, just use bootstrap
 	}
 
-	if state.BootstrapCompleted {
-		c.mu.Lock()
-		c.isBootstrap = false // Start in OPERATIONAL phase
-		c.targetMainIndex = state.MasterIndex
-		c.mu.Unlock()
+	// If state exists, assume bootstrap is completed and start in OPERATIONAL phase
+	c.mu.Lock()
+	c.isBootstrap = false // Start in OPERATIONAL phase
+	c.targetMainIndex = state.MasterIndex
+	c.mu.Unlock()
 
-		log.Printf("Loaded persisted state - will start in OPERATIONAL phase: masterIndex=%d", state.MasterIndex)
-	} else {
-		log.Println("State exists but bootstrap not completed - will start in BOOTSTRAP phase")
+	// Transition gateway to operational phase for non-leaders per DESIGN.md
+	if c.gatewayServer != nil {
+		c.gatewayServer.SetBootstrapPhase(false)
+		log.Printf("Gateway transitioned to operational phase (ConfigMap indicates bootstrap completed)")
 	}
+
+	log.Printf("Loaded persisted state - will start in OPERATIONAL phase: masterIndex=%d", state.MasterIndex)
 
 	return nil
 }
@@ -511,10 +511,7 @@ func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, clusterS
 	if c.stateManager != nil {
 		// Create updated state for persistence
 		state := &ControllerState{
-			MasterIndex:        newTargetIndex,
-			LastUpdated:        time.Now(),
-			ControllerVersion:  "v1.0.0",
-			BootstrapCompleted: !c.isBootstrap,
+			MasterIndex: newTargetIndex,
 		}
 
 		// Save to ConfigMap for persistence
@@ -816,16 +813,18 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	}
 	log.Println("Informer caches synced successfully")
 
-	// Start gateway server only if not in bootstrap phase
-	if c.gatewayServer != nil && !c.gatewayServer.IsBootstrapPhase() {
-		log.Println("Starting gateway server...")
+	// Start gateway server immediately on all controller pods per DESIGN.md line 46
+	// Gateway will reject connections during bootstrap phase, proxy during operational phase
+	if c.gatewayServer != nil {
+		log.Println("Starting gateway server (will reject connections during bootstrap phase)...")
 		if err := c.gatewayServer.Start(ctx); err != nil {
 			log.Printf("Failed to start gateway server: %v", err)
 			c.stop()
 			return fmt.Errorf("failed to start gateway server: %w", err)
 		}
+		log.Printf("Gateway server started - bootstrap phase: %t", c.gatewayServer.IsBootstrapPhase())
 	} else {
-		log.Println("Gateway server start deferred - currently in bootstrap phase")
+		log.Println("Gateway server is disabled")
 	}
 
 	// Initial reconciliation
@@ -1059,9 +1058,23 @@ func (c *MemgraphController) GetControllerStatus() map[string]interface{} {
 
 // GetCurrentMainEndpoint returns the current main endpoint for gateway connections
 func (c *MemgraphController) GetCurrentMainEndpoint(ctx context.Context) (string, error) {
-	c.mu.RLock()
-	currentMain := c.lastKnownMain
-	c.mu.RUnlock()
+	var currentMain string
+	
+	if c.IsLeader() {
+		// Leaders use their in-memory state
+		c.mu.RLock()
+		currentMain = c.lastKnownMain
+		c.mu.RUnlock()
+	} else {
+		// Non-leaders read ConfigMap to get TargetMainPod per DESIGN.md
+		state, err := c.stateManager.LoadState(ctx)
+		if err != nil {
+			return "", fmt.Errorf("non-leader failed to read ConfigMap state: %w", err)
+		}
+		// State existence implies bootstrap is completed
+		// Convert MasterIndex to pod name
+		currentMain = c.config.GetPodName(state.MasterIndex)
+	}
 
 	if currentMain == "" {
 		return "", fmt.Errorf("no current main known")

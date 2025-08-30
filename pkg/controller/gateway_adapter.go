@@ -37,7 +37,12 @@ func (g *GatewayAdapter) InitializeWithMainProvider(mainProvider gateway.MainEnd
 	gatewayConfig.Enabled = g.config.GatewayEnabled
 	gatewayConfig.BindAddress = g.config.GatewayBindAddress
 
-	g.server = gateway.NewServer(gatewayConfig, mainProvider)
+	// Create bootstrap phase provider that uses our internal state
+	bootstrapProvider := func() bool {
+		return g.IsBootstrapPhase()
+	}
+
+	g.server = gateway.NewServer(gatewayConfig, mainProvider, bootstrapProvider)
 	return nil
 }
 

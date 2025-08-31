@@ -2,19 +2,14 @@
 
 set -e
 
-RELEASE_NAME=${1:-memgraph-sandbox}
 CURRENT_NAMESPACE=$(kubectl config view --minify --output 'jsonpath={..namespace}' || echo 'default')
 
-echo "Cleaning up Memgraph sandbox with release: $RELEASE_NAME"
+echo "Cleaning up Memgraph sandbox with skaffold"
 echo "Using kubectl active namespace: $CURRENT_NAMESPACE"
 
-# Check if helm release exists
-if helm list | grep -q "$RELEASE_NAME"; then
-    echo "Uninstalling helm release: $RELEASE_NAME"
-    helm uninstall "$RELEASE_NAME"
-else
-    echo "Helm release $RELEASE_NAME not found in current namespace"
-fi
+# Clean up with skaffold
+echo "Deleting skaffold deployments..."
+skaffold delete
 
 # Wait for pods to be deleted
 echo "Waiting for pods to be deleted..."

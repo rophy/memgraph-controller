@@ -2,14 +2,12 @@
 
 set -e
 
-RELEASE_NAME=${1:-memgraph-sandbox}
-
-echo "Setting up Memgraph sandbox with release: $RELEASE_NAME"
+echo "Setting up Memgraph sandbox with skaffold"
 echo "Using kubectl active namespace: $(kubectl config view --minify --output 'jsonpath={..namespace}' || echo 'default')"
 
-# Install helm chart
-echo "Installing Memgraph helm chart..."
-helm upgrade --install "$RELEASE_NAME" . --wait --timeout=10m
+# Deploy with skaffold
+echo "Deploying Memgraph cluster and test client with skaffold..."
+skaffold run --wait-for-deletions
 
 # Get pod names
 echo "Getting pod names..."

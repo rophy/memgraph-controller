@@ -1,0 +1,21 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+
+metadata:
+  name: memgraph-sandbox
+
+# Build configuration for the test client
+build:
+  artifacts:
+  - image: neo4j-client
+    context: ../client
+    docker:
+      dockerfile: Dockerfile
+
+# Deploy configuration (memgraph + test client)
+deploy:
+  helm:
+    releases:
+    - name: memgraph-sandbox
+      chartPath: .
+      wait: true

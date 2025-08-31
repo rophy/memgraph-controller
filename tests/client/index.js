@@ -75,6 +75,7 @@ class Neo4jClient {
         this.metrics = new MetricsTracker();
         this.writeInterval = parseInt(process.env.WRITE_INTERVAL || '1000');
         this.running = false;
+        this.paused = false;
     }
 
     async verifyConnection() {
@@ -143,9 +144,23 @@ class Neo4jClient {
         console.log('\n=== Starting write loop ===\n');
         
         while (this.running) {
-            await this.writeData();
+            if (!this.paused) {
+                await this.writeData();
+            } else {
+                console.log('⏸️  Client paused - waiting for resume signal');
+            }
             await new Promise(resolve => setTimeout(resolve, this.writeInterval));
         }
+    }
+
+    pause() {
+        console.log('\n⏸️  === Pausing client ===');
+        this.paused = true;
+    }
+
+    resume() {
+        console.log('\n▶️  === Resuming client ===');
+        this.paused = false;
     }
 
     async stop() {
@@ -174,8 +189,21 @@ async function main() {
         process.exit(0);
     };
     
+    // Pause/Resume handlers
+    const pauseHandler = (signal) => {
+        console.log(`\nReceived ${signal}, pausing client...`);
+        client.pause();
+    };
+    
+    const resumeHandler = (signal) => {
+        console.log(`\nReceived ${signal}, resuming client...`);
+        client.resume();
+    };
+    
     process.on('SIGTERM', () => shutdown('SIGTERM'));
     process.on('SIGINT', () => shutdown('SIGINT'));
+    process.on('SIGUSR1', () => pauseHandler('SIGUSR1')); // Pause signal
+    process.on('SIGUSR2', () => resumeHandler('SIGUSR2')); // Resume signal
     
     // Start the client
     await client.start();

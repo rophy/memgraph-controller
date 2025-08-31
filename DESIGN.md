@@ -52,7 +52,7 @@ Ground Rules:
 1. Controller can scale out multiple pods, only one will be leader at any time.
 2. Reconciliation: Leader performs reconciliation logics, non-leader no-op silently.
 3. Configmap: Leader writes configmap, non-leader read and update their in-memory `TargetMainPod` info.
-4. All controller pods can act as the gateway, forwarding traffic.
+4. Only leader can act as the gateway, forwarding traffic.
 5. All controller pods watch same set of events.
 6. It is assumed that all parts of this document clearly classify controller as leader or not.
 
@@ -143,8 +143,8 @@ Once replication is good, controller picks pod-0 as MAIN, and create configmap.
 
 - **Memgraph pod status changed to "not ready"**:
   - **If pod is `TargetMainPod`:**
-    - **[ALL controllers]** Immediately terminate all gateway connections
-    - **[ALL controllers]** Gateway rejects new connections (main unavailable state)
+    - **[Leader only]** Immediately terminate all gateway connections
+    - **[Leader only]** Gateway rejects new connections (main unavailable state)
     - **[Leader only]** Flip `TargetMainPod` with `TargetSyncReplica`
     - **[Leader only]** Promote new `TargetMainPod` immediately
     - **[Leader only]** Update ConfigMap with new `TargetMainIndex`

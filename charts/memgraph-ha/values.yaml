@@ -84,7 +84,7 @@ controller:
     pullPolicy: IfNotPresent
   
   # Deployment configuration
-  replicaCount: 3
+  replicaCount: 2
   
   # Namespace configuration
   namespace: memgraph

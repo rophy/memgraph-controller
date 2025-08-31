@@ -12,7 +12,8 @@ import (
 	"k8s.io/client-go/kubernetes/fake"
 )
 
-func TestPodDiscovery_DiscoverPods(t *testing.T) {
+
+func TestMemgraphController_DiscoverPods(t *testing.T) {
 	now := time.Now()
 
 	// Create test pods
@@ -70,8 +71,12 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 		Namespace: "memgraph",
 	}
 
-	discovery := NewPodDiscovery(fakeClient, config)
-	clusterState, err := discovery.DiscoverPods(context.Background())
+	controller := &MemgraphController{
+		clientset: fakeClient,
+		config:    config,
+	}
+	controller.cluster = NewMemgraphCluster(fakeClient, config, nil, nil)
+	clusterState, err := controller.cluster.DiscoverPods(context.Background())
 
 	if err != nil {
 		t.Fatalf("DiscoverPods() failed: %v", err)
@@ -110,7 +115,7 @@ func TestPodDiscovery_DiscoverPods(t *testing.T) {
 	}
 }
 
-func TestPodDiscovery_GetPodsByLabel(t *testing.T) {
+func TestMemgraphController_GetPodsByLabel(t *testing.T) {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      "custom-pod",
@@ -130,8 +135,12 @@ func TestPodDiscovery_GetPodsByLabel(t *testing.T) {
 		Namespace: "memgraph",
 	}
 
-	discovery := NewPodDiscovery(fakeClient, config)
-	clusterState, err := discovery.GetPodsByLabel(context.Background(), "custom=label")
+	controller := &MemgraphController{
+		clientset: fakeClient,
+		config:    config,
+	}
+	controller.cluster = NewMemgraphCluster(fakeClient, config, nil, nil)
+	clusterState, err := controller.cluster.GetPodsByLabel(context.Background(), "custom=label")
 
 	if err != nil {
 		t.Fatalf("GetPodsByLabel() failed: %v", err)
@@ -181,8 +190,6 @@ func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) 
 		t.Run(tt.name, func(t *testing.T) {
 			// Create mock controller with minimal setup
 			controller := &MemgraphController{
-				lastKnownMain:   "", // Simulate bootstrap scenario
-				targetMainIndex: -1,
 				config: &Config{
 					AppName:         "memgraph",
 					StatefulSetName: "memgraph-ha",
@@ -232,7 +239,9 @@ func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) 
 			clusterState.BootstrapSafe = tt.bootstrapSafe
 			defer func() { clusterState.BootstrapSafe = originalBootstrapSafe }()
 
-			err := controller.performBootstrapValidation(clusterState)
+			// Add cluster to controller for test
+		controller.cluster = NewMemgraphCluster(nil, controller.config, nil, NewMockStateManager(0))
+		err := controller.performBootstrapValidation(clusterState)
 
 			if tt.expectError {
 				if err == nil {
@@ -289,8 +298,9 @@ func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 				clusterState.Pods[podName] = &PodInfo{Name: podName}
 			}
 
-			// Set the target main index for this test case
-			controller.targetMainIndex = tt.targetMainIndex
+			// Create a mock state manager with the expected state
+			controller.stateManager = NewMockStateManager(tt.targetMainIndex)
+			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, controller.stateManager)
 
 			controller.applyDeterministicRoles(clusterState)
 
@@ -307,6 +317,7 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 			AppName:         "memgraph",
 			StatefulSetName: "memgraph-ha",
 		},
+		stateManager: NewEmptyMockStateManager(), // Start with empty state, will be updated by learnExistingTopology
 	}
 
 	tests := []struct {
@@ -337,8 +348,14 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset targetMainIndex to 0 for each test
-			controller.targetMainIndex = 0
+			// Reset the state manager for each test to ensure predictable behavior
+			if tt.name == "multiple_mains_fallback" {
+				// For multiple mains case, set expected fallback to index 0
+				controller.stateManager = NewMockStateManager(0)
+			} else {
+				controller.stateManager = NewEmptyMockStateManager()
+			}
+			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, controller.stateManager)
 			
 			clusterState := &ClusterState{
 				Pods:            make(map[string]*PodInfo),
@@ -374,8 +391,9 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 			// Verify target main index was updated for single main cases
 			if len(tt.mainPods) == 1 {
 				expectedIndex := controller.config.ExtractPodIndex(tt.expectedMain)
-				if controller.targetMainIndex != expectedIndex {
-					t.Errorf("targetMainIndex = %d, want %d", controller.targetMainIndex, expectedIndex)
+				actualIndex := controller.getTargetMainIndex()
+				if actualIndex != expectedIndex {
+					t.Errorf("targetMainIndex = %d, want %d", actualIndex, expectedIndex)
 				}
 			}
 		})
@@ -412,6 +430,9 @@ func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			controller.stateManager = NewMockStateManager(tt.targetMainIndex)
+			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, controller.stateManager)
+			
 			clusterState := &ClusterState{
 				StateType:        tt.stateType,
 				IsBootstrapPhase: true, // Should be set to false

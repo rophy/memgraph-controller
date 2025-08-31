@@ -10,10 +10,10 @@ import (
 
 // detectMainFailover detects if the current main has failed
 func (c *MemgraphController) detectMainFailover(clusterState *ClusterState) bool {
-	// Use lastKnownMain for operational phase failover detection
-	// This ensures we can detect failover even if CurrentMain was cleared by validation
-	lastKnownMain := c.lastKnownMain
-	if lastKnownMain == "" {
+	// Get current main from state manager for operational phase failover detection
+	ctx := context.Background()
+	lastKnownMain, err := c.getCurrentMainFromState(ctx)
+	if err != nil || lastKnownMain == "" {
 		// No last known main - not a failover scenario (likely fresh bootstrap)
 		return false
 	}
@@ -48,8 +48,11 @@ func (c *MemgraphController) detectMainFailover(clusterState *ClusterState) bool
 func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterState *ClusterState) error {
 	log.Printf("🔄 Handling main failover...")
 
-	// Get the failed main from last known main
-	oldMain := c.lastKnownMain
+	// Get the failed main from state manager
+	oldMain, err := c.getCurrentMainFromState(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot get current main for failover: %w", err)
+	}
 	log.Printf("Handling failover for failed main: %s", oldMain)
 
 	// Design-Contract-Based Failover Logic
@@ -136,9 +139,8 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 				return fmt.Errorf("CRITICAL: failed to update target main index: %w", err)
 			}
 			
-			// Update cluster state and controller state
+			// Update cluster state
 			clusterState.CurrentMain = newMain.Name
-			c.lastKnownMain = newMain.Name
 			
 			log.Printf("⚡ IMMEDIATE state update completed in %v: targetMainIndex=%d, gateway switching...", 
 				time.Since(failoverStartTime), newMainIndex)
@@ -222,60 +224,6 @@ func (c *MemgraphController) selectBestReplicaForPromotion(replicas []*PodInfo, 
 
 
 // handleMainFailurePromotion handles main failure and promotes SYNC replica
-func (c *MemgraphController) handleMainFailurePromotion(clusterState *ClusterState, replicaPods []string) error {
-	// Find SYNC replica from current state
-	var syncReplica string
-	for podName, podInfo := range clusterState.Pods {
-		if podInfo.IsSyncReplica {
-			syncReplica = podName
-			break
-		}
-	}
-
-	// If no SYNC replica found, use deterministic selection based on failed main
-	if syncReplica == "" {
-		log.Printf("No SYNC replica identified, using deterministic selection")
-		// Determine which pod failed and promote the other one (the SYNC replica)
-		failedMainIndex := c.identifyFailedMainIndex(clusterState)
-		if failedMainIndex == 0 {
-			// pod-0 failed, so pod-1 must be the SYNC replica
-			syncReplica = c.config.StatefulSetName + "-1"
-			log.Printf("Failed main was pod-0, promoting SYNC replica pod-1")
-		} else {
-			// pod-1 failed, so pod-0 must be the SYNC replica
-			syncReplica = c.config.StatefulSetName + "-0"
-			log.Printf("Failed main was pod-1, promoting SYNC replica pod-0")
-		}
-	}
-
-	log.Printf("🔄 FAILOVER: Promoting SYNC replica %s to main", syncReplica)
-
-	// Promote SYNC replica to main
-	if err := c.promoteToMain(syncReplica); err != nil {
-		return fmt.Errorf("failed to promote SYNC replica %s: %w", syncReplica, err)
-	}
-
-	// Update controller state using consolidated method
-	newMainIndex := 0
-	if syncReplica != c.config.StatefulSetName+"-0" {
-		newMainIndex = 1
-	}
-	
-	if err := c.updateTargetMainIndex(context.Background(), newMainIndex, 
-		fmt.Sprintf("SYNC replica %s promoted to main", syncReplica)); err != nil {
-		return fmt.Errorf("failed to update target main index: %w", err)
-	}
-	
-	c.lastKnownMain = syncReplica
-
-	// Notify gateway of main change (async to avoid blocking reconciliation)
-	go c.updateGatewayMain()
-
-	log.Printf("✅ FAILOVER: Successfully promoted %s to main (target_index=%d)",
-		syncReplica, c.targetMainIndex)
-
-	return nil
-}
 
 // identifyFailedMainIndex determines which pod (0 or 1) was the failed main
 func (c *MemgraphController) identifyFailedMainIndex(clusterState *ClusterState) int {

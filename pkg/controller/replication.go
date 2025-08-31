@@ -7,6 +7,27 @@ import (
 	"strings"
 )
 
+// isPodHealthyForMain determines if a pod is healthy enough to be main
+func (c *MemgraphController) isPodHealthyForMain(podInfo *PodInfo) bool {
+	if podInfo == nil {
+		return false
+	}
+
+	// Pod must have a Bolt address for client connections
+	if podInfo.BoltAddress == "" {
+		log.Printf("Pod %s not healthy for main: no bolt address", podInfo.Name)
+		return false
+	}
+
+	// Pod must have Memgraph role information
+	if podInfo.MemgraphRole == "" {
+		log.Printf("Pod %s not healthy for main: no Memgraph role info", podInfo.Name)
+		return false
+	}
+
+	return true
+}
+
 // ConfigureReplication configures replication for the cluster
 func (c *MemgraphController) ConfigureReplication(ctx context.Context, clusterState *ClusterState) error {
 	if len(clusterState.Pods) == 0 {
@@ -157,23 +178,6 @@ func (c *MemgraphController) selectSyncReplicaFallback(clusterState *ClusterStat
 }
 
 // identifySyncReplica finds which replica (if any) is currently configured as SYNC
-func (c *MemgraphController) identifySyncReplica(clusterState *ClusterState, currentMain string) string {
-	mainPod, exists := clusterState.Pods[currentMain]
-	if !exists {
-		return ""
-	}
-
-	// Check ReplicasInfo for any SYNC replica
-	for _, replica := range mainPod.ReplicasInfo {
-		if replica.SyncMode == "sync" { // Memgraph returns lowercase "sync"
-			// Convert replica name back to pod name (underscores to dashes)
-			podName := strings.ReplaceAll(replica.Name, "_", "-")
-			return podName
-		}
-	}
-
-	return "" // No SYNC replica found
-}
 
 // configureReplicationWithEnhancedSyncStrategy configures replication using enhanced SYNC/ASYNC strategy with controller authority
 func (c *MemgraphController) configureReplicationWithEnhancedSyncStrategy(ctx context.Context, clusterState *ClusterState) error {
@@ -315,24 +319,6 @@ func (c *MemgraphController) configurePodAsAsyncReplica(ctx context.Context, mai
 
 
 // verifyPodSyncConfiguration verifies that a pod is correctly configured as SYNC replica
-func (c *MemgraphController) verifyPodSyncConfiguration(ctx context.Context, clusterState *ClusterState, syncReplicaPod string) error {
-	syncPod := clusterState.Pods[syncReplicaPod]
-	mainPod := clusterState.Pods[clusterState.CurrentMain]
-	replicaName := syncPod.GetReplicaName()
-
-	// Check if registered as SYNC with main
-	for _, replica := range mainPod.ReplicasInfo {
-		if replica.Name == replicaName {
-			if replica.SyncMode == "sync" {
-				syncPod.IsSyncReplica = true
-				return nil
-			}
-			return fmt.Errorf("pod %s registered with sync_mode=%s, expected 'sync'", syncReplicaPod, replica.SyncMode)
-		}
-	}
-
-	return fmt.Errorf("pod %s not registered as replica with main", syncReplicaPod)
-}
 
 // verifySyncReplicaConfiguration verifies the final SYNC replica configuration
 func (c *MemgraphController) verifySyncReplicaConfiguration(ctx context.Context, clusterState *ClusterState) error {

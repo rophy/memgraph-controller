@@ -101,7 +101,7 @@ func (bc *BootstrapController) waitForMinimumReplicas(ctx context.Context) (*Clu
 
 	for {
 		// Discover current pods
-		clusterState, err := bc.controller.podDiscovery.DiscoverPods(ctx)
+		clusterState, err := bc.controller.cluster.DiscoverPods(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to discover pods: %w", err)
 		}
@@ -269,7 +269,7 @@ func (bc *BootstrapController) handleOperationalState(ctx context.Context, clust
 		fmt.Sprintf("Learning from OPERATIONAL_STATE with main %s", clusterState.CurrentMain)); err != nil {
 		return fmt.Errorf("failed to update target main index: %w", err)
 	}
-	bc.controller.lastKnownMain = clusterState.CurrentMain
+	// Main is now tracked in state manager via updateTargetMainIndex call above
 	
 	log.Printf("✅ OPERATIONAL_STATE learning completed: main=%s, target_index=%d", 
 		clusterState.CurrentMain, bc.controller.getTargetMainIndex())

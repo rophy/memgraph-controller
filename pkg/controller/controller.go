@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
@@ -31,7 +30,6 @@ func generateStateConfigMapName() string {
 type MemgraphController struct {
 	clientset      kubernetes.Interface
 	config         *Config
-	podDiscovery   *PodDiscovery
 	memgraphClient *MemgraphClient
 	httpServer     *HTTPServer
 	gatewayServer  GatewayServerInterface
@@ -42,7 +40,10 @@ type MemgraphController struct {
 	leaderMu       sync.RWMutex
 
 	// State persistence
-	stateManager *StateManager
+	stateManager StateManagerInterface
+
+	// Cluster operations
+	cluster *MemgraphCluster
 
 	// Controller loop state
 	isRunning     bool
@@ -51,9 +52,6 @@ type MemgraphController struct {
 	failureCount  int
 	maxFailures   int
 
-	// Controller state tracking
-	lastKnownMain   string
-	targetMainIndex int
 
 	// Event-driven reconciliation
 	podInformer       cache.SharedInformer
@@ -79,7 +77,6 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	controller := &MemgraphController{
 		clientset:      clientset,
 		config:         config,
-		podDiscovery:   NewPodDiscovery(clientset, config),
 		memgraphClient: NewMemgraphClient(config),
 	}
 
@@ -101,9 +98,11 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	configMapName := generateStateConfigMapName()
 	controller.stateManager = NewStateManager(clientset, config.Namespace, configMapName)
 
+	// Initialize cluster operations
+	controller.cluster = NewMemgraphCluster(clientset, config, controller.memgraphClient, controller.stateManager)
+
 	// Initialize controller state
 	controller.maxFailures = 5
-	controller.targetMainIndex = -1
 	controller.stopCh = make(chan struct{})
 
 	// Initialize reconciliation metrics
@@ -113,6 +112,87 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	controller.setupInformers()
 
 	return controller
+}
+
+// Delegation methods for backwards compatibility with tests
+
+// performBootstrapValidation validates cluster state during bootstrap phase
+func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterState) error {
+	// Classify the current cluster state
+	oldStateType := clusterState.StateType
+	stateType := clusterState.ClassifyClusterState(c.config)
+	clusterState.StateType = stateType
+
+	// Log state transition if changed
+	clusterState.LogStateTransition(oldStateType, "bootstrap classification")
+
+	log.Printf("Bootstrap validation: cluster state classified as %s", stateType.String())
+
+	// Log pod role distribution for debugging
+	mainPods := clusterState.GetMainPods()
+	replicaPods := clusterState.GetReplicaPods()
+	log.Printf("Pod role distribution: %d main pods %v, %d replica pods %v",
+		len(mainPods), mainPods, len(replicaPods), replicaPods)
+
+	// Check if bootstrap is safe to proceed
+	isBootstrapSafe := clusterState.IsBootstrapSafe(c.config)
+	clusterState.BootstrapSafe = isBootstrapSafe
+
+	if !isBootstrapSafe {
+		// UNKNOWN_STATE - controller should crash immediately per README.md
+		log.Printf("❌ CONTROLLER CRASH: UNKNOWN_STATE detected")
+		log.Printf("❌ Cluster is in an unknown state that requires manual intervention")
+		log.Printf("🔧 Recovery: Human must fix the cluster before controller can start")
+		return fmt.Errorf("controller crash: cluster in UNKNOWN_STATE, human intervention required")
+	}
+
+	// Safe states - proceed with bootstrap and determine target main index
+	switch stateType {
+	case INITIAL_STATE:
+		log.Printf("✅ SAFE: Fresh cluster state detected")
+		log.Printf("All pods are main or no role data yet - no data divergence risk")
+		log.Printf("Will apply deterministic role assignment")
+
+	case OPERATIONAL_STATE:
+		log.Printf("✅ SAFE: Operational cluster state detected")
+		log.Printf("Exactly one main found - will learn existing topology")
+		if len(mainPods) > 0 {
+			log.Printf("Current main: %s", mainPods[0])
+		}
+	}
+
+	// Determine target main index (0 or 1)
+	targetMainIndex, err := clusterState.DetermineMainIndex(c.config)
+	if err != nil {
+		return fmt.Errorf("failed to determine target main index: %w", err)
+	}
+
+	// Target main index is now managed in controller state (targetMainIndex)
+	log.Printf("Target main index determined: %d (pod: %s)",
+		targetMainIndex, c.config.GetPodName(targetMainIndex))
+
+	return nil
+}
+
+// applyDeterministicRoles applies roles for fresh/initial clusters
+func (c *MemgraphController) applyDeterministicRoles(clusterState *ClusterState) {
+	if c.cluster != nil {
+		c.cluster.applyDeterministicRoles(clusterState)
+	}
+}
+
+// learnExistingTopology learns the current operational topology
+func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
+	if c.cluster != nil {
+		c.cluster.learnExistingTopology(clusterState)
+	}
+}
+
+// selectMainAfterQuerying selects main based on actual Memgraph replication state
+func (c *MemgraphController) selectMainAfterQuerying(ctx context.Context, clusterState *ClusterState) {
+	if c.cluster != nil {
+		c.cluster.selectMainAfterQuerying(ctx, clusterState)
+	}
 }
 
 func (c *MemgraphController) TestConnection() error {
@@ -135,7 +215,7 @@ func (c *MemgraphController) TestConnection() error {
 // detectMainFailover detects if current main has failed and promotion is needed
 
 func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error {
-	clusterState, err := c.podDiscovery.DiscoverPods(ctx)
+	clusterState, err := c.cluster.DiscoverPods(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to discover pods for connection testing: %w", err)
 	}
@@ -190,7 +270,7 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 	log.Println("Starting operational reconciliation cycle...")
 
 	// Discover current cluster state (operational mode only)
-	clusterState, err := c.discoverOperationalCluster(ctx)
+	clusterState, err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
 	if err != nil {
 		return fmt.Errorf("failed to discover cluster state: %w", err)
 	}
@@ -203,7 +283,7 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 	log.Printf("Current cluster state discovered:")
 	log.Printf("  - Total pods: %d", len(clusterState.Pods))
 	log.Printf("  - Current main: %s", clusterState.CurrentMain)
-	log.Printf("  - Target main index: %d", c.getTargetMainIndex())
+	log.Printf("  - Target main index: %d", c.cluster.getTargetMainIndex())
 
 	// Log pod states
 	for podName, podInfo := range clusterState.Pods {
@@ -218,11 +298,6 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 			log.Printf("❌ Main failover failed: %v", err)
 			// Continue with topology enforcement to handle partial failures
 		}
-	}
-
-	// Enforce expected topology against drift
-	if err := c.enforceExpectedTopology(ctx, clusterState); err != nil {
-		return fmt.Errorf("failed to enforce expected topology: %w", err)
 	}
 
 	// Configure replication if needed
@@ -268,7 +343,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	log.Println("Collecting cluster status for API...")
 
 	// Discover current cluster state with all Memgraph queries
-	clusterState, err := c.discoverOperationalCluster(ctx)
+	clusterState, err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover cluster state: %w", err)
 	}
@@ -421,31 +496,6 @@ func (c *MemgraphController) GetLeaderElection() *LeaderElection {
 }
 
 // saveControllerStateAfterBootstrap persists the controller state after successful bootstrap
-func (c *MemgraphController) saveControllerStateAfterBootstrap(ctx context.Context) error {
-	if !c.IsLeader() {
-		log.Println("Not leader, skipping state save")
-		return nil
-	}
-
-	c.mu.RLock()
-	targetMainIndex := c.targetMainIndex
-	c.mu.RUnlock()
-
-	if targetMainIndex < 0 {
-		return fmt.Errorf("cannot save state: target main index not set")
-	}
-
-	state := &ControllerState{
-		MasterIndex: targetMainIndex,
-	}
-
-	if err := c.stateManager.SaveState(ctx, state); err != nil {
-		return fmt.Errorf("failed to save controller state: %w", err)
-	}
-
-	log.Printf("✅ Saved controller state after bootstrap: masterIndex=%d", targetMainIndex)
-	return nil
-}
 
 // loadControllerStateOnStartup loads persisted state and determines startup phase
 func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) error {
@@ -467,9 +517,6 @@ func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) e
 	}
 
 	// If state exists, assume bootstrap is completed and start in OPERATIONAL phase
-	c.mu.Lock()
-	c.targetMainIndex = state.MasterIndex
-	c.mu.Unlock()
 
 	// Transition gateway to operational phase for non-leaders per DESIGN.md
 	if c.gatewayServer != nil {
@@ -482,39 +529,42 @@ func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) e
 	return nil
 }
 
-// getTargetMainIndex returns the current target main index
+// getTargetMainIndex returns the current target main index from state manager
 func (c *MemgraphController) getTargetMainIndex() int {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
-	return c.targetMainIndex
+	// Handle test cases where stateManager is nil
+	if c.stateManager == nil {
+		return -1 // Bootstrap phase / test scenario
+	}
+	
+	ctx := context.Background()
+	state, err := c.stateManager.LoadState(ctx)
+	if err != nil {
+		// Return -1 if no state available (bootstrap phase)
+		return -1
+	}
+	return state.MasterIndex
 }
 
-// updateTargetMainIndex synchronizes target main index across in-memory state and ConfigMap
-func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, newTargetIndex int, reason string) error {
-	c.mu.Lock()
-	oldTargetIndex := c.targetMainIndex
-	c.targetMainIndex = newTargetIndex
-	c.mu.Unlock()
-
-	// Only persist to ConfigMap if stateManager is available (not in tests)
-	if c.stateManager != nil {
-		// Create updated state for persistence
-		state := &ControllerState{
-			MasterIndex: newTargetIndex,
-		}
-
-		// Save to ConfigMap for persistence
-		if err := c.stateManager.SaveState(ctx, state); err != nil {
-			// Rollback in-memory state on failure
-			c.mu.Lock()
-			c.targetMainIndex = oldTargetIndex
-			c.mu.Unlock()
-			return fmt.Errorf("failed to persist target main index change: %w", err)
-		}
+// getCurrentMainFromState gets the current main pod name from state manager
+func (c *MemgraphController) getCurrentMainFromState(ctx context.Context) (string, error) {
+	// Handle test cases where stateManager is nil
+	if c.stateManager == nil {
+		return "", fmt.Errorf("no state manager available")
 	}
+	
+	state, err := c.stateManager.LoadState(ctx)
+	if err != nil {
+		return "", err
+	}
+	return c.config.GetPodName(state.MasterIndex), nil
+}
 
-	log.Printf("✅ Updated target main index: %d -> %d (%s)", oldTargetIndex, newTargetIndex, reason)
-	return nil
+// updateTargetMainIndex updates target main index in state manager
+func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, newTargetIndex int, reason string) error {
+	if c.cluster != nil {
+		return c.cluster.updateTargetMainIndex(ctx, newTargetIndex, reason)
+	}
+	return fmt.Errorf("cluster not initialized")
 }
 
 // onPodAdd handles pod addition events
@@ -549,9 +599,12 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 	log.Printf("Pod %s deleted, invalidated connection", pod.Name)
 
 	// Check if the deleted pod is the current main - trigger IMMEDIATE failover
-	c.mu.RLock()
-	currentMain := c.lastKnownMain
-	c.mu.RUnlock()
+	ctx := context.Background()
+	currentMain, err := c.getCurrentMainFromState(ctx)
+	if err != nil {
+		log.Printf("Could not get current main from state: %v", err)
+		currentMain = ""
+	}
 	
 	if currentMain != "" && pod.Name == currentMain {
 		log.Printf("🚨 MAIN POD DELETED: %s - triggering IMMEDIATE failover", pod.Name)
@@ -594,9 +647,7 @@ func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 	}
 	
 	// Check if this is different from our current state
-	c.mu.RLock()
-	currentIndex := c.targetMainIndex
-	c.mu.RUnlock()
+	currentIndex := c.cluster.getTargetMainIndex()
 	
 	if currentIndex != newMasterIndex {
 		log.Printf("Target main index changed: %d -> %d", currentIndex, newMasterIndex)
@@ -634,9 +685,7 @@ func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 	}
 	
 	// Compare with our current state (not old ConfigMap)
-	c.mu.RLock()
-	currentIndex := c.targetMainIndex
-	c.mu.RUnlock()
+	currentIndex := c.cluster.getTargetMainIndex()
 	
 	if currentIndex == newMasterIndex {
 		// No change from our perspective, ignore
@@ -669,10 +718,12 @@ func (c *MemgraphController) handleTargetMainChanged(newMasterIndex int) {
 		return
 	}
 	
-	c.mu.Lock()
-	oldTargetIndex := c.targetMainIndex
-	oldLastKnownMain := c.lastKnownMain
-	c.mu.Unlock()
+	oldTargetIndex := c.cluster.getTargetMainIndex()
+	
+	oldLastKnownMain := ""
+	if oldTargetIndex >= 0 {
+		oldLastKnownMain = c.config.GetPodName(oldTargetIndex)
+	}
 	
 	// Check if this is actually a change
 	if oldTargetIndex == newMasterIndex {
@@ -691,10 +742,7 @@ func (c *MemgraphController) handleTargetMainChanged(newMasterIndex int) {
 		newLastKnownMain = c.config.GetPodName(newMasterIndex)
 	}
 	
-	c.mu.Lock()
-	c.targetMainIndex = newMasterIndex
-	c.lastKnownMain = newLastKnownMain
-	c.mu.Unlock()
+	// Update state directly via state manager (for non-leaders)
 	
 	log.Printf("   ✅ State updated: targetMainIndex=%d, lastKnownMain=%s -> %s", 
 		newMasterIndex, oldLastKnownMain, newLastKnownMain)
@@ -1032,20 +1080,10 @@ func (c *MemgraphController) GetControllerStatus() map[string]interface{} {
 func (c *MemgraphController) GetCurrentMainEndpoint(ctx context.Context) (string, error) {
 	var currentMain string
 	
-	if c.IsLeader() {
-		// Leaders use their in-memory state
-		c.mu.RLock()
-		currentMain = c.lastKnownMain
-		c.mu.RUnlock()
-	} else {
-		// Non-leaders read ConfigMap to get TargetMainPod per DESIGN.md
-		state, err := c.stateManager.LoadState(ctx)
-		if err != nil {
-			return "", fmt.Errorf("non-leader failed to read ConfigMap state: %w", err)
-		}
-		// State existence implies bootstrap is completed
-		// Convert MasterIndex to pod name
-		currentMain = c.config.GetPodName(state.MasterIndex)
+	// Both leaders and non-leaders read from ConfigMap to ensure consistency
+	currentMain, err := c.getCurrentMainFromState(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to read current main from state: %w", err)
 	}
 
 	if currentMain == "" {
@@ -1067,24 +1105,6 @@ func (c *MemgraphController) GetCurrentMainEndpoint(ctx context.Context) (string
 }
 
 // updateGatewayMain notifies the gateway of main changes
-func (c *MemgraphController) updateGatewayMain() {
-	// Skip if gateway server is not initialized (e.g., in tests)
-	if c.gatewayServer == nil {
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	endpoint, err := c.GetCurrentMainEndpoint(ctx)
-	if err != nil {
-		log.Printf("Gateway: Failed to get main endpoint for notification: %v", err)
-		return
-	}
-
-	// Update the gateway's main endpoint
-	c.gatewayServer.SetCurrentMain(endpoint)
-}
 
 // handleImmediateFailover handles immediate failover triggered by pod deletion events
 func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
@@ -1097,7 +1117,7 @@ func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
 	
 	// Discover cluster state to find SYNC replica
 	log.Printf("🔍 Discovering cluster state for immediate failover...")
-	clusterState, err := c.discoverOperationalCluster(ctx)
+	clusterState, err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
 	if err != nil {
 		log.Printf("❌ CRITICAL: Failed to discover cluster state for immediate failover: %v", err)
 		return
@@ -1121,163 +1141,6 @@ func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
 // handleMainFailurePromotion promotes SYNC replica when main fails during operations
 
 // promoteToMain promotes a pod to main role
-func (c *MemgraphController) promoteToMain(podName string) error {
-	log.Printf("Promoting pod %s to main role", podName)
 
-	// Discover current cluster state to get pod information
-	ctx := context.Background()
-	clusterState, err := c.podDiscovery.DiscoverPods(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to discover pods: %w", err)
-	}
 
-	// Get pod information from cluster state
-	podInfo, exists := clusterState.Pods[podName]
-	if !exists {
-		return fmt.Errorf("pod %s not found in cluster state", podName)
-	}
 
-	// Use the bolt address from pod info
-	boltAddress := podInfo.BoltAddress
-
-	// Execute promotion command using MemgraphClient pattern
-	err = WithRetry(ctx, func() error {
-		driver, err := c.memgraphClient.connectionPool.GetDriver(ctx, boltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
-		}
-
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				log.Printf("Warning: failed to close session for %s: %v", boltAddress, closeErr)
-			}
-		}()
-
-		// Execute promotion command
-		_, err = session.Run(ctx, "SET REPLICATION ROLE TO MAIN;", nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute SET REPLICATION ROLE TO MAIN: %w", err)
-		}
-
-		return nil
-	}, c.memgraphClient.retryConfig)
-
-	if err != nil {
-		return fmt.Errorf("failed to promote %s to main: %w", podName, err)
-	}
-
-	log.Printf("✅ Successfully promoted %s to main role", podName)
-	return nil
-}
-
-// enforceMainAuthority enforces the current main and demotes incorrect mains
-func (c *MemgraphController) enforceMainAuthority(clusterState *ClusterState, mainPods []string) error {
-	// Determine which main to keep (controller authority)
-	correctMain := c.lastKnownMain
-	if correctMain == "" {
-		// Fallback: use lower-index precedence if no known main
-		correctMain = c.selectLowestIndexMain(mainPods)
-	}
-
-	log.Printf("Enforcing main authority: correct_main=%s, current_mains=%v", correctMain, mainPods)
-
-	// Demote all incorrect mains
-	var demotedPods []string
-	for _, mainPod := range mainPods {
-		if mainPod != correctMain {
-			log.Printf("Demoting incorrect main %s to replica", mainPod)
-			if err := c.demoteToReplica(mainPod); err != nil {
-				log.Printf("Warning: failed to demote %s: %v", mainPod, err)
-				continue
-			}
-			demotedPods = append(demotedPods, mainPod)
-		}
-	}
-
-	// Update controller state tracking using consolidated method
-	newMainIndex := c.config.ExtractPodIndex(correctMain)
-	if err := c.updateTargetMainIndex(context.Background(), newMainIndex,
-		fmt.Sprintf("Split-brain resolved: %s is main", correctMain)); err != nil {
-		log.Printf("Warning: failed to update target main index: %v", err)
-	}
-	c.lastKnownMain = correctMain
-
-	// Notify gateway of main change (async to avoid blocking reconciliation)
-	go c.updateGatewayMain()
-
-	log.Printf("✅ Split-brain resolved: main=%s, demoted=%v", correctMain, demotedPods)
-	return nil
-}
-
-// selectLowestIndexMain selects the main with the lowest pod index
-func (c *MemgraphController) selectLowestIndexMain(mainPods []string) string {
-	if len(mainPods) == 0 {
-		return ""
-	}
-
-	lowestMain := mainPods[0]
-	lowestIndex := c.config.ExtractPodIndex(lowestMain)
-
-	for _, main := range mainPods[1:] {
-		index := c.config.ExtractPodIndex(main)
-		if index >= 0 && index < lowestIndex {
-			lowestMain = main
-			lowestIndex = index
-		}
-	}
-
-	log.Printf("Lower-index precedence: selected %s (index=%d) from %v", lowestMain, lowestIndex, mainPods)
-	return lowestMain
-}
-
-// demoteToReplica demotes a pod from main to replica role
-func (c *MemgraphController) demoteToReplica(podName string) error {
-	log.Printf("Demoting pod %s from main to replica", podName)
-
-	// Discover current cluster state to get pod information
-	ctx := context.Background()
-	clusterState, err := c.podDiscovery.DiscoverPods(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to discover pods: %w", err)
-	}
-
-	// Get pod information from cluster state
-	podInfo, exists := clusterState.Pods[podName]
-	if !exists {
-		return fmt.Errorf("pod %s not found in cluster state", podName)
-	}
-
-	// Use the bolt address from pod info
-	boltAddress := podInfo.BoltAddress
-
-	// Execute demotion command
-	err = WithRetry(ctx, func() error {
-		driver, err := c.memgraphClient.connectionPool.GetDriver(ctx, boltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
-		}
-
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				log.Printf("Warning: failed to close session for %s: %v", boltAddress, closeErr)
-			}
-		}()
-
-		// Execute demotion command with required port for Memgraph Community Edition
-		_, err = session.Run(ctx, "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;", nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute SET REPLICATION ROLE TO REPLICA: %w", err)
-		}
-
-		return nil
-	}, c.memgraphClient.retryConfig)
-
-	if err != nil {
-		return fmt.Errorf("failed to demote %s to replica: %w", podName, err)
-	}
-
-	log.Printf("✅ Successfully demoted %s to replica role", podName)
-	return nil
-}

@@ -23,7 +23,7 @@ make test
 
 ## Standard Development Process
 
-For a new feature, our development workflow follows this pattern:
+**Any code change must go through these steps**
 
 1. Run unit tests. If not all tests passed, pause and confirm with huamn whether claude should fix unit tests first.
 2. Implement new feature.

@@ -18,6 +18,14 @@ type ControllerState struct {
 	MasterIndex int `json:"masterIndex"`
 }
 
+// StateManagerInterface defines the interface for state management
+type StateManagerInterface interface {
+	LoadState(ctx context.Context) (*ControllerState, error)
+	SaveState(ctx context.Context, state *ControllerState) error
+	StateExists(ctx context.Context) (bool, error)
+	ConfigMapName() string
+}
+
 // StateManager manages controller state persistence using ConfigMaps
 type StateManager struct {
 	clientset     kubernetes.Interface

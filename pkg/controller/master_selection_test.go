@@ -5,6 +5,7 @@ import (
 	"time"
 )
 
+
 func TestMainFailoverDetection(t *testing.T) {
 	tests := []struct {
 		name             string
@@ -61,9 +62,13 @@ func TestMainFailoverDetection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set lastKnownMain to match CurrentMain for the test
-			// This simulates the operational phase where the controller has been tracking the main
-			controller.lastKnownMain = tt.clusterState.CurrentMain
+			// Set up mock state manager based on the current main in cluster state
+			if tt.clusterState.CurrentMain != "" {
+				mainIndex := config.ExtractPodIndex(tt.clusterState.CurrentMain)
+				controller.stateManager = NewMockStateManager(mainIndex)
+			} else {
+				controller.stateManager = NewEmptyMockStateManager()
+			}
 			
 			result := controller.detectMainFailover(tt.clusterState)
 			if result != tt.expectedFailover {

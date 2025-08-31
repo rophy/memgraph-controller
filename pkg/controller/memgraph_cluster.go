@@ -10,21 +10,28 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-type PodDiscovery struct {
-	clientset kubernetes.Interface
-	config    *Config
+// MemgraphCluster handles all Memgraph cluster-specific operations
+type MemgraphCluster struct {
+	clientset      kubernetes.Interface
+	config         *Config
+	memgraphClient *MemgraphClient
+	stateManager   StateManagerInterface
 }
 
-func NewPodDiscovery(clientset kubernetes.Interface, config *Config) *PodDiscovery {
-	return &PodDiscovery{
-		clientset: clientset,
-		config:    config,
+// NewMemgraphCluster creates a new MemgraphCluster instance
+func NewMemgraphCluster(clientset kubernetes.Interface, config *Config, memgraphClient *MemgraphClient, stateManager StateManagerInterface) *MemgraphCluster {
+	return &MemgraphCluster{
+		clientset:      clientset,
+		config:         config,
+		memgraphClient: memgraphClient,
+		stateManager:   stateManager,
 	}
 }
 
-func (pd *PodDiscovery) DiscoverPods(ctx context.Context) (*ClusterState, error) {
-	pods, err := pd.clientset.CoreV1().Pods(pd.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/name=" + pd.config.AppName,
+// DiscoverPods discovers running pods with the configured app name
+func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) (*ClusterState, error) {
+	pods, err := mc.clientset.CoreV1().Pods(mc.config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: "app.kubernetes.io/name=" + mc.config.AppName,
 	})
 	if err != nil {
 		return nil, err
@@ -61,8 +68,9 @@ func (pd *PodDiscovery) DiscoverPods(ctx context.Context) (*ClusterState, error)
 	return clusterState, nil
 }
 
-func (pd *PodDiscovery) GetPodsByLabel(ctx context.Context, labelSelector string) (*ClusterState, error) {
-	pods, err := pd.clientset.CoreV1().Pods(pd.config.Namespace).List(ctx, metav1.ListOptions{
+// GetPodsByLabel discovers pods matching the given label selector
+func (mc *MemgraphCluster) GetPodsByLabel(ctx context.Context, labelSelector string) (*ClusterState, error) {
+	pods, err := mc.clientset.CoreV1().Pods(mc.config.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
 	if err != nil {
@@ -79,24 +87,58 @@ func (pd *PodDiscovery) GetPodsByLabel(ctx context.Context, labelSelector string
 	return clusterState, nil
 }
 
-// DiscoverCluster discovers the current state of the Memgraph cluster
-// DiscoverCluster method removed - replaced by simplified ConfigMap-based logic
-// Bootstrap discovery is now handled by discoverClusterAndCreateConfigMap()
-// Operational discovery is handled by discoverOperationalCluster()
+// getTargetMainIndex gets the target main index from state manager
+func (mc *MemgraphCluster) getTargetMainIndex() int {
+	if mc.stateManager == nil {
+		return -1 // Bootstrap phase / test scenario
+	}
+	ctx := context.Background()
+	state, err := mc.stateManager.LoadState(ctx)
+	if err != nil {
+		return -1
+	}
+	return state.MasterIndex
+}
 
-// discoverOperationalCluster handles operational phase discovery (existing logic)
-func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*ClusterState, error) {
-	log.Println("Discovering Memgraph cluster in operational phase...")
+// updateTargetMainIndex updates the target main index in ConfigMap
+func (mc *MemgraphCluster) updateTargetMainIndex(ctx context.Context, newIndex int, reason string) error {
+	if mc.stateManager == nil {
+		return fmt.Errorf("state manager not initialized")
+	}
 
-	clusterState, err := c.podDiscovery.DiscoverPods(ctx)
+	// Load current state or create new one
+	state, err := mc.stateManager.LoadState(ctx)
+	if err != nil {
+		// Create new state if none exists
+		state = &ControllerState{
+			MasterIndex: newIndex,
+		}
+	} else {
+		// Update existing state
+		oldIndex := state.MasterIndex
+		state.MasterIndex = newIndex
+		log.Printf("✅ Updated target main index: %d -> %d (%s)", oldIndex, newIndex, reason)
+	}
+
+	// Save updated state
+	return mc.stateManager.SaveState(ctx, state)
+}
+
+// RefreshClusterInfo refreshes cluster state information in operational phase
+func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncReplicaInfoFunc func(*ClusterState), detectMainFailoverFunc func(*ClusterState) bool, handleMainFailoverFunc func(context.Context, *ClusterState) error) (*ClusterState, error) {
+	log.Println("Refreshing Memgraph cluster information...")
+
+	clusterState, err := mc.DiscoverPods(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover pods: %w", err)
 	}
 
 	// Update connection pool with fresh pod IPs
-	for _, podInfo := range clusterState.Pods {
-		if podInfo.Pod != nil && podInfo.Pod.Status.PodIP != "" {
-			c.memgraphClient.connectionPool.UpdatePodIP(podInfo.Name, podInfo.Pod.Status.PodIP)
+	if mc.memgraphClient != nil {
+		for _, podInfo := range clusterState.Pods {
+			if podInfo.Pod != nil && podInfo.Pod.Status.PodIP != "" {
+				mc.memgraphClient.connectionPool.UpdatePodIP(podInfo.Name, podInfo.Pod.Status.PodIP)
+			}
 		}
 	}
 
@@ -128,7 +170,7 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 		log.Printf("Querying replication role for pod %s at %s", podName, podInfo.BoltAddress)
 
 		// Query replication role with retry
-		role, err := c.memgraphClient.QueryReplicationRoleWithRetry(ctx, podInfo.BoltAddress)
+		role, err := mc.memgraphClient.QueryReplicationRoleWithRetry(ctx, podInfo.BoltAddress)
 		if err != nil {
 			log.Printf("Failed to query replication role for pod %s: %v", podName, err)
 			queryErrors = append(queryErrors, fmt.Errorf("pod %s role query: %w", podName, err))
@@ -142,7 +184,7 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 		if role.Role == "main" {
 			log.Printf("Querying replicas for main pod %s", podName)
 
-			replicasResp, err := c.memgraphClient.QueryReplicasWithRetry(ctx, podInfo.BoltAddress)
+			replicasResp, err := mc.memgraphClient.QueryReplicasWithRetry(ctx, podInfo.BoltAddress)
 			if err != nil {
 				log.Printf("Failed to query replicas for pod %s: %v", podName, err)
 				queryErrors = append(queryErrors, fmt.Errorf("pod %s replicas query: %w", podName, err))
@@ -181,16 +223,20 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 		successCount++
 	}
 
-	// Update SYNC replica information based on actual main's replica data
-	c.updateSyncReplicaInfo(clusterState)
+	// Update SYNC replica information based on actual main's replica data (via callback)
+	if updateSyncReplicaInfoFunc != nil {
+		updateSyncReplicaInfoFunc(clusterState)
+	}
 
-	// Operational phase - detect and handle main failover scenarios  
+	// Operational phase - detect and handle main failover scenarios (via callbacks)
 	log.Println("Checking for main failover scenarios...")
-	if c.detectMainFailover(clusterState) {
+	if detectMainFailoverFunc != nil && detectMainFailoverFunc(clusterState) {
 		log.Printf("Main failover detected - handling failover...")
-		if err := c.handleMainFailover(ctx, clusterState); err != nil {
-			log.Printf("⚠️  Failover handling failed: %v", err)
-			// Don't crash - log warning and continue as per design
+		if handleMainFailoverFunc != nil {
+			if err := handleMainFailoverFunc(ctx, clusterState); err != nil {
+				log.Printf("⚠️  Failover handling failed: %v", err)
+				// Don't crash - log warning and continue as per design
+			}
 		}
 	}
 	
@@ -199,7 +245,7 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 	clusterState.StateType = OPERATIONAL_STATE
 
 	// Validate controller state consistency
-	if warnings := clusterState.ValidateControllerState(c.config); len(warnings) > 0 {
+	if warnings := clusterState.ValidateControllerState(mc.config); len(warnings) > 0 {
 		log.Printf("⚠️  Controller state validation warnings:")
 		for _, warning := range warnings {
 			log.Printf("  - %s", warning)
@@ -208,7 +254,7 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 
 	// NOW select main based on actual Memgraph state (not pod labels)
 	log.Println("Selecting main based on actual Memgraph replication state...")
-	c.selectMainAfterQuerying(ctx, clusterState)
+	mc.selectMainAfterQuerying(ctx, clusterState)
 
 	// Log summary of query results
 	log.Printf("Cluster discovery complete: %d/%d pods successfully queried",
@@ -224,87 +270,27 @@ func (c *MemgraphController) discoverOperationalCluster(ctx context.Context) (*C
 	return clusterState, nil
 }
 
-// performBootstrapValidation validates cluster state during bootstrap phase
-func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterState) error {
-	// Classify the current cluster state
-	oldStateType := clusterState.StateType
-	stateType := clusterState.ClassifyClusterState(c.config)
-	clusterState.StateType = stateType
-
-	// Log state transition if changed
-	clusterState.LogStateTransition(oldStateType, "bootstrap classification")
-
-	log.Printf("Bootstrap validation: cluster state classified as %s", stateType.String())
-
-	// Log pod role distribution for debugging
-	mainPods := clusterState.GetMainPods()
-	replicaPods := clusterState.GetReplicaPods()
-	log.Printf("Pod role distribution: %d main pods %v, %d replica pods %v",
-		len(mainPods), mainPods, len(replicaPods), replicaPods)
-
-
-	// Check if bootstrap is safe to proceed
-	isBootstrapSafe := clusterState.IsBootstrapSafe(c.config)
-	clusterState.BootstrapSafe = isBootstrapSafe
-
-	if !isBootstrapSafe {
-		// UNKNOWN_STATE - controller should crash immediately per README.md
-		log.Printf("❌ CONTROLLER CRASH: UNKNOWN_STATE detected")
-		log.Printf("❌ Cluster is in an unknown state that requires manual intervention")
-		log.Printf("🔧 Recovery: Human must fix the cluster before controller can start")
-		return fmt.Errorf("controller crash: cluster in UNKNOWN_STATE, human intervention required")
-	}
-
-	// Safe states - proceed with bootstrap and determine target main index
-	switch stateType {
-	case INITIAL_STATE:
-		log.Printf("✅ SAFE: Fresh cluster state detected")
-		log.Printf("All pods are main or no role data yet - no data divergence risk")
-		log.Printf("Will apply deterministic role assignment")
-
-	case OPERATIONAL_STATE:
-		log.Printf("✅ SAFE: Operational cluster state detected")
-		log.Printf("Exactly one main found - will learn existing topology")
-		log.Printf("Current main: %s", mainPods[0])
-	}
-
-	// Determine target main index (0 or 1)
-	targetMainIndex, err := clusterState.DetermineMainIndex(c.config)
-	if err != nil {
-		return fmt.Errorf("failed to determine target main index: %w", err)
-	}
-
-	// Target main index is now managed in controller state (targetMainIndex)
-	log.Printf("Target main index determined: %d (pod: %s)",
-		targetMainIndex, c.config.GetPodName(targetMainIndex))
-
-	return nil
-}
-
-
 // selectMainAfterQuerying selects main based on actual Memgraph replication state
-func (c *MemgraphController) selectMainAfterQuerying(ctx context.Context, clusterState *ClusterState) {
+func (mc *MemgraphCluster) selectMainAfterQuerying(ctx context.Context, clusterState *ClusterState) {
 	// After bootstrap validation, we now have authority to make decisions
 	clusterState.IsBootstrapPhase = false
 
 	// Enhanced main selection using controller state authority
-	targetMainIndex := c.getTargetMainIndex()
+	targetMainIndex := mc.getTargetMainIndex()
 	log.Printf("Enhanced main selection: state=%s, target_index=%d",
 		clusterState.StateType.String(), targetMainIndex)
 
 	// Use controller state authority based on cluster state
 	switch clusterState.StateType {
 	case INITIAL_STATE:
-		c.applyDeterministicRoles(clusterState)
+		mc.applyDeterministicRoles(clusterState)
 	case OPERATIONAL_STATE:
-		c.learnExistingTopology(clusterState)
+		mc.learnExistingTopology(clusterState)
 	default:
-		// For other states, apply enhanced main selection logic
-		c.enhancedMainSelection(ctx, clusterState)
+		// For unknown states, use simple fallback as per DESIGN.md
+		log.Printf("Unknown cluster state %s - using deterministic fallback", clusterState.StateType)
+		mc.applyDeterministicRoles(clusterState)
 	}
-
-	// Validate main selection result
-	c.validateMainSelection(ctx, clusterState)
 
 	// Log comprehensive cluster health summary
 	healthSummary := clusterState.GetClusterHealthSummary()
@@ -312,12 +298,12 @@ func (c *MemgraphController) selectMainAfterQuerying(ctx context.Context, cluste
 }
 
 // applyDeterministicRoles applies roles for fresh/initial clusters
-func (c *MemgraphController) applyDeterministicRoles(clusterState *ClusterState) {
+func (mc *MemgraphCluster) applyDeterministicRoles(clusterState *ClusterState) {
 	log.Printf("Applying deterministic role assignment for fresh cluster")
 
 	// Use the determined target main index
-	targetMainIndex := c.getTargetMainIndex()
-	targetMainName := c.config.GetPodName(targetMainIndex)
+	targetMainIndex := mc.getTargetMainIndex()
+	targetMainName := mc.config.GetPodName(targetMainIndex)
 	clusterState.CurrentMain = targetMainName
 
 	log.Printf("Deterministic main assignment: %s (index %d)",
@@ -325,7 +311,7 @@ func (c *MemgraphController) applyDeterministicRoles(clusterState *ClusterState)
 
 	// Log planned topology
 	syncReplicaIndex := 1 - targetMainIndex // 0->1, 1->0
-	syncReplicaName := c.config.GetPodName(syncReplicaIndex)
+	syncReplicaName := mc.config.GetPodName(syncReplicaIndex)
 
 	log.Printf("Planned topology:")
 	log.Printf("  Main: %s (index %d)", targetMainName, targetMainIndex)
@@ -342,7 +328,7 @@ func (c *MemgraphController) applyDeterministicRoles(clusterState *ClusterState)
 }
 
 // learnExistingTopology learns the current operational topology
-func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
+func (mc *MemgraphCluster) learnExistingTopology(clusterState *ClusterState) {
 	log.Printf("Learning existing operational topology")
 
 	mainPods := clusterState.GetMainPods()
@@ -351,16 +337,10 @@ func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
 		clusterState.CurrentMain = currentMain
 		log.Printf("Learned existing main: %s", currentMain)
 
-		// Track last known main for operational phase detection
-		c.lastKnownMain = currentMain
-
-		// Notify gateway of main endpoint (async to avoid blocking reconciliation)
-		go c.updateGatewayMain()
-
 		// Extract current main index for tracking using consolidated method
-		currentMainIndex := c.config.ExtractPodIndex(currentMain)
+		currentMainIndex := mc.config.ExtractPodIndex(currentMain)
 		if currentMainIndex >= 0 {
-			if err := c.updateTargetMainIndex(context.Background(), currentMainIndex,
+			if err := mc.updateTargetMainIndex(context.Background(), currentMainIndex,
 				fmt.Sprintf("Updating from discovered main %s", currentMain)); err != nil {
 				log.Printf("Warning: failed to update target main index: %v", err)
 			} else {
@@ -381,9 +361,10 @@ func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
 			len(mainPods), mainPods)
 
 		// Use the determined target main as fallback
-		targetMainIndex := c.getTargetMainIndex()
-	targetMainName := c.config.GetPodName(targetMainIndex)
+		targetMainIndex := mc.getTargetMainIndex()
+		targetMainName := mc.config.GetPodName(targetMainIndex)
 		clusterState.CurrentMain = targetMainName
 		log.Printf("Using determined target main as fallback: %s", targetMainName)
 	}
 }
+

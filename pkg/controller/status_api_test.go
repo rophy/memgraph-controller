@@ -273,7 +273,7 @@ func TestHTTPServerRootEndpoint(t *testing.T) {
 		t.Fatal("Endpoints should be an array")
 	}
 
-	expectedEndpoints := []string{"/api/v1/status", "/api/v1/leadership", "/health"}
+	expectedEndpoints := []string{"/api/v1/status", "/api/v1/leadership", "/health", "/livez", "/readyz"}
 	if len(endpoints) != len(expectedEndpoints) {
 		t.Errorf("Expected %d endpoints, got %d", len(expectedEndpoints), len(endpoints))
 	}

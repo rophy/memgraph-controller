@@ -36,6 +36,8 @@ func NewHTTPServer(controller *MemgraphController, config *Config) *HTTPServer {
 	mux.HandleFunc("/api/v1/status", httpServer.handleStatus)
 	mux.HandleFunc("/api/v1/leadership", httpServer.handleLeadership)
 	mux.HandleFunc("/health", httpServer.handleHealth)
+	mux.HandleFunc("/livez", httpServer.handleLiveness)
+	mux.HandleFunc("/readyz", httpServer.handleReadiness)
 	mux.HandleFunc("/", httpServer.handleRoot)
 
 	return httpServer
@@ -201,9 +203,55 @@ func (h *HTTPServer) handleRoot(w http.ResponseWriter, r *http.Request) {
 			"/api/v1/status",
 			"/api/v1/leadership",
 			"/health",
+			"/livez",
+			"/readyz",
 		},
 		"timestamp": time.Now(),
 	}
 
 	json.NewEncoder(w).Encode(response)
+}
+
+// handleLiveness handles GET /livez requests for Kubernetes liveness probes
+// Returns 200 OK if the controller process is running and healthy
+func (h *HTTPServer) handleLiveness(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Basic liveness check - controller is alive if HTTP server is responding
+	// and controller is marked as running
+	if !h.controller.IsRunning() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("Controller not running"))
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
+}
+
+// handleReadiness handles GET /readyz requests for Kubernetes readiness probes
+// Returns 200 OK only if this pod is the current leader (for leader-only gateway)
+func (h *HTTPServer) handleReadiness(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Check if this pod is the leader
+	if !h.controller.IsLeader() {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		w.Write([]byte("Not leader"))
+		return
+	}
+
+	// Additional readiness checks could be added here:
+	// - Gateway server is running and healthy
+	// - Can connect to Kubernetes API
+	// - Can connect to Memgraph pods
+	
+	w.WriteHeader(http.StatusOK)
+	w.Write([]byte("OK"))
 }

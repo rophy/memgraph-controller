@@ -162,7 +162,7 @@ controller:
   # Probes configuration
   livenessProbe:
     httpGet:
-      path: /health
+      path: /livez
       port: http
     initialDelaySeconds: 30
     periodSeconds: 10
@@ -171,7 +171,7 @@ controller:
   
   readinessProbe:
     httpGet:
-      path: /health
+      path: /readyz
       port: http
     initialDelaySeconds: 5
     periodSeconds: 5

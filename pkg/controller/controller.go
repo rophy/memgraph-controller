@@ -42,7 +42,6 @@ type MemgraphController struct {
 	cluster *MemgraphCluster
 
 	// In-memory cluster state for immediate event processing
-	lastKnownState   *ClusterState
 	stateMutex       sync.RWMutex
 	stateLastUpdated time.Time
 
@@ -499,6 +498,11 @@ func (c *MemgraphController) IsLeader() bool {
 	c.leaderMu.RLock()
 	defer c.leaderMu.RUnlock()
 	return c.isLeader
+}
+
+// IsRunning returns true if this controller instance is running
+func (c *MemgraphController) IsRunning() bool {
+	return c.isRunning
 }
 
 // GetLeaderElection returns the leader election instance for API access

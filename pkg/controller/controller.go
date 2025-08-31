@@ -41,6 +41,11 @@ type MemgraphController struct {
 	// Cluster operations
 	cluster *MemgraphCluster
 
+	// In-memory cluster state for immediate event processing
+	lastKnownState   *ClusterState
+	stateMutex       sync.RWMutex
+	stateLastUpdated time.Time
+
 	// Controller loop state
 	isRunning     bool
 	mu            sync.RWMutex
@@ -117,27 +122,82 @@ func (c *MemgraphController) getStateManager() StateManagerInterface {
 	return c.cluster.GetStateManager()
 }
 
+// updateCachedState updates the in-memory cluster state for immediate event processing
+func (c *MemgraphController) updateCachedState(cluster *MemgraphCluster) {
+	c.stateMutex.Lock()
+	defer c.stateMutex.Unlock()
+	
+	// The cluster itself is now the cached state - just update timestamp
+	c.stateLastUpdated = time.Now()
+	
+	log.Printf("🔄 Updated cached cluster state: %d pods, main=%s", 
+		len(cluster.Pods), cluster.CurrentMain)
+}
+
+// getCachedState returns the cached cluster state for immediate event processing
+func (c *MemgraphController) getCachedState() (*MemgraphCluster, time.Time) {
+	c.stateMutex.RLock()
+	defer c.stateMutex.RUnlock()
+	
+	return c.cluster, c.stateLastUpdated
+}
+
+// isPodBecomeUnhealthy checks if a pod transitioned from healthy to unhealthy state
+func (c *MemgraphController) isPodBecomeUnhealthy(oldPod, newPod *v1.Pod) bool {
+	// Check if pod went from Running to non-Running state
+	if oldPod.Status.Phase == v1.PodRunning && newPod.Status.Phase != v1.PodRunning {
+		log.Printf("Pod %s phase changed: %s -> %s", newPod.Name, oldPod.Status.Phase, newPod.Status.Phase)
+		return true
+	}
+	
+	// Check if pod became unready (readiness probe failed)
+	oldReady := isPodReady(oldPod)
+	newReady := isPodReady(newPod)
+	if oldReady && !newReady {
+		log.Printf("Pod %s became unready (readiness probe failed)", newPod.Name)
+		return true
+	}
+	
+	// Check if pod IP was lost
+	if oldPod.Status.PodIP != "" && newPod.Status.PodIP == "" {
+		log.Printf("Pod %s lost IP address: %s -> empty", newPod.Name, oldPod.Status.PodIP)
+		return true
+	}
+	
+	return false
+}
+
+// isPodReady checks if a pod has the Ready condition set to True
+func isPodReady(pod *v1.Pod) bool {
+	for _, condition := range pod.Status.Conditions {
+		if condition.Type == v1.PodReady {
+			return condition.Status == v1.ConditionTrue
+		}
+	}
+	return false
+}
+
 // Delegation methods for backwards compatibility with tests
 
 
 // applyDeterministicRoles applies roles for fresh/initial clusters
-func (c *MemgraphController) applyDeterministicRoles(clusterState *ClusterState) {
+func (c *MemgraphController) applyDeterministicRoles(cluster *MemgraphCluster) {
 	if c.cluster != nil {
-		c.cluster.applyDeterministicRoles(clusterState)
+		c.cluster.applyDeterministicRoles()
 	}
 }
 
 // learnExistingTopology learns the current operational topology
-func (c *MemgraphController) learnExistingTopology(clusterState *ClusterState) {
+func (c *MemgraphController) learnExistingTopology(cluster *MemgraphCluster) {
 	if c.cluster != nil {
-		c.cluster.learnExistingTopology(clusterState)
+		c.cluster.learnExistingTopology()
 	}
 }
 
 // selectMainAfterQuerying selects main based on actual Memgraph replication state
-func (c *MemgraphController) selectMainAfterQuerying(ctx context.Context, clusterState *ClusterState) {
+func (c *MemgraphController) selectMainAfterQuerying(ctx context.Context, cluster *MemgraphCluster) {
 	if c.cluster != nil {
-		c.cluster.selectMainAfterQuerying(ctx, clusterState)
+		c.cluster.selectMainAfterQuerying(ctx)
 	}
 }
 
@@ -161,22 +221,22 @@ func (c *MemgraphController) TestConnection() error {
 // detectMainFailover detects if current main has failed and promotion is needed
 
 func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error {
-	clusterState, err := c.cluster.DiscoverPods(ctx)
+	err := c.cluster.DiscoverPods(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to discover pods for connection testing: %w", err)
 	}
 
-	if len(clusterState.Pods) == 0 {
+	if len(c.cluster.Pods) == 0 {
 		log.Println("No pods found for connection testing")
 		return nil
 	}
 
-	log.Printf("Testing Memgraph connections for %d pods...", len(clusterState.Pods))
+	log.Printf("Testing Memgraph connections for %d pods...", len(c.cluster.Pods))
 
 	var connectionErrors []error
 	successCount := 0
 
-	for podName, podInfo := range clusterState.Pods {
+	for podName, podInfo := range c.cluster.Pods {
 		if podInfo.BoltAddress == "" {
 			log.Printf("Skipping pod %s: no Bolt address", podName)
 			continue
@@ -198,7 +258,7 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 
 	// Log connection test summary
 	log.Printf("Connection testing complete: %d/%d pods connected successfully",
-		successCount, len(clusterState.Pods))
+		successCount, len(c.cluster.Pods))
 
 	if len(connectionErrors) > 0 {
 		log.Printf("Encountered %d connection errors:", len(connectionErrors))
@@ -216,43 +276,46 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 	log.Println("Starting operational reconciliation cycle...")
 
 	// Discover current cluster state (operational mode only)
-	clusterState, err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
+	err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
 	if err != nil {
 		return fmt.Errorf("failed to discover cluster state: %w", err)
 	}
 
-	if len(clusterState.Pods) == 0 {
+	// Update cached state for immediate event processing
+	c.updateCachedState(c.cluster)
+
+	if len(c.cluster.Pods) == 0 {
 		log.Println("No Memgraph pods found in cluster")
 		return nil
 	}
 
 	log.Printf("Current cluster state discovered:")
-	log.Printf("  - Total pods: %d", len(clusterState.Pods))
-	log.Printf("  - Current main: %s", clusterState.CurrentMain)
+	log.Printf("  - Total pods: %d", len(c.cluster.Pods))
+	log.Printf("  - Current main: %s", c.cluster.CurrentMain)
 	log.Printf("  - Target main index: %d", c.cluster.getTargetMainIndex())
 
 	// Log pod states
-	for podName, podInfo := range clusterState.Pods {
+	for podName, podInfo := range c.cluster.Pods {
 		log.Printf("  - Pod %s: State=%s, MemgraphRole=%s, Replicas=%d",
 			podName, podInfo.State, podInfo.MemgraphRole, len(podInfo.Replicas))
 	}
 
 	// Check for main failover first
-	if c.detectMainFailover(clusterState) {
+	if c.detectMainFailover(c.cluster) {
 		log.Printf("Main failover detected - initiating failover procedure...")
-		if err := c.handleMainFailover(ctx, clusterState); err != nil {
+		if err := c.handleMainFailover(ctx, c.cluster); err != nil {
 			log.Printf("❌ Main failover failed: %v", err)
 			// Continue with topology enforcement to handle partial failures
 		}
 	}
 
 	// Configure replication if needed
-	if err := c.ConfigureReplication(ctx, clusterState); err != nil {
+	if err := c.ConfigureReplication(ctx, c.cluster); err != nil {
 		return fmt.Errorf("failed to configure replication: %w", err)
 	}
 
 	// Sync pod labels with replication state
-	if err := c.SyncPodLabels(ctx, clusterState); err != nil {
+	if err := c.SyncPodLabels(ctx, c.cluster); err != nil {
 		return fmt.Errorf("failed to sync pod labels: %w", err)
 	}
 
@@ -263,8 +326,8 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 // ConfigureReplication configures main/replica relationships in the cluster
 
 // SyncPodLabels synchronizes pod labels with their actual replication state
-func (c *MemgraphController) SyncPodLabels(ctx context.Context, clusterState *ClusterState) error {
-	if len(clusterState.Pods) == 0 {
+func (c *MemgraphController) SyncPodLabels(ctx context.Context, cluster *MemgraphCluster) error {
+	if len(c.cluster.Pods) == 0 {
 		log.Println("No pods to sync labels for")
 		return nil
 	}
@@ -272,7 +335,7 @@ func (c *MemgraphController) SyncPodLabels(ctx context.Context, clusterState *Cl
 	log.Println("Starting pod label synchronization...")
 
 	// Update cluster state with current pod states after replication configuration
-	for podName, podInfo := range clusterState.Pods {
+	for podName, podInfo := range c.cluster.Pods {
 		// Reclassify state based on current information
 		podInfo.State = podInfo.ClassifyState()
 		log.Printf("Pod %s final state: %s (MemgraphRole=%s)",
@@ -288,20 +351,23 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	log.Println("Collecting cluster status for API...")
 
 	// Discover current cluster state with all Memgraph queries
-	clusterState, err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
+	err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
 	if err != nil {
 		return nil, fmt.Errorf("failed to discover cluster state: %w", err)
 	}
 
+	// Update cached state for immediate event processing
+	c.updateCachedState(c.cluster)
+
 	// Build cluster summary
-	totalPods := len(clusterState.Pods)
+	totalPods := len(c.cluster.Pods)
 	healthyPods := 0
 	podStatuses := make([]PodStatus, 0, totalPods)
 
 	// Find current SYNC replica
 	var currentSyncReplica string
 	var syncReplicaHealthy bool
-	for podName, podInfo := range clusterState.Pods {
+	for podName, podInfo := range c.cluster.Pods {
 		if podInfo.IsSyncReplica {
 			currentSyncReplica = podName
 			// SYNC replica is healthy if we can query its Memgraph role
@@ -311,7 +377,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	}
 
 	// Process each pod to determine health and build status
-	for _, podInfo := range clusterState.Pods {
+	for _, podInfo := range c.cluster.Pods {
 		// Pod is healthy if we can query Memgraph role successfully
 		healthy := podInfo.MemgraphRole != ""
 		if healthy {
@@ -332,7 +398,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	response := &StatusResponse{
 		Timestamp: time.Now(),
 		ClusterState: ClusterStatus{
-			CurrentMain:           clusterState.CurrentMain,
+			CurrentMain:           c.cluster.CurrentMain,
 			CurrentSyncReplica:    currentSyncReplica,
 			TotalPods:             totalPods,
 			HealthyPods:           healthyPods,
@@ -345,7 +411,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	}
 
 	log.Printf("Cluster status collected: %d total pods, %d healthy, %d unhealthy, main: %s, sync_replica: %s (healthy: %t)",
-		totalPods, healthyPods, unhealthyPods, clusterState.CurrentMain, currentSyncReplica, syncReplicaHealthy)
+		totalPods, healthyPods, unhealthyPods, c.cluster.CurrentMain, currentSyncReplica, syncReplicaHealthy)
 
 	return response, nil
 }
@@ -521,17 +587,48 @@ func (c *MemgraphController) onPodAdd(obj interface{}) {
 	c.enqueuePodEvent("pod-added")
 }
 
-// onPodUpdate handles pod update events
+// onPodUpdate handles pod update events with immediate processing for critical changes
 func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 
-	// Check for IP changes and update connection pool
-	if oldPod.Status.PodIP != newPod.Status.PodIP && newPod.Status.PodIP != "" {
-		c.memgraphClient.connectionPool.UpdatePodIP(newPod.Name, newPod.Status.PodIP)
-		log.Printf("Pod %s IP changed: %s -> %s", newPod.Name, oldPod.Status.PodIP, newPod.Status.PodIP)
+	// Only process Memgraph pods
+	if !c.config.IsMemgraphPod(newPod.Name) {
+		return
 	}
 
+	// Check for IP changes and update connection pool through cached cluster state
+	if oldPod.Status.PodIP != newPod.Status.PodIP {
+		cachedState, _ := c.getCachedState()
+		if cachedState != nil {
+			cachedState.HandlePodIPChange(newPod.Name, oldPod.Status.PodIP, newPod.Status.PodIP)
+		}
+	}
+
+	// IMMEDIATE ANALYSIS: Check for critical main pod health changes
+	if c.IsLeader() {
+		lastState, stateAge := c.getCachedState()
+		if lastState != nil && lastState.CurrentMain == newPod.Name {
+			// This is the current main pod - check for immediate health issues
+			if c.isPodBecomeUnhealthy(oldPod, newPod) {
+				log.Printf("🚨 IMMEDIATE EVENT: Main pod %s became unhealthy, triggering immediate failover", newPod.Name)
+				
+				// Trigger immediate failover in background
+				go c.handleImmediateFailover(newPod.Name)
+				
+				// Don't queue regular reconciliation - immediate action taken
+				return
+			}
+		}
+		
+		// Log cached state age for debugging
+		if lastState != nil {
+			log.Printf("🔍 Event analysis: cached state age=%v, currentMain=%s, eventPod=%s", 
+				time.Since(stateAge), lastState.CurrentMain, newPod.Name)
+		}
+	}
+
+	// Fall back to regular reconciliation for non-critical changes
 	if !c.shouldReconcile(oldPod, newPod) {
 		return // Skip unnecessary reconciliation
 	}
@@ -543,9 +640,11 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 func (c *MemgraphController) onPodDelete(obj interface{}) {
 	pod := obj.(*v1.Pod)
 
-	// Invalidate connection for deleted pod
-	c.memgraphClient.connectionPool.InvalidatePodConnection(pod.Name)
-	log.Printf("Pod %s deleted, invalidated connection", pod.Name)
+	// Invalidate connection for deleted pod through cached cluster state
+	cachedState, _ := c.getCachedState()
+	if cachedState != nil {
+		cachedState.InvalidatePodConnection(pod.Name)
+	}
 
 	// Check if the deleted pod is the current main - trigger IMMEDIATE failover
 	ctx := context.Background()
@@ -766,10 +865,19 @@ func (c *MemgraphController) RefreshPodInfo(ctx context.Context, podName string)
 		return nil, fmt.Errorf("failed to get fresh pod info for %s: %w", podName, err)
 	}
 
-	// Update connection pool with fresh IP
-	if pod.Status.PodIP != "" {
-		c.memgraphClient.connectionPool.UpdatePodIP(podName, pod.Status.PodIP)
-		log.Printf("Refreshed pod %s IP: %s", podName, pod.Status.PodIP)
+	// Update connection pool through cached cluster state
+	cachedState, _ := c.getCachedState()
+	if cachedState != nil {
+		// Update the pod info in cached state if it exists
+		if podInfo, exists := cachedState.Pods[podName]; exists {
+			oldIP := ""
+			if podInfo.Pod != nil {
+				oldIP = podInfo.Pod.Status.PodIP
+			}
+			if pod.Status.PodIP != oldIP {
+				cachedState.HandlePodIPChange(podName, oldIP, pod.Status.PodIP)
+			}
+		}
 	}
 
 	return NewPodInfo(pod), nil
@@ -943,12 +1051,12 @@ func (c *MemgraphController) discoverClusterAndCreateConfigMap(ctx context.Conte
 
 	// Use bootstrap logic to discover and initialize cluster
 	bootstrapController := NewBootstrapController(c)
-	clusterState, err := bootstrapController.ExecuteBootstrap(ctx)
+	_, err := bootstrapController.ExecuteBootstrap(ctx)
 	if err != nil {
 		return fmt.Errorf("cluster discovery failed: %w", err)
 	}
 
-	log.Printf("✅ Cluster discovery completed - main: %s", clusterState.CurrentMain)
+	log.Printf("✅ Cluster discovery completed - main: %s", c.cluster.CurrentMain)
 	return nil
 }
 
@@ -1074,18 +1182,21 @@ func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
 
 	// Discover cluster state to find SYNC replica
 	log.Printf("🔍 Discovering cluster state for immediate failover...")
-	clusterState, err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
+	err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
 	if err != nil {
 		log.Printf("❌ CRITICAL: Failed to discover cluster state for immediate failover: %v", err)
 		return
 	}
 
+	// Update cached state after immediate failover discovery
+	c.updateCachedState(c.cluster)
+
 	// Log cluster state
 	log.Printf("📊 Immediate failover cluster state: %d pods, main=%s",
-		len(clusterState.Pods), clusterState.CurrentMain)
+		len(c.cluster.Pods), c.cluster.CurrentMain)
 
 	// Execute immediate failover using existing logic
-	if err := c.handleMainFailover(ctx, clusterState); err != nil {
+	if err := c.handleMainFailover(ctx, c.cluster); err != nil {
 		log.Printf("❌ IMMEDIATE FAILOVER FAILED: %v", err)
 		return
 	}

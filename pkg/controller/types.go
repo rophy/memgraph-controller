@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -56,6 +57,9 @@ type ClusterState struct {
 	Pods        map[string]*PodInfo
 	CurrentMain string
 
+	// Connection management - integrated with cluster state
+	connectionPool *ConnectionPool
+
 	// State persistence - StateManager for TargetMainIndex tracking
 	stateManager StateManagerInterface
 
@@ -79,10 +83,18 @@ type PodInfo struct {
 	Pod                *v1.Pod       // Reference to Kubernetes pod object
 }
 
-func NewClusterState(stateManager StateManagerInterface) *ClusterState {
+func NewClusterState(stateManager StateManagerInterface, config *Config) *ClusterState {
+	return NewClusterStateWithConnectionPool(stateManager, config, nil)
+}
+
+func NewClusterStateWithConnectionPool(stateManager StateManagerInterface, config *Config, connectionPool *ConnectionPool) *ClusterState {
+	if connectionPool == nil {
+		connectionPool = NewConnectionPool(config)
+	}
 	return &ClusterState{
-		Pods:         make(map[string]*PodInfo),
-		stateManager: stateManager,
+		Pods:           make(map[string]*PodInfo),
+		connectionPool: connectionPool,
+		stateManager:   stateManager,
 	}
 }
 
@@ -540,4 +552,69 @@ type ReconciliationMetrics struct {
 	LastReconciliationTime    time.Time     `json:"last_reconciliation_time"`
 	LastReconciliationReason  string        `json:"last_reconciliation_reason"`
 	LastReconciliationError   string        `json:"last_reconciliation_error,omitempty"`
+}
+
+// Connection management methods for ClusterState
+
+// GetDriver gets a Neo4j driver for the specified pod
+func (cs *ClusterState) GetDriver(ctx context.Context, podName string) (neo4j.DriverWithContext, error) {
+	podInfo, exists := cs.Pods[podName]
+	if !exists {
+		return nil, fmt.Errorf("pod %s not found in cluster state", podName)
+	}
+	
+	if podInfo.BoltAddress == "" {
+		return nil, fmt.Errorf("pod %s has no bolt address", podName)
+	}
+	
+	return cs.connectionPool.GetDriver(ctx, podInfo.BoltAddress)
+}
+
+// GetDriverByAddress gets a Neo4j driver for the specified bolt address
+func (cs *ClusterState) GetDriverByAddress(ctx context.Context, boltAddress string) (neo4j.DriverWithContext, error) {
+	if cs.connectionPool == nil {
+		return nil, fmt.Errorf("connection pool not initialized")
+	}
+	return cs.connectionPool.GetDriver(ctx, boltAddress)
+}
+
+// InvalidatePodConnection invalidates the connection for a specific pod
+func (cs *ClusterState) InvalidatePodConnection(podName string) {
+	if cs.connectionPool == nil {
+		return
+	}
+	
+	if podInfo, exists := cs.Pods[podName]; exists && podInfo.BoltAddress != "" {
+		cs.connectionPool.InvalidateConnection(podInfo.BoltAddress)
+		log.Printf("Invalidated connection for pod %s (%s)", podName, podInfo.BoltAddress)
+	}
+}
+
+// HandlePodIPChange handles IP changes for a pod, invalidating old connections
+func (cs *ClusterState) HandlePodIPChange(podName, oldIP, newIP string) {
+	if cs.connectionPool == nil {
+		return
+	}
+	
+	if oldIP != "" && oldIP != newIP {
+		oldBoltAddress := oldIP + ":7687"
+		cs.connectionPool.InvalidateConnection(oldBoltAddress)
+		log.Printf("Invalidated connection for pod %s: IP changed from %s to %s", podName, oldIP, newIP)
+	}
+	
+	// Update the pod info with new IP
+	if podInfo, exists := cs.Pods[podName]; exists {
+		newBoltAddress := ""
+		if newIP != "" {
+			newBoltAddress = newIP + ":7687"
+		}
+		podInfo.BoltAddress = newBoltAddress
+	}
+}
+
+// CloseAllConnections closes all connections in the connection pool
+func (cs *ClusterState) CloseAllConnections(ctx context.Context) {
+	if cs.connectionPool != nil {
+		cs.connectionPool.Close(ctx)
+	}
 }

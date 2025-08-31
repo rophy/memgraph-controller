@@ -135,6 +135,11 @@ func (cp *ConnectionPool) InvalidatePodConnection(podName string) {
 	}
 }
 
+// InvalidateConnection invalidates a connection by bolt address
+func (cp *ConnectionPool) InvalidateConnection(boltAddress string) {
+	cp.removeDriver(boltAddress)
+}
+
 func (cp *ConnectionPool) Close(ctx context.Context) {
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()

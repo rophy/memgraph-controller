@@ -9,12 +9,12 @@ import (
 func TestMainFailoverDetection(t *testing.T) {
 	tests := []struct {
 		name             string
-		clusterState     *ClusterState
+		clusterState     *MemgraphCluster
 		expectedFailover bool
 	}{
 		{
 			name: "healthy_main_no_failover",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main", BoltAddress: "memgraph-0:7687"},
@@ -25,7 +25,7 @@ func TestMainFailoverDetection(t *testing.T) {
 		},
 		{
 			name: "main_pod_missing_should_failover",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
 				Pods: map[string]*PodInfo{
 					"memgraph-1": {MemgraphRole: "replica", BoltAddress: "memgraph-1:7687"},
@@ -35,7 +35,7 @@ func TestMainFailoverDetection(t *testing.T) {
 		},
 		{
 			name: "main_not_main_role_should_failover",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "replica", BoltAddress: "memgraph-0:7687"},
@@ -46,7 +46,7 @@ func TestMainFailoverDetection(t *testing.T) {
 		},
 		{
 			name: "main_no_bolt_address_should_failover",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main", BoltAddress: ""},
@@ -83,12 +83,12 @@ func TestMainFailoverDetection(t *testing.T) {
 func TestValidateControllerState(t *testing.T) {
 	tests := []struct {
 		name         string
-		clusterState *ClusterState
+		clusterState *MemgraphCluster
 		wantWarnings bool
 	}{
 		{
 			name: "valid_state_no_warnings",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				StateType:       OPERATIONAL_STATE,
 				CurrentMain:     "memgraph-ha-0",
 				Pods: map[string]*PodInfo{
@@ -108,14 +108,14 @@ func TestValidateControllerState(t *testing.T) {
 		},
 		{
 			name: "invalid_target_index_should_warn",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
 			},
 			wantWarnings: true,
 		},
 		{
 			name: "negative_target_index_should_warn",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
 			},
 			wantWarnings: true,
@@ -145,13 +145,13 @@ func TestSelectSyncReplica(t *testing.T) {
 
 	tests := []struct {
 		name         string
-		clusterState *ClusterState
+		clusterState *MemgraphCluster
 		currentMain  string
 		expectedSync string
 	}{
 		{
 			name: "pod0_main_select_pod1_sync",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main"},
 					"memgraph-1": {MemgraphRole: "replica"},
@@ -163,7 +163,7 @@ func TestSelectSyncReplica(t *testing.T) {
 		},
 		{
 			name: "pod1_main_select_pod0_sync",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "replica"},
 					"memgraph-1": {MemgraphRole: "main"},
@@ -175,7 +175,7 @@ func TestSelectSyncReplica(t *testing.T) {
 		},
 		{
 			name: "only_main_no_sync_replica",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "main"},
 				},
@@ -185,7 +185,7 @@ func TestSelectSyncReplica(t *testing.T) {
 		},
 		{
 			name: "main_not_eligible_fallback_to_pod0",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-0": {MemgraphRole: "replica"},
 					"memgraph-1": {MemgraphRole: "replica"},

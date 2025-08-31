@@ -50,7 +50,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-
 func getEnvOrDefaultBool(key string, defaultValue bool) bool {
 	if value := os.Getenv(key); value != "" {
 		if parsed, err := strconv.ParseBool(value); err == nil {
@@ -58,6 +57,11 @@ func getEnvOrDefaultBool(key string, defaultValue bool) bool {
 		}
 	}
 	return defaultValue
+}
+
+// IsMemgraphPod checks if a given pod name belongs to the Memgraph StatefulSet
+func (c *Config) IsMemgraphPod(podName string) bool {
+	return strings.HasPrefix(podName, c.StatefulSetName+"-")
 }
 
 // GetPodName returns the name of a pod given its index (e.g., "my-release-memgraph-0")

@@ -10,8 +10,22 @@ import (
 	"k8s.io/client-go/kubernetes"
 )
 
-// MemgraphCluster handles all Memgraph cluster-specific operations
+// MemgraphCluster handles all Memgraph cluster-specific operations and represents the cluster state
 type MemgraphCluster struct {
+	// Cluster data (formerly ClusterState)
+	Pods        map[string]*PodInfo
+	CurrentMain string
+
+	// Connection management
+	connectionPool *ConnectionPool
+
+	// Controller state tracking
+	StateType        ClusterStateType
+	IsBootstrapPhase bool // True during initial discovery
+	BootstrapSafe    bool // True if bootstrap can proceed safely
+	LastStateChange  time.Time
+
+	// External dependencies
 	clientset      kubernetes.Interface
 	config         *Config
 	memgraphClient *MemgraphClient
@@ -20,24 +34,54 @@ type MemgraphCluster struct {
 
 // NewMemgraphCluster creates a new MemgraphCluster instance
 func NewMemgraphCluster(clientset kubernetes.Interface, config *Config, memgraphClient *MemgraphClient, stateManager StateManagerInterface) *MemgraphCluster {
-	return &MemgraphCluster{
+	var connectionPool *ConnectionPool
+	if memgraphClient != nil {
+		connectionPool = memgraphClient.connectionPool
+	}
+	if connectionPool == nil {
+		connectionPool = NewConnectionPool(config)
+	}
+
+	cluster := &MemgraphCluster{
+		// Initialize cluster data
+		Pods:        make(map[string]*PodInfo),
+		CurrentMain: "",
+
+		// Connection management
+		connectionPool: connectionPool,
+
+		// State tracking
+		StateType:        UNKNOWN_STATE,
+		IsBootstrapPhase: false,
+		BootstrapSafe:    false,
+		LastStateChange:  time.Now(),
+
+		// External dependencies
 		clientset:      clientset,
 		config:         config,
 		memgraphClient: memgraphClient,
 		stateManager:   stateManager,
 	}
+	
+	// Ensure MemgraphClient uses the shared connection pool
+	if cluster.memgraphClient != nil {
+		cluster.memgraphClient.SetConnectionPool(cluster.connectionPool)
+	}
+	
+	return cluster
 }
 
-// DiscoverPods discovers running pods with the configured app name
-func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) (*ClusterState, error) {
+// DiscoverPods discovers running pods with the configured app name and updates cluster state
+func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) error {
 	pods, err := mc.clientset.CoreV1().Pods(mc.config.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: "app.kubernetes.io/name=" + mc.config.AppName,
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	clusterState := NewClusterState(mc.stateManager)
+	// Clear existing pods and repopulate
+	mc.Pods = make(map[string]*PodInfo)
 
 	for _, pod := range pods.Items {
 		// Only process running pods
@@ -53,7 +97,7 @@ func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) (*ClusterState, err
 		}
 
 		podInfo := NewPodInfo(&pod)
-		clusterState.Pods[pod.Name] = podInfo
+		mc.Pods[pod.Name] = podInfo
 
 		log.Printf("Discovered pod: %s, IP: %s, Timestamp: %s",
 			podInfo.Name,
@@ -65,26 +109,27 @@ func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) (*ClusterState, err
 	// This ensures we use real replication roles for decision making
 	log.Printf("Pod discovery complete. Main selection deferred until after Memgraph querying.")
 
-	return clusterState, nil
+	return nil
 }
 
-// GetPodsByLabel discovers pods matching the given label selector
-func (mc *MemgraphCluster) GetPodsByLabel(ctx context.Context, labelSelector string) (*ClusterState, error) {
+// GetPodsByLabel discovers pods matching the given label selector and updates cluster state
+func (mc *MemgraphCluster) GetPodsByLabel(ctx context.Context, labelSelector string) error {
 	pods, err := mc.clientset.CoreV1().Pods(mc.config.Namespace).List(ctx, metav1.ListOptions{
 		LabelSelector: labelSelector,
 	})
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	clusterState := NewClusterState(mc.stateManager)
+	// Clear existing pods and repopulate with filtered results
+	mc.Pods = make(map[string]*PodInfo)
 
 	for _, pod := range pods.Items {
 		podInfo := NewPodInfo(&pod)
-		clusterState.Pods[pod.Name] = podInfo
+		mc.Pods[pod.Name] = podInfo
 	}
 
-	return clusterState, nil
+	return nil
 }
 
 // getTargetMainIndex gets the target main index from state manager
@@ -161,43 +206,36 @@ func (mc *MemgraphCluster) updateTargetMainIndex(ctx context.Context, newIndex i
 }
 
 // RefreshClusterInfo refreshes cluster state information in operational phase
-func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncReplicaInfoFunc func(*ClusterState), detectMainFailoverFunc func(*ClusterState) bool, handleMainFailoverFunc func(context.Context, *ClusterState) error) (*ClusterState, error) {
+func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncReplicaInfoFunc func(*MemgraphCluster), detectMainFailoverFunc func(*MemgraphCluster) bool, handleMainFailoverFunc func(context.Context, *MemgraphCluster) error) error {
 	log.Println("Refreshing Memgraph cluster information...")
 
-	clusterState, err := mc.DiscoverPods(ctx)
+	err := mc.DiscoverPods(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to discover pods: %w", err)
+		return fmt.Errorf("failed to discover pods: %w", err)
 	}
 
-	// Update connection pool with fresh pod IPs
-	if mc.memgraphClient != nil {
-		for _, podInfo := range clusterState.Pods {
-			if podInfo.Pod != nil && podInfo.Pod.Status.PodIP != "" {
-				mc.memgraphClient.connectionPool.UpdatePodIP(podInfo.Name, podInfo.Pod.Status.PodIP)
-			}
-		}
-	}
+	// Connection pool is already shared between MemgraphClient and ClusterState
 
-	if len(clusterState.Pods) == 0 {
+	if len(mc.Pods) == 0 {
 		log.Println("No pods found in cluster")
-		return clusterState, nil
+		return nil
 	}
 
 	// Always operational phase since bootstrap is handled separately
 	log.Printf("Controller in operational phase - maintaining OPERATIONAL_STATE authority")
-	clusterState.IsBootstrapPhase = false
-	clusterState.StateType = OPERATIONAL_STATE
+	mc.IsBootstrapPhase = false
+	mc.StateType = OPERATIONAL_STATE
 
-	clusterState.LastStateChange = time.Now()
+	mc.LastStateChange = time.Now()
 
-	log.Printf("Discovered %d pods, querying Memgraph state...", len(clusterState.Pods))
+	log.Printf("Discovered %d pods, querying Memgraph state...", len(mc.Pods))
 
 	// Track errors for comprehensive reporting
 	var queryErrors []error
 	successCount := 0
 
 	// Query Memgraph role and replicas for each pod
-	for podName, podInfo := range clusterState.Pods {
+	for podName, podInfo := range mc.Pods {
 		if podInfo.BoltAddress == "" {
 			log.Printf("Skipping pod %s: no Bolt address", podName)
 			continue
@@ -261,15 +299,15 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 
 	// Update SYNC replica information based on actual main's replica data (via callback)
 	if updateSyncReplicaInfoFunc != nil {
-		updateSyncReplicaInfoFunc(clusterState)
+		updateSyncReplicaInfoFunc(mc)
 	}
 
 	// Operational phase - detect and handle main failover scenarios (via callbacks)
 	log.Println("Checking for main failover scenarios...")
-	if detectMainFailoverFunc != nil && detectMainFailoverFunc(clusterState) {
+	if detectMainFailoverFunc != nil && detectMainFailoverFunc(mc) {
 		log.Printf("Main failover detected - handling failover...")
 		if handleMainFailoverFunc != nil {
-			if err := handleMainFailoverFunc(ctx, clusterState); err != nil {
+			if err := handleMainFailoverFunc(ctx, mc); err != nil {
 				log.Printf("⚠️  Failover handling failed: %v", err)
 				// Don't crash - log warning and continue as per design
 			}
@@ -277,11 +315,11 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 	}
 	
 	// Set operational phase properties
-	clusterState.IsBootstrapPhase = false
-	clusterState.StateType = OPERATIONAL_STATE
+	mc.IsBootstrapPhase = false
+	mc.StateType = OPERATIONAL_STATE
 
 	// Validate controller state consistency
-	if warnings := clusterState.ValidateControllerState(mc.config); len(warnings) > 0 {
+	if warnings := mc.ValidateControllerState(mc.config); len(warnings) > 0 {
 		log.Printf("⚠️  Controller state validation warnings:")
 		for _, warning := range warnings {
 			log.Printf("  - %s", warning)
@@ -290,11 +328,11 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 
 	// NOW select main based on actual Memgraph state (not pod labels)
 	log.Println("Selecting main based on actual Memgraph replication state...")
-	mc.selectMainAfterQuerying(ctx, clusterState)
+	mc.selectMainAfterQuerying(ctx)
 
 	// Log summary of query results
 	log.Printf("Cluster discovery complete: %d/%d pods successfully queried",
-		successCount, len(clusterState.Pods))
+		successCount, len(mc.Pods))
 
 	if len(queryErrors) > 0 {
 		log.Printf("Encountered %d errors during cluster discovery:", len(queryErrors))
@@ -303,44 +341,44 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 		}
 	}
 
-	return clusterState, nil
+	return nil
 }
 
 // selectMainAfterQuerying selects main based on actual Memgraph replication state
-func (mc *MemgraphCluster) selectMainAfterQuerying(ctx context.Context, clusterState *ClusterState) {
+func (mc *MemgraphCluster) selectMainAfterQuerying(ctx context.Context) {
 	// After bootstrap validation, we now have authority to make decisions
-	clusterState.IsBootstrapPhase = false
+	mc.IsBootstrapPhase = false
 
 	// Enhanced main selection using controller state authority
 	targetMainIndex := mc.getTargetMainIndex()
 	log.Printf("Enhanced main selection: state=%s, target_index=%d",
-		clusterState.StateType.String(), targetMainIndex)
+		mc.StateType.String(), targetMainIndex)
 
 	// Use controller state authority based on cluster state
-	switch clusterState.StateType {
+	switch mc.StateType {
 	case INITIAL_STATE:
-		mc.applyDeterministicRoles(clusterState)
+		mc.applyDeterministicRoles()
 	case OPERATIONAL_STATE:
-		mc.learnExistingTopology(clusterState)
+		mc.learnExistingTopology()
 	default:
 		// For unknown states, use simple fallback as per DESIGN.md
-		log.Printf("Unknown cluster state %s - using deterministic fallback", clusterState.StateType)
-		mc.applyDeterministicRoles(clusterState)
+		log.Printf("Unknown cluster state %s - using deterministic fallback", mc.StateType)
+		mc.applyDeterministicRoles()
 	}
 
 	// Log comprehensive cluster health summary
-	healthSummary := clusterState.GetClusterHealthSummary()
+	healthSummary := mc.GetClusterHealthSummary()
 	log.Printf("📋 CLUSTER HEALTH SUMMARY: %+v", healthSummary)
 }
 
 // applyDeterministicRoles applies roles for fresh/initial clusters
-func (mc *MemgraphCluster) applyDeterministicRoles(clusterState *ClusterState) {
+func (mc *MemgraphCluster) applyDeterministicRoles() {
 	log.Printf("Applying deterministic role assignment for fresh cluster")
 
 	// Use the determined target main index
 	targetMainIndex := mc.getTargetMainIndex()
 	targetMainName := mc.config.GetPodName(targetMainIndex)
-	clusterState.CurrentMain = targetMainName
+	mc.CurrentMain = targetMainName
 
 	log.Printf("Deterministic main assignment: %s (index %d)",
 		targetMainName, targetMainIndex)
@@ -355,7 +393,7 @@ func (mc *MemgraphCluster) applyDeterministicRoles(clusterState *ClusterState) {
 
 	// Mark remaining pods as ASYNC replicas
 	asyncCount := 0
-	for podName := range clusterState.Pods {
+	for podName := range mc.Pods {
 		if podName != targetMainName && podName != syncReplicaName {
 			asyncCount++
 		}
@@ -364,13 +402,13 @@ func (mc *MemgraphCluster) applyDeterministicRoles(clusterState *ClusterState) {
 }
 
 // learnExistingTopology learns the current operational topology
-func (mc *MemgraphCluster) learnExistingTopology(clusterState *ClusterState) {
+func (mc *MemgraphCluster) learnExistingTopology() {
 	log.Printf("Learning existing operational topology")
 
-	mainPods := clusterState.GetMainPods()
+	mainPods := mc.GetMainPods()
 	if len(mainPods) == 1 {
 		currentMain := mainPods[0]
-		clusterState.CurrentMain = currentMain
+		mc.CurrentMain = currentMain
 		log.Printf("Learned existing main: %s", currentMain)
 
 		// Extract current main index for tracking using consolidated method
@@ -385,7 +423,7 @@ func (mc *MemgraphCluster) learnExistingTopology(clusterState *ClusterState) {
 		}
 
 		// Log current SYNC replica
-		for podName, podInfo := range clusterState.Pods {
+		for podName, podInfo := range mc.Pods {
 			if podInfo.IsSyncReplica {
 				log.Printf("Current SYNC replica: %s", podName)
 				break
@@ -399,8 +437,141 @@ func (mc *MemgraphCluster) learnExistingTopology(clusterState *ClusterState) {
 		// Use the determined target main as fallback
 		targetMainIndex := mc.getTargetMainIndex()
 		targetMainName := mc.config.GetPodName(targetMainIndex)
-		clusterState.CurrentMain = targetMainName
+		mc.CurrentMain = targetMainName
 		log.Printf("Using determined target main as fallback: %s", targetMainName)
+	}
+}
+
+// GetClusterHealthSummary returns a comprehensive health summary of the cluster
+func (mc *MemgraphCluster) GetClusterHealthSummary() map[string]interface{} {
+	healthyPods := 0
+	totalPods := len(mc.Pods)
+	syncReplicaCount := 0
+	mainPods := 0
+	replicaPods := 0
+
+	for _, podInfo := range mc.Pods {
+		if podInfo.BoltAddress != "" && podInfo.MemgraphRole != "" {
+			healthyPods++
+		}
+
+		if podInfo.IsSyncReplica {
+			syncReplicaCount++
+		}
+
+		switch podInfo.MemgraphRole {
+		case "main":
+			mainPods++
+		case "replica":
+			replicaPods++
+		}
+	}
+
+	// Get target index for summary
+	targetIndex := mc.getTargetMainIndex()
+
+	return map[string]interface{}{
+		"total_pods":       totalPods,
+		"healthy_pods":     healthyPods,
+		"unhealthy_pods":   totalPods - healthyPods,
+		"main_pods":        mainPods,
+		"replica_pods":     replicaPods,
+		"sync_replicas":    syncReplicaCount,
+		"state_type":       mc.StateType.String(),
+		"bootstrap_phase":  mc.IsBootstrapPhase,
+		"current_main":     mc.CurrentMain,
+		"target_index":     targetIndex,
+		"last_change":      mc.LastStateChange,
+	}
+}
+
+// ValidateControllerState validates the controller state consistency
+func (mc *MemgraphCluster) ValidateControllerState(config *Config) []string {
+	var warnings []string
+
+	// Validate current main exists in pods
+	if mc.CurrentMain != "" {
+		if _, exists := mc.Pods[mc.CurrentMain]; !exists {
+			warnings = append(warnings, fmt.Sprintf("Current main '%s' not found in discovered pods", mc.CurrentMain))
+		}
+	}
+
+	return warnings
+}
+
+// GetMainPods returns a list of pod names that have the MAIN role
+func (mc *MemgraphCluster) GetMainPods() []string {
+	var mainPods []string
+	for podName, podInfo := range mc.Pods {
+		if podInfo.MemgraphRole == "main" {
+			mainPods = append(mainPods, podName)
+		}
+	}
+	return mainPods
+}
+
+// GetReplicaPods returns a list of pod names that have the REPLICA role
+func (mc *MemgraphCluster) GetReplicaPods() []string {
+	var replicaPods []string
+	for podName, podInfo := range mc.Pods {
+		if podInfo.MemgraphRole == "replica" {
+			replicaPods = append(replicaPods, podName)
+		}
+	}
+	return replicaPods
+}
+
+// LogMainSelectionDecision logs detailed main selection metrics
+func (mc *MemgraphCluster) LogMainSelectionDecision(metrics *MainSelectionMetrics) {
+	log.Printf("📊 MAIN SELECTION METRICS:")
+	log.Printf("  Timestamp: %s", metrics.Timestamp.Format(time.RFC3339))
+	log.Printf("  State Type: %s", metrics.StateType.String())
+	log.Printf("  Selected Main: %s", metrics.SelectedMain)
+	log.Printf("  Selection Reason: %s", metrics.SelectionReason)
+	log.Printf("  Healthy Pods: %d", metrics.HealthyPodsCount)
+	log.Printf("  SYNC Replica Available: %t", metrics.SyncReplicaAvailable)
+	log.Printf("  Failover Detected: %t", metrics.FailoverDetected)
+	log.Printf("  Decision Factors: %v", metrics.DecisionFactors)
+}
+
+// InvalidatePodConnection invalidates connection for a specific pod
+func (mc *MemgraphCluster) InvalidatePodConnection(podName string) {
+	if mc.connectionPool == nil {
+		return
+	}
+	
+	if podInfo, exists := mc.Pods[podName]; exists && podInfo.BoltAddress != "" {
+		mc.connectionPool.InvalidateConnection(podInfo.BoltAddress)
+		log.Printf("Invalidated connection for pod %s (%s)", podName, podInfo.BoltAddress)
+	}
+}
+
+// HandlePodIPChange handles IP changes for a pod, invalidating old connections
+func (mc *MemgraphCluster) HandlePodIPChange(podName, oldIP, newIP string) {
+	if mc.connectionPool == nil {
+		return
+	}
+	
+	if oldIP != "" && oldIP != newIP {
+		oldBoltAddress := oldIP + ":7687"
+		mc.connectionPool.InvalidateConnection(oldBoltAddress)
+		log.Printf("Invalidated connection for pod %s: IP changed from %s to %s", podName, oldIP, newIP)
+	}
+	
+	// Update the pod info with new IP
+	if podInfo, exists := mc.Pods[podName]; exists {
+		newBoltAddress := ""
+		if newIP != "" {
+			newBoltAddress = newIP + ":7687"
+		}
+		podInfo.BoltAddress = newBoltAddress
+	}
+}
+
+// CloseAllConnections closes all connections in the connection pool
+func (mc *MemgraphCluster) CloseAllConnections(ctx context.Context) {
+	if mc.connectionPool != nil {
+		mc.connectionPool.Close(ctx)
 	}
 }
 

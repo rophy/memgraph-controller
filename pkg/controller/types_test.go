@@ -29,7 +29,11 @@ func TestPodState_String(t *testing.T) {
 }
 
 func TestNewClusterState(t *testing.T) {
-	cs := NewClusterState(nil) // Test with nil stateManager
+	config := &Config{
+		AppName:         "memgraph",
+		StatefulSetName: "memgraph-ha",
+	}
+	cs := NewClusterState(nil, config) // Test with nil stateManager
 	if cs == nil {
 		t.Fatal("NewClusterState() returned nil")
 	}
@@ -41,6 +45,9 @@ func TestNewClusterState(t *testing.T) {
 	}
 	if cs.CurrentMain != "" {
 		t.Errorf("NewClusterState() CurrentMain = %s, want empty", cs.CurrentMain)
+	}
+	if cs.connectionPool == nil {
+		t.Error("NewClusterState() connectionPool is nil")
 	}
 }
 

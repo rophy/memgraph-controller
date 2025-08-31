@@ -20,13 +20,13 @@ func TestIdentifyFailedMainIndex(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		clusterState  *ClusterState
+		clusterState  *MemgraphCluster
 		expectedIndex int
 		description   string
 	}{
 		{
 			name: "pod-0 restarted more recently (failed main)",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
 						Name:      "memgraph-ha-0",
@@ -45,7 +45,7 @@ func TestIdentifyFailedMainIndex(t *testing.T) {
 		},
 		{
 			name: "pod-1 restarted more recently (failed main)",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
 						Name:      "memgraph-ha-0",
@@ -64,7 +64,7 @@ func TestIdentifyFailedMainIndex(t *testing.T) {
 		},
 		{
 			name: "pod-0 missing entirely",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-1": {
 						Name:      "memgraph-ha-1",
@@ -78,7 +78,7 @@ func TestIdentifyFailedMainIndex(t *testing.T) {
 		},
 		{
 			name: "pod-1 missing entirely",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
 						Name:      "memgraph-ha-0",
@@ -92,7 +92,7 @@ func TestIdentifyFailedMainIndex(t *testing.T) {
 		},
 		{
 			name: "both pods missing (edge case)",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{},
 			},
 			expectedIndex: 0,
@@ -125,14 +125,14 @@ func TestHandleMainFailurePromotion_Logic(t *testing.T) {
 
 	tests := []struct {
 		name              string
-		clusterState      *ClusterState
+		clusterState      *MemgraphCluster
 		replicaPods       []string
 		expectedPromotion string
 		description       string
 	}{
 		{
 			name: "pod-0 failed, should promote pod-1 (SYNC replica)",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
 						Name:          "memgraph-ha-0",
@@ -156,7 +156,7 @@ func TestHandleMainFailurePromotion_Logic(t *testing.T) {
 		},
 		{
 			name: "pod-1 failed, should promote pod-0 (SYNC replica)",
-			clusterState: &ClusterState{
+			clusterState: &MemgraphCluster{
 				Pods: map[string]*PodInfo{
 					"memgraph-ha-0": {
 						Name:          "memgraph-ha-0",

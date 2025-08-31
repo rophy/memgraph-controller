@@ -32,7 +32,7 @@ func NewBootstrapController(controller *MemgraphController) *BootstrapController
 }
 
 // ExecuteBootstrap executes the strict bootstrap process according to README.md
-func (bc *BootstrapController) ExecuteBootstrap(ctx context.Context) (*ClusterState, error) {
+func (bc *BootstrapController) ExecuteBootstrap(ctx context.Context) (*MemgraphCluster, error) {
 	log.Println("=== BOOTSTRAP PHASE STARTING ===")
 	log.Println("Gateway will REJECT all bolt client connections during bootstrap")
 	
@@ -42,36 +42,36 @@ func (bc *BootstrapController) ExecuteBootstrap(ctx context.Context) (*ClusterSt
 	}
 
 	// Step 1: Wait for >=2 replicas with pod status as "ready"
-	clusterState, err := bc.waitForMinimumReplicas(ctx)
+	cluster, err := bc.waitForMinimumReplicas(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("bootstrap rule 1 failed: %w", err)
 	}
 
 	// Step 2-4: Classify cluster state according to bootstrap rules
-	if err := bc.classifyBootstrapState(ctx, clusterState); err != nil {
+	if err := bc.classifyBootstrapState(ctx, cluster); err != nil {
 		return nil, fmt.Errorf("bootstrap classification failed: %w", err)
 	}
 
 	// Handle each state according to README.md rules
-	switch clusterState.StateType {
+	switch bc.controller.cluster.StateType {
 	case INITIAL_STATE:
-		if err := bc.handleInitialState(ctx, clusterState); err != nil {
+		if err := bc.handleInitialState(ctx, cluster); err != nil {
 			return nil, fmt.Errorf("INITIAL_STATE handling failed: %w", err)
 		}
 	case OPERATIONAL_STATE:
-		if err := bc.handleOperationalState(ctx, clusterState); err != nil {
+		if err := bc.handleOperationalState(ctx, cluster); err != nil {
 			return nil, fmt.Errorf("OPERATIONAL_STATE handling failed: %w", err)
 		}
 	default:
 		// UNKNOWN_STATE - crash immediately as per README
 		log.Printf("❌ UNKNOWN_STATE detected - controller must crash immediately")
 		log.Printf("❌ Manual intervention required to fix cluster state")
-		log.Printf("State type: %s", clusterState.StateType.String())
+		log.Printf("State type: %s", bc.controller.cluster.StateType.String())
 		os.Exit(1)
 	}
 
 	// Mark bootstrap complete and transition to operational phase
-	clusterState.IsBootstrapPhase = false
+	bc.controller.cluster.IsBootstrapPhase = false
 	
 	// Transition gateway to operational phase
 	if bc.controller.gatewayServer != nil {
@@ -85,11 +85,11 @@ func (bc *BootstrapController) ExecuteBootstrap(ctx context.Context) (*ClusterSt
 	log.Println("=== BOOTSTRAP PHASE COMPLETE ===")
 	log.Println("Gateway will now ACCEPT bolt client connections")
 
-	return clusterState, nil
+	return cluster, nil
 }
 
 // waitForMinimumReplicas implements bootstrap rule 1
-func (bc *BootstrapController) waitForMinimumReplicas(ctx context.Context) (*ClusterState, error) {
+func (bc *BootstrapController) waitForMinimumReplicas(ctx context.Context) (*MemgraphCluster, error) {
 	log.Println("Bootstrap Rule 1: Waiting for pod-0 and pod-1 to be ready")
 
 	maxWait := 5 * time.Minute
@@ -101,14 +101,16 @@ func (bc *BootstrapController) waitForMinimumReplicas(ctx context.Context) (*Clu
 
 	for {
 		// Discover current pods
-		clusterState, err := bc.controller.cluster.DiscoverPods(ctx)
+		err := bc.controller.cluster.DiscoverPods(ctx)
 		if err != nil {
 			return nil, fmt.Errorf("failed to discover pods: %w", err)
 		}
+		
+		// Use the cluster directly since it now contains the discovered state
 
 		// Check if pod-0 and pod-1 are ready
-		pod0Info, pod0Exists := clusterState.Pods[pod0Name]
-		pod1Info, pod1Exists := clusterState.Pods[pod1Name]
+		pod0Info, pod0Exists := bc.controller.cluster.Pods[pod0Name]
+		pod1Info, pod1Exists := bc.controller.cluster.Pods[pod1Name]
 
 		pod0Ready := pod0Exists && bc.isPodReady(pod0Info)
 		pod1Ready := pod1Exists && bc.isPodReady(pod1Info)
@@ -118,7 +120,7 @@ func (bc *BootstrapController) waitForMinimumReplicas(ctx context.Context) (*Clu
 		// Check if both pods are ready
 		if pod0Ready && pod1Ready {
 			log.Printf("✅ Bootstrap Rule 1 satisfied: both %s and %s are ready", pod0Name, pod1Name)
-			return clusterState, nil
+			return bc.controller.cluster, nil
 		}
 
 		// Check timeout
@@ -138,11 +140,11 @@ func (bc *BootstrapController) waitForMinimumReplicas(ctx context.Context) (*Clu
 }
 
 // classifyBootstrapState implements bootstrap rules 2-4
-func (bc *BootstrapController) classifyBootstrapState(ctx context.Context, clusterState *ClusterState) error {
+func (bc *BootstrapController) classifyBootstrapState(ctx context.Context, cluster *MemgraphCluster) error {
 	log.Println("Bootstrap Rules 2-4: Classifying cluster state...")
 
 	// Query Memgraph roles for all ready pods
-	if err := bc.queryMemgraphRoles(ctx, clusterState); err != nil {
+	if err := bc.queryMemgraphRoles(ctx, cluster); err != nil {
 		return fmt.Errorf("failed to query Memgraph roles: %w", err)
 	}
 
@@ -150,8 +152,8 @@ func (bc *BootstrapController) classifyBootstrapState(ctx context.Context, clust
 	pod0Name := bc.controller.config.GetPodName(0)
 	pod1Name := bc.controller.config.GetPodName(1)
 
-	pod0Info, pod0Exists := clusterState.Pods[pod0Name]
-	pod1Info, pod1Exists := clusterState.Pods[pod1Name]
+	pod0Info, pod0Exists := bc.controller.cluster.Pods[pod0Name]
+	pod1Info, pod1Exists := bc.controller.cluster.Pods[pod1Name]
 
 	// Rule 2: Check for INITIAL_STATE
 	if pod0Exists && pod1Exists &&
@@ -160,7 +162,7 @@ func (bc *BootstrapController) classifyBootstrapState(ctx context.Context, clust
 		// Verify both have empty storage (0 edge_count, 0 vertex_count)
 		if bc.hasEmptyStorage(ctx, pod0Info) && bc.hasEmptyStorage(ctx, pod1Info) {
 			log.Println("✅ Bootstrap Rule 2: INITIAL_STATE detected (both main, empty storage)")
-			clusterState.StateType = INITIAL_STATE
+			bc.controller.cluster.StateType = INITIAL_STATE
 			// Target main index will be set to 0 (always use pod-0 as main)
 			if err := bc.controller.updateTargetMainIndex(ctx, 0, "initial state detection"); err != nil {
 				return fmt.Errorf("failed to set target main index: %w", err)
@@ -174,7 +176,7 @@ func (bc *BootstrapController) classifyBootstrapState(ctx context.Context, clust
 	replicaCount := 0
 	var currentMain string
 
-	for podName, podInfo := range clusterState.Pods {
+	for podName, podInfo := range bc.controller.cluster.Pods {
 		switch podInfo.MemgraphRole {
 		case "main":
 			mainCount++
@@ -186,8 +188,8 @@ func (bc *BootstrapController) classifyBootstrapState(ctx context.Context, clust
 
 	if mainCount == 1 {
 		log.Printf("✅ Bootstrap Rule 3: OPERATIONAL_STATE detected (1 main: %s)", currentMain)
-		clusterState.StateType = OPERATIONAL_STATE
-		clusterState.CurrentMain = currentMain
+		bc.controller.cluster.StateType = OPERATIONAL_STATE
+		bc.controller.cluster.CurrentMain = currentMain
 		
 		// Set target main index based on current main
 		var targetIndex int
@@ -208,18 +210,18 @@ func (bc *BootstrapController) classifyBootstrapState(ctx context.Context, clust
 	log.Printf("❌ Bootstrap Rule 4: UNKNOWN_STATE detected")
 	log.Printf("Main count: %d, Replica count: %d", mainCount, replicaCount)
 	log.Printf("This requires manual intervention to fix")
-	clusterState.StateType = UNKNOWN_STATE
+	bc.controller.cluster.StateType = UNKNOWN_STATE
 	return nil
 }
 
 // handleInitialState implements INITIAL_STATE setup according to README
-func (bc *BootstrapController) handleInitialState(ctx context.Context, clusterState *ClusterState) error {
+func (bc *BootstrapController) handleInitialState(ctx context.Context, cluster *MemgraphCluster) error {
 	log.Println("Handling INITIAL_STATE: Setting up pod-0 as MAIN, pod-1 as SYNC REPLICA")
 
 	pod0Name := bc.controller.config.GetPodName(0)
 	pod1Name := bc.controller.config.GetPodName(1)
 
-	pod1Info, exists := clusterState.Pods[pod1Name]
+	pod1Info, exists := bc.controller.cluster.Pods[pod1Name]
 	if !exists {
 		return fmt.Errorf("pod-1 not found for SYNC replica setup")
 	}
@@ -233,7 +235,7 @@ func (bc *BootstrapController) handleInitialState(ctx context.Context, clusterSt
 	}
 
 	// Step 2: Set up SYNC replication from pod-0 to pod-1
-	pod0Info := clusterState.Pods[pod0Name]
+	pod0Info := bc.controller.cluster.Pods[pod0Name]
 	log.Printf("Step 2: Setting up SYNC replication from pod-0 to pod-1")
 	
 	replicaName := pod1Info.GetReplicaName()
@@ -252,7 +254,7 @@ func (bc *BootstrapController) handleInitialState(ctx context.Context, clusterSt
 	}
 
 	// Update cluster state
-	clusterState.CurrentMain = pod0Name
+	bc.controller.cluster.CurrentMain = pod0Name
 	pod1Info.IsSyncReplica = true
 	
 	log.Printf("✅ INITIAL_STATE setup completed: pod-0 is MAIN, pod-1 is SYNC REPLICA")
@@ -260,30 +262,30 @@ func (bc *BootstrapController) handleInitialState(ctx context.Context, clusterSt
 }
 
 // handleOperationalState implements OPERATIONAL_STATE learning
-func (bc *BootstrapController) handleOperationalState(ctx context.Context, clusterState *ClusterState) error {
-	log.Printf("Handling OPERATIONAL_STATE: Learning existing topology with main %s", clusterState.CurrentMain)
+func (bc *BootstrapController) handleOperationalState(ctx context.Context, cluster *MemgraphCluster) error {
+	log.Printf("Handling OPERATIONAL_STATE: Learning existing topology with main %s", bc.controller.cluster.CurrentMain)
 	
 	// Update controller's tracking state using consolidated method
 	targetMainIndex := bc.controller.getTargetMainIndex()
 	if err := bc.controller.updateTargetMainIndex(ctx, targetMainIndex,
-		fmt.Sprintf("Learning from OPERATIONAL_STATE with main %s", clusterState.CurrentMain)); err != nil {
+		fmt.Sprintf("Learning from OPERATIONAL_STATE with main %s", bc.controller.cluster.CurrentMain)); err != nil {
 		return fmt.Errorf("failed to update target main index: %w", err)
 	}
 	// Main is now tracked in state manager via updateTargetMainIndex call above
 	
 	log.Printf("✅ OPERATIONAL_STATE learning completed: main=%s, target_index=%d", 
-		clusterState.CurrentMain, bc.controller.getTargetMainIndex())
+		bc.controller.cluster.CurrentMain, bc.controller.getTargetMainIndex())
 	return nil
 }
 
 // queryMemgraphRoles queries replication roles for all pods
-func (bc *BootstrapController) queryMemgraphRoles(ctx context.Context, clusterState *ClusterState) error {
+func (bc *BootstrapController) queryMemgraphRoles(ctx context.Context, cluster *MemgraphCluster) error {
 	log.Println("Querying Memgraph roles for cluster state classification...")
 
 	var queryErrors []error
 	successCount := 0
 
-	for podName, podInfo := range clusterState.Pods {
+	for podName, podInfo := range bc.controller.cluster.Pods {
 		if podInfo.BoltAddress == "" {
 			log.Printf("Skipping pod %s: no Bolt address", podName)
 			continue

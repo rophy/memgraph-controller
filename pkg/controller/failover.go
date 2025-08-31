@@ -9,7 +9,7 @@ import (
 )
 
 // detectMainFailover detects if the current main has failed
-func (c *MemgraphController) detectMainFailover(clusterState *ClusterState) bool {
+func (c *MemgraphController) detectMainFailover(cluster *MemgraphCluster) bool {
 	// Get current main from state manager for operational phase failover detection
 	ctx := context.Background()
 	lastKnownMain, err := c.getCurrentMainFromState(ctx)
@@ -21,7 +21,7 @@ func (c *MemgraphController) detectMainFailover(clusterState *ClusterState) bool
 	log.Printf("Checking failover for last known main: %s", lastKnownMain)
 
 	// Check if last known main pod still exists
-	mainPod, exists := clusterState.Pods[lastKnownMain]
+	mainPod, exists := cluster.Pods[lastKnownMain]
 	if !exists {
 		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s no longer exists", lastKnownMain)
 		return true
@@ -45,7 +45,7 @@ func (c *MemgraphController) detectMainFailover(clusterState *ClusterState) bool
 }
 
 // handleMainFailover handles main failover scenarios with SYNC replica priority
-func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterState *ClusterState) error {
+func (c *MemgraphController) handleMainFailover(ctx context.Context, cluster *MemgraphCluster) error {
 	log.Printf("🔄 Handling main failover...")
 
 	// Get the failed main from state manager
@@ -60,7 +60,7 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 	var newMain *PodInfo
 	var promotionReason string
 
-	if clusterState.StateType == OPERATIONAL_STATE {
+	if cluster.StateType == OPERATIONAL_STATE {
 		// Use design contract: the other main-eligible pod MUST be the SYNC replica
 		failedMainIndex := c.config.ExtractPodIndex(oldMain)
 		
@@ -80,7 +80,7 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 
 		newMainName := c.config.GetPodName(newMainIndex)
 		var exists bool
-		newMain, exists = clusterState.Pods[newMainName]
+		newMain, exists = cluster.Pods[newMainName]
 		
 		if !exists {
 			log.Printf("❌ CRITICAL: Design contract SYNC replica %s not found in cluster state", newMainName)
@@ -98,10 +98,10 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 
 	} else {
 		// Non-OPERATIONAL state: fall back to discovery-based approach
-		log.Printf("⚠️  Non-OPERATIONAL state (%s): using discovery-based failover", clusterState.StateType)
+		log.Printf("⚠️  Non-OPERATIONAL state (%s): using discovery-based failover", cluster.StateType)
 		
 		var healthyReplicas []*PodInfo
-		for _, podInfo := range clusterState.Pods {
+		for _, podInfo := range cluster.Pods {
 			if podInfo.Name == oldMain {
 				continue // Skip the failed main
 			}
@@ -140,7 +140,7 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 			}
 			
 			// Update cluster state
-			clusterState.CurrentMain = newMain.Name
+			cluster.CurrentMain = newMain.Name
 			
 			log.Printf("⚡ IMMEDIATE state update completed in %v: targetMainIndex=%d, gateway switching...", 
 				time.Since(failoverStartTime), newMainIndex)
@@ -159,7 +159,7 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 
 		// Step 3: Remove failed pod from cluster state to prevent reconciliation delays
 		if oldMain != "" {
-			delete(clusterState.Pods, oldMain)
+			delete(cluster.Pods, oldMain)
 			log.Printf("🗑️  Filtered failed pod %s from reconciliation to prevent delays", oldMain)
 		}
 
@@ -169,13 +169,13 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 		log.Printf("   → Gateway: ✅ switched | Memgraph: ✅ promoted | Reconciliation: 🗑️  filtered")
 
 		// Log failover event with detailed metrics
-		isOperationalFailover := clusterState.StateType == OPERATIONAL_STATE
+		isOperationalFailover := cluster.StateType == OPERATIONAL_STATE
 		failoverMetrics := &MainSelectionMetrics{
 			Timestamp:            time.Now(),
-			StateType:            clusterState.StateType,
+			StateType:            cluster.StateType,
 			SelectedMain:         newMain.Name,
 			SelectionReason:      promotionReason,
-			HealthyPodsCount:     len(clusterState.Pods) - 1, // Total pods minus failed main
+			HealthyPodsCount:     len(cluster.Pods) - 1, // Total pods minus failed main
 			SyncReplicaAvailable: isOperationalFailover,      // OPERATIONAL state guarantees SYNC replica
 			FailoverDetected:     true,
 			DecisionFactors:      []string{fmt.Sprintf("old_main_failed:%s", oldMain), fmt.Sprintf("design_contract:%t", isOperationalFailover)},
@@ -184,7 +184,7 @@ func (c *MemgraphController) handleMainFailover(ctx context.Context, clusterStat
 		log.Printf("📊 FAILOVER EVENT: old_main=%s, new_main=%s, reason=%s, design_contract=%t",
 			oldMain, newMain.Name, promotionReason, isOperationalFailover)
 
-		clusterState.LogMainSelectionDecision(failoverMetrics)
+		cluster.LogMainSelectionDecision(failoverMetrics)
 	}
 
 	return nil
@@ -226,13 +226,13 @@ func (c *MemgraphController) selectBestReplicaForPromotion(replicas []*PodInfo, 
 // handleMainFailurePromotion handles main failure and promotes SYNC replica
 
 // identifyFailedMainIndex determines which pod (0 or 1) was the failed main
-func (c *MemgraphController) identifyFailedMainIndex(clusterState *ClusterState) int {
+func (c *MemgraphController) identifyFailedMainIndex(cluster *MemgraphCluster) int {
 	pod0Name := c.config.StatefulSetName + "-0"
 	pod1Name := c.config.StatefulSetName + "-1"
 
 	// Check which pod has the most recent restart (indicating it was the failed main)
-	pod0Info, pod0Exists := clusterState.Pods[pod0Name]
-	pod1Info, pod1Exists := clusterState.Pods[pod1Name]
+	pod0Info, pod0Exists := cluster.Pods[pod0Name]
+	pod1Info, pod1Exists := cluster.Pods[pod1Name]
 
 	if !pod0Exists && !pod1Exists {
 		log.Printf("Warning: Neither pod-0 nor pod-1 found, defaulting to pod-0 as failed main")
@@ -261,10 +261,10 @@ func (c *MemgraphController) identifyFailedMainIndex(clusterState *ClusterState)
 }
 
 // updateSyncReplicaInfo updates IsSyncReplica field for all pods based on actual main replica data
-func (c *MemgraphController) updateSyncReplicaInfo(clusterState *ClusterState) {
+func (c *MemgraphController) updateSyncReplicaInfo(cluster *MemgraphCluster) {
 	// Find current MAIN node
 	var mainPod *PodInfo
-	for _, podInfo := range clusterState.Pods {
+	for _, podInfo := range cluster.Pods {
 		if podInfo.MemgraphRole == "main" {
 			mainPod = podInfo
 			break
@@ -273,14 +273,14 @@ func (c *MemgraphController) updateSyncReplicaInfo(clusterState *ClusterState) {
 
 	if mainPod == nil {
 		// No MAIN node found, clear all SYNC replica flags
-		for _, podInfo := range clusterState.Pods {
+		for _, podInfo := range cluster.Pods {
 			podInfo.IsSyncReplica = false
 		}
 		return
 	}
 
 	// Mark all replicas as ASYNC first
-	for _, podInfo := range clusterState.Pods {
+	for _, podInfo := range cluster.Pods {
 		podInfo.IsSyncReplica = false
 	}
 
@@ -289,7 +289,7 @@ func (c *MemgraphController) updateSyncReplicaInfo(clusterState *ClusterState) {
 		if replica.SyncMode == "sync" { // Memgraph returns lowercase "sync"
 			// Convert replica name back to pod name (underscores to dashes)
 			podName := strings.ReplaceAll(replica.Name, "_", "-")
-			if podInfo, exists := clusterState.Pods[podName]; exists {
+			if podInfo, exists := cluster.Pods[podName]; exists {
 				podInfo.IsSyncReplica = true
 				log.Printf("Identified SYNC replica: %s", podName)
 			}

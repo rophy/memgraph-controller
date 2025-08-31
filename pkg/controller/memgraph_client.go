@@ -15,7 +15,7 @@ import (
 
 type MemgraphClient struct {
 	config         *Config
-	connectionPool *ConnectionPool
+	connectionPool *ConnectionPool // Will be set from ClusterState
 	retryConfig    RetryConfig
 }
 
@@ -311,7 +311,7 @@ func assessReplicationHealth(status string, behind int) (bool, string) {
 func NewMemgraphClient(config *Config) *MemgraphClient {
 	return &MemgraphClient{
 		config:         config,
-		connectionPool: NewConnectionPool(config),
+		connectionPool: NewConnectionPool(config), // Create own connection pool initially
 		retryConfig: RetryConfig{
 			MaxRetries: 3,
 			BaseDelay:  1 * time.Second,
@@ -320,8 +320,15 @@ func NewMemgraphClient(config *Config) *MemgraphClient {
 	}
 }
 
+// SetConnectionPool sets the connection pool from ClusterState
+func (mc *MemgraphClient) SetConnectionPool(connectionPool *ConnectionPool) {
+	mc.connectionPool = connectionPool
+}
+
 func (mc *MemgraphClient) Close(ctx context.Context) {
-	mc.connectionPool.Close(ctx)
+	if mc.connectionPool != nil {
+		mc.connectionPool.Close(ctx)
+	}
 }
 
 func (mc *MemgraphClient) QueryReplicationRole(ctx context.Context, boltAddress string) (*ReplicationRole, error) {

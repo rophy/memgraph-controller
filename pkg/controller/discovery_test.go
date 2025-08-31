@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"testing"
 	"time"
 
@@ -157,106 +156,6 @@ func TestMemgraphController_GetPodsByLabel(t *testing.T) {
 
 // Tests for main controller discovery functions
 
-func TestMemgraphController_PerformBootstrapValidation_SafeStates(t *testing.T) {
-	tests := []struct {
-		name          string
-		stateType     ClusterStateType
-		bootstrapSafe bool
-		expectError   bool
-		errorContains string
-	}{
-		{
-			name:          "operational_state_safe",
-			stateType:     OPERATIONAL_STATE,
-			bootstrapSafe: true,
-			expectError:   false,
-		},
-		{
-			name:          "initial_state_safe",
-			stateType:     INITIAL_STATE,
-			bootstrapSafe: true,
-			expectError:   false,
-		},
-		{
-			name:          "unknown_state_unsafe",
-			stateType:     UNKNOWN_STATE,
-			bootstrapSafe: false,
-			expectError:   true,
-			errorContains: "UNKNOWN_STATE",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Create mock controller with minimal setup
-			controller := &MemgraphController{
-				config: &Config{
-					AppName:         "memgraph",
-					StatefulSetName: "memgraph-ha",
-				},
-			}
-
-			// Create cluster state with specified state type
-			clusterState := &ClusterState{
-				IsBootstrapPhase: true, // Bootstrap validation should only be called during bootstrap phase
-				StateType:       tt.stateType,
-				Pods:            make(map[string]*PodInfo),
-			}
-
-			// Mock the cluster state methods
-			if tt.stateType == OPERATIONAL_STATE {
-				clusterState.Pods["memgraph-ha-0"] = &PodInfo{
-					Name:         "memgraph-ha-0",
-					MemgraphRole: "main",
-				}
-				clusterState.Pods["memgraph-ha-1"] = &PodInfo{
-					Name:         "memgraph-ha-1",
-					MemgraphRole: "replica",
-				}
-			} else if tt.stateType == INITIAL_STATE {
-				clusterState.Pods["memgraph-ha-0"] = &PodInfo{
-					Name:         "memgraph-ha-0",
-					MemgraphRole: "main",
-				}
-				clusterState.Pods["memgraph-ha-1"] = &PodInfo{
-					Name:         "memgraph-ha-1",
-					MemgraphRole: "main",
-				}
-			} else if tt.stateType == UNKNOWN_STATE {
-				// For UNKNOWN_STATE: both pods are replicas (not allowed per README.md)
-				clusterState.Pods["memgraph-ha-0"] = &PodInfo{
-					Name:         "memgraph-ha-0",
-					MemgraphRole: "replica",
-				}
-				clusterState.Pods["memgraph-ha-1"] = &PodInfo{
-					Name:         "memgraph-ha-1",
-					MemgraphRole: "replica",
-				}
-			}
-
-			// Mock IsBootstrapSafe to return expected value
-			originalBootstrapSafe := clusterState.BootstrapSafe
-			clusterState.BootstrapSafe = tt.bootstrapSafe
-			defer func() { clusterState.BootstrapSafe = originalBootstrapSafe }()
-
-			// Add cluster to controller for test
-		controller.cluster = NewMemgraphCluster(nil, controller.config, nil, NewMockStateManager(0))
-		err := controller.performBootstrapValidation(clusterState)
-
-			if tt.expectError {
-				if err == nil {
-					t.Errorf("Expected error but got none")
-				} else if tt.errorContains != "" && !strings.Contains(err.Error(), tt.errorContains) {
-					t.Errorf("Error %v does not contain expected text %q", err, tt.errorContains)
-				}
-			} else {
-				if err != nil {
-					t.Errorf("Unexpected error: %v", err)
-				}
-			}
-		})
-	}
-}
 
 func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 	controller := &MemgraphController{

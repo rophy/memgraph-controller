@@ -26,7 +26,6 @@ func generateStateConfigMapName() string {
 	return fmt.Sprintf("%s-controller-state", releaseName)
 }
 
-
 type MemgraphController struct {
 	clientset      kubernetes.Interface
 	config         *Config
@@ -48,7 +47,6 @@ type MemgraphController struct {
 	lastReconcile time.Time
 	failureCount  int
 	maxFailures   int
-
 
 	// Event-driven reconciliation
 	podInformer       cache.SharedInformer
@@ -121,63 +119,6 @@ func (c *MemgraphController) getStateManager() StateManagerInterface {
 
 // Delegation methods for backwards compatibility with tests
 
-// performBootstrapValidation validates cluster state during bootstrap phase
-func (c *MemgraphController) performBootstrapValidation(clusterState *ClusterState) error {
-	// Classify the current cluster state
-	oldStateType := clusterState.StateType
-	stateType := clusterState.ClassifyClusterState(c.config)
-	clusterState.StateType = stateType
-
-	// Log state transition if changed
-	clusterState.LogStateTransition(oldStateType, "bootstrap classification")
-
-	log.Printf("Bootstrap validation: cluster state classified as %s", stateType.String())
-
-	// Log pod role distribution for debugging
-	mainPods := clusterState.GetMainPods()
-	replicaPods := clusterState.GetReplicaPods()
-	log.Printf("Pod role distribution: %d main pods %v, %d replica pods %v",
-		len(mainPods), mainPods, len(replicaPods), replicaPods)
-
-	// Check if bootstrap is safe to proceed
-	isBootstrapSafe := clusterState.IsBootstrapSafe(c.config)
-	clusterState.BootstrapSafe = isBootstrapSafe
-
-	if !isBootstrapSafe {
-		// UNKNOWN_STATE - controller should crash immediately per README.md
-		log.Printf("❌ CONTROLLER CRASH: UNKNOWN_STATE detected")
-		log.Printf("❌ Cluster is in an unknown state that requires manual intervention")
-		log.Printf("🔧 Recovery: Human must fix the cluster before controller can start")
-		return fmt.Errorf("controller crash: cluster in UNKNOWN_STATE, human intervention required")
-	}
-
-	// Safe states - proceed with bootstrap and determine target main index
-	switch stateType {
-	case INITIAL_STATE:
-		log.Printf("✅ SAFE: Fresh cluster state detected")
-		log.Printf("All pods are main or no role data yet - no data divergence risk")
-		log.Printf("Will apply deterministic role assignment")
-
-	case OPERATIONAL_STATE:
-		log.Printf("✅ SAFE: Operational cluster state detected")
-		log.Printf("Exactly one main found - will learn existing topology")
-		if len(mainPods) > 0 {
-			log.Printf("Current main: %s", mainPods[0])
-		}
-	}
-
-	// Determine target main index (0 or 1)
-	targetMainIndex, err := clusterState.DetermineMainIndex(c.config)
-	if err != nil {
-		return fmt.Errorf("failed to determine target main index: %w", err)
-	}
-
-	// Target main index is now managed in controller state (targetMainIndex)
-	log.Printf("Target main index determined: %d (pod: %s)",
-		targetMainIndex, c.config.GetPodName(targetMainIndex))
-
-	return nil
-}
 
 // applyDeterministicRoles applies roles for fresh/initial clusters
 func (c *MemgraphController) applyDeterministicRoles(clusterState *ClusterState) {
@@ -321,7 +262,6 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 
 // ConfigureReplication configures main/replica relationships in the cluster
 
-
 // SyncPodLabels synchronizes pod labels with their actual replication state
 func (c *MemgraphController) SyncPodLabels(ctx context.Context, clusterState *ClusterState) error {
 	if len(clusterState.Pods) == 0 {
@@ -464,9 +404,9 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			c.leaderMu.Lock()
 			c.isLeader = true
 			c.leaderMu.Unlock()
-			
+
 			log.Println("🎯 Became leader - loading state and starting controller operations")
-			
+
 			// Load state to determine startup phase (BOOTSTRAP vs OPERATIONAL)
 			if err := c.loadControllerStateOnStartup(ctx); err != nil {
 				log.Printf("Warning: Failed to load startup state: %v", err)
@@ -477,7 +417,7 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			c.leaderMu.Lock()
 			c.isLeader = false
 			c.leaderMu.Unlock()
-			
+
 			log.Println("⏹️  Lost leadership - stopping operations")
 			// Stop reconciliation operations but keep the process running
 		},
@@ -540,7 +480,7 @@ func (c *MemgraphController) getTargetMainIndex() int {
 	if c.getStateManager() == nil {
 		return -1 // Bootstrap phase / test scenario
 	}
-	
+
 	ctx := context.Background()
 	state, err := c.getStateManager().LoadState(ctx)
 	if err != nil {
@@ -556,7 +496,7 @@ func (c *MemgraphController) getCurrentMainFromState(ctx context.Context) (strin
 	if c.getStateManager() == nil {
 		return "", fmt.Errorf("no state manager available")
 	}
-	
+
 	state, err := c.getStateManager().LoadState(ctx)
 	if err != nil {
 		return "", err
@@ -574,6 +514,10 @@ func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, newTarge
 
 // onPodAdd handles pod addition events
 func (c *MemgraphController) onPodAdd(obj interface{}) {
+	pod := obj.(*v1.Pod)
+	if !c.config.IsMemgraphPod(pod.Name) {
+		return // Ignore unrelated pods
+	}
 	c.enqueuePodEvent("pod-added")
 }
 
@@ -598,7 +542,7 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 // onPodDelete handles pod deletion events
 func (c *MemgraphController) onPodDelete(obj interface{}) {
 	pod := obj.(*v1.Pod)
-	
+
 	// Invalidate connection for deleted pod
 	c.memgraphClient.connectionPool.InvalidatePodConnection(pod.Name)
 	log.Printf("Pod %s deleted, invalidated connection", pod.Name)
@@ -610,10 +554,10 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 		log.Printf("Could not get current main from state: %v", err)
 		currentMain = ""
 	}
-	
+
 	if currentMain != "" && pod.Name == currentMain {
 		log.Printf("🚨 MAIN POD DELETED: %s - triggering IMMEDIATE failover", pod.Name)
-		
+
 		// Only leader should handle failover
 		if c.IsLeader() {
 			go c.handleImmediateFailover(pod.Name)
@@ -629,14 +573,14 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 // onConfigMapAdd handles ConfigMap creation events
 func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 	configMap := obj.(*v1.ConfigMap)
-	
+
 	// Only process our controller state ConfigMap
 	if configMap.Name != c.getStateManager().ConfigMapName() {
 		return
 	}
-	
+
 	log.Printf("🔄 ConfigMap added: %s", configMap.Name)
-	
+
 	// Extract targetMainIndex from ConfigMap
 	targetMainIndexStr, exists := configMap.Data["targetMainIndex"]
 	if !exists {
@@ -648,22 +592,22 @@ func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 			return
 		}
 	}
-	
+
 	// Parse targetMainIndex
 	var newTargetMainIndex int
 	if _, err := fmt.Sscanf(targetMainIndexStr, "%d", &newTargetMainIndex); err != nil {
 		log.Printf("Failed to parse targetMainIndex from ConfigMap: %v", err)
 		return
 	}
-	
+
 	// Check if this is different from our current state
 	currentIndex := c.cluster.getTargetMainIndex()
-	
+
 	if currentIndex != newTargetMainIndex {
 		log.Printf("Target main index changed: %d -> %d", currentIndex, newTargetMainIndex)
 		c.handleTargetMainChanged(newTargetMainIndex)
 	}
-	
+
 	// Transition gateway to operational phase for non-leaders
 	if !c.IsLeader() && c.gatewayServer != nil {
 		c.gatewayServer.SetBootstrapPhase(false)
@@ -674,12 +618,12 @@ func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 // onConfigMapUpdate handles ConfigMap update events
 func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 	newConfigMap := newObj.(*v1.ConfigMap)
-	
+
 	// Only process our controller state ConfigMap
 	if newConfigMap.Name != c.getStateManager().ConfigMapName() {
 		return
 	}
-	
+
 	// Extract new targetMainIndex from ConfigMap
 	newTargetMainIndexStr, exists := newConfigMap.Data["targetMainIndex"]
 	if !exists {
@@ -691,22 +635,22 @@ func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 			return
 		}
 	}
-	
+
 	// Parse new targetMainIndex
 	var newTargetMainIndex int
 	if _, err := fmt.Sscanf(newTargetMainIndexStr, "%d", &newTargetMainIndex); err != nil {
 		log.Printf("Failed to parse targetMainIndex from ConfigMap: %v", err)
 		return
 	}
-	
+
 	// Compare with our current state (not old ConfigMap)
 	currentIndex := c.cluster.getTargetMainIndex()
-	
+
 	if currentIndex == newTargetMainIndex {
 		// No change from our perspective, ignore
 		return
 	}
-	
+
 	log.Printf("🔄 ConfigMap state change detected: TargetMainIndex %d -> %d", currentIndex, newTargetMainIndex)
 	c.handleTargetMainChanged(newTargetMainIndex)
 }
@@ -714,87 +658,87 @@ func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 // onConfigMapDelete handles ConfigMap deletion events
 func (c *MemgraphController) onConfigMapDelete(obj interface{}) {
 	configMap := obj.(*v1.ConfigMap)
-	
+
 	// Only process our controller state ConfigMap
 	if configMap.Name != c.getStateManager().ConfigMapName() {
 		return
 	}
-	
+
 	log.Printf("⚠️ ConfigMap deleted: %s", configMap.Name)
 }
 
 // handleTargetMainChanged processes target main index changes and coordinates controller pods
 func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 	coordinationStartTime := time.Now()
-	
+
 	// Don't process our own changes if we're the leader
 	if c.IsLeader() {
 		log.Printf("⚠️ Leader ignoring target main change (likely caused by own update)")
 		return
 	}
-	
+
 	oldTargetIndex := c.cluster.getTargetMainIndex()
-	
+
 	oldLastKnownMain := ""
 	if oldTargetIndex >= 0 {
 		oldLastKnownMain = c.config.GetPodName(oldTargetIndex)
 	}
-	
+
 	// Check if this is actually a change
 	if oldTargetIndex == newTargetMainIndex {
 		log.Printf("📋 Target main index unchanged (%d), ignoring", newTargetMainIndex)
 		return
 	}
-	
+
 	// Log detailed coordination information
 	log.Printf("🔄 COORDINATION EVENT: Non-leader detected TargetMainIndex change")
 	log.Printf("   📊 Change: %d -> %d", oldTargetIndex, newTargetMainIndex)
 	log.Printf("   🏷️ Pod Identity: %s", c.getPodIdentity())
-	
+
 	// Phase 1: Update local controller state atomically
 	newLastKnownMain := ""
 	if newTargetMainIndex >= 0 {
 		newLastKnownMain = c.config.GetPodName(newTargetMainIndex)
 	}
-	
+
 	// Update state directly via state manager (for non-leaders)
-	
-	log.Printf("   ✅ State updated: targetMainIndex=%d, lastKnownMain=%s -> %s", 
+
+	log.Printf("   ✅ State updated: targetMainIndex=%d, lastKnownMain=%s -> %s",
 		newTargetMainIndex, oldLastKnownMain, newLastKnownMain)
-	
+
 	// Phase 2: Coordinate gateway connection termination
 	connectionTerminationTime := time.Now()
-	
+
 	if c.gatewayServer != nil {
 		log.Printf("   🔄 Coordinating gateway connection termination...")
-		
+
 		// Get current connection count before termination
 		// Note: This assumes gateway has a method to get connection count
 		// We'll log the termination attempt for now
-		
+
 		endpoint, err := c.GetCurrentMainEndpoint(context.Background())
 		if err != nil {
 			log.Printf("   ⚠️ Failed to get current main endpoint: %v", err)
 			endpoint = "" // Use empty endpoint to trigger connection termination
 		}
-		
+
 		log.Printf("   🎯 New main endpoint: %s", endpoint)
 		c.gatewayServer.SetCurrentMain(endpoint)
-		
+
 		// The SetCurrentMain call will trigger terminateAllConnections if main changed
 		log.Printf("   ✅ Gateway updated with new main endpoint")
 	} else {
 		log.Printf("   ⚠️ Gateway server not available for coordination")
 	}
-	
+
 	// Phase 3: Coordination completion logging
 	coordinationDuration := time.Since(coordinationStartTime)
 	terminationDuration := time.Since(connectionTerminationTime)
-	
+
 	log.Printf("🎯 COORDINATION COMPLETED:")
 	log.Printf("   📈 Total duration: %v", coordinationDuration)
 	log.Printf("   🔌 Connection handling: %v", terminationDuration)
-	log.Printf("   🏷️ Final state: targetMainIndex=%d, lastKnownMain=%s", 
+	log.Printf("   🏷️ Final state: targetMainIndex=%d, lastKnownMain=%s",
 		newTargetMainIndex, newLastKnownMain)
 	log.Printf("   🕒 Coordinated at: %s", time.Now().Format(time.RFC3339))
 }
@@ -806,12 +750,12 @@ func (c *MemgraphController) getPodIdentity() string {
 	if podName == "" {
 		podName = "unknown-pod"
 	}
-	
+
 	leaderStatus := "non-leader"
 	if c.IsLeader() {
 		leaderStatus = "leader"
 	}
-	
+
 	return fmt.Sprintf("%s (%s)", podName, leaderStatus)
 }
 
@@ -854,7 +798,6 @@ func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
 func (c *MemgraphController) enqueuePodEvent(reason string) {
 	log.Printf("Pod event detected: %s (reconciliation will occur on next timer cycle)", reason)
 }
-
 
 // Run starts the main controller loop
 func (c *MemgraphController) Run(ctx context.Context) error {
@@ -1051,7 +994,6 @@ func (c *MemgraphController) GetReconciliationMetrics() ReconciliationMetrics {
 	return *c.metrics
 }
 
-
 // stop gracefully stops the controller
 func (c *MemgraphController) stop() {
 	c.mu.Lock()
@@ -1084,17 +1026,17 @@ func (c *MemgraphController) GetControllerStatus() map[string]interface{} {
 	defer c.mu.RUnlock()
 
 	return map[string]interface{}{
-		"running":         c.isRunning,
-		"last_reconcile":  c.lastReconcile,
-		"failure_count":   c.failureCount,
-		"max_failures":    c.maxFailures,
+		"running":        c.isRunning,
+		"last_reconcile": c.lastReconcile,
+		"failure_count":  c.failureCount,
+		"max_failures":   c.maxFailures,
 	}
 }
 
 // GetCurrentMainEndpoint returns the current main endpoint for gateway connections
 func (c *MemgraphController) GetCurrentMainEndpoint(ctx context.Context) (string, error) {
 	var currentMain string
-	
+
 	// Both leaders and non-leaders read from ConfigMap to ensure consistency
 	currentMain, err := c.getCurrentMainFromState(ctx)
 	if err != nil {
@@ -1125,11 +1067,11 @@ func (c *MemgraphController) GetCurrentMainEndpoint(ctx context.Context) (string
 func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
 	failoverStartTime := time.Now()
 	log.Printf("🚀 IMMEDIATE FAILOVER TRIGGERED: Main pod %s deleted", deletedPodName)
-	
+
 	// Create context with timeout for failover operations
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	
+
 	// Discover cluster state to find SYNC replica
 	log.Printf("🔍 Discovering cluster state for immediate failover...")
 	clusterState, err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
@@ -1137,25 +1079,22 @@ func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
 		log.Printf("❌ CRITICAL: Failed to discover cluster state for immediate failover: %v", err)
 		return
 	}
-	
+
 	// Log cluster state
-	log.Printf("📊 Immediate failover cluster state: %d pods, main=%s", 
+	log.Printf("📊 Immediate failover cluster state: %d pods, main=%s",
 		len(clusterState.Pods), clusterState.CurrentMain)
-	
+
 	// Execute immediate failover using existing logic
 	if err := c.handleMainFailover(ctx, clusterState); err != nil {
 		log.Printf("❌ IMMEDIATE FAILOVER FAILED: %v", err)
 		return
 	}
-	
+
 	totalFailoverTime := time.Since(failoverStartTime)
-	log.Printf("🎯 IMMEDIATE FAILOVER COMPLETED in %v: Event-driven failover successful", 
+	log.Printf("🎯 IMMEDIATE FAILOVER COMPLETED in %v: Event-driven failover successful",
 		totalFailoverTime)
 }
 
 // handleMainFailurePromotion promotes SYNC replica when main fails during operations
 
 // promoteToMain promotes a pod to main role
-
-
-

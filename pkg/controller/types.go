@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -55,6 +56,9 @@ type ClusterState struct {
 	Pods        map[string]*PodInfo
 	CurrentMain string
 
+	// State persistence - StateManager for TargetMainIndex tracking
+	stateManager StateManagerInterface
+
 	// Controller state tracking
 	StateType        ClusterStateType
 	IsBootstrapPhase bool // True during initial discovery
@@ -75,9 +79,10 @@ type PodInfo struct {
 	Pod                *v1.Pod       // Reference to Kubernetes pod object
 }
 
-func NewClusterState() *ClusterState {
+func NewClusterState(stateManager StateManagerInterface) *ClusterState {
 	return &ClusterState{
-		Pods: make(map[string]*PodInfo),
+		Pods:         make(map[string]*PodInfo),
+		stateManager: stateManager,
 	}
 }
 
@@ -491,11 +496,39 @@ func (cs *ClusterState) GetClusterHealthSummary() map[string]interface{} {
 		"replica_pods":    replicaPods,
 		"sync_replicas":   syncReplicaCount,
 		"current_main":    cs.CurrentMain,
-		// target_index now retrieved from controller
+		"target_index":    cs.GetTargetMainIndex(),
 		"state_type":      cs.StateType.String(),
 		"bootstrap_phase": cs.IsBootstrapPhase,
 		"last_change":     cs.LastStateChange,
 	}
+}
+
+// GetTargetMainIndex retrieves the target main index from persistent state
+func (cs *ClusterState) GetTargetMainIndex() int {
+	if cs.stateManager == nil {
+		return -1 // Bootstrap phase or test scenario
+	}
+	
+	ctx := context.Background()
+	state, err := cs.stateManager.LoadState(ctx)
+	if err != nil {
+		log.Printf("Warning: Failed to load target main index: %v", err)
+		return -1
+	}
+	return state.TargetMainIndex
+}
+
+// SetTargetMainIndex persists the target main index to state storage
+func (cs *ClusterState) SetTargetMainIndex(ctx context.Context, targetIndex int) error {
+	if cs.stateManager == nil {
+		return fmt.Errorf("state manager not initialized")
+	}
+	
+	state := &ControllerState{
+		TargetMainIndex: targetIndex,
+	}
+	
+	return cs.stateManager.SaveState(ctx, state)
 }
 
 // ReconciliationMetrics tracks reconciliation performance and behavior

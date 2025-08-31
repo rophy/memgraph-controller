@@ -29,7 +29,7 @@ func TestPodState_String(t *testing.T) {
 }
 
 func TestNewClusterState(t *testing.T) {
-	cs := NewClusterState()
+	cs := NewClusterState(nil) // Test with nil stateManager
 	if cs == nil {
 		t.Fatal("NewClusterState() returned nil")
 	}

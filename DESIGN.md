@@ -128,21 +128,20 @@ Once replication is good, controller picks pod-0 as MAIN, and create configmap.
 
 ### Actions to Kubernetes Events
 
-- Memgraph pod IP changes:
-  - Controller updates pod IP information, and wait for pod ready event.
-- Memgraph pod status changed to "not ready":
-  - If configmap not exist yet, do nothing.
-  - If pod is `TargetMainPod`:
-    - [all controllers] Disconnect and reject all gateway connections.
-    - If `TargetSyncReplica` pod status is "ready":
-      - Flip `TargetMainPod` with `TargetSyncReplica`, and promote the new `TargetMainPod` immediately.
-    - If `TargetSyncReplica` pod status is not "ready", controller logs error, and waits for `TargetMainPod` to recover.
-  - If pod is `TargetSyncReplica`:
-    - Controller logs error that MAIN will become read-only, and waits for `TargetSyncReplica` to recover.
-  - If pod is neither pod-0 or pod-1:
-    - Controller logs warning, drops the replication from `TargetMainPod`, and waits for async replica to recover.
-- Memgraph pod status changed to "ready":
-  - Controller performs reconciliation.
+- **Memgraph pod status changed to "not ready"**:
+  - **If pod is `TargetMainPod`:**
+    - **[ALL controllers]** Immediately terminate all gateway connections
+    - **[ALL controllers]** Gateway rejects new connections (main unavailable state)
+    - **[Leader only]** Flip `TargetMainPod` with `TargetSyncReplica`
+    - **[Leader only]** Promote new `TargetMainPod` immediately
+    - **[Leader only]** Update ConfigMap with new `TargetMainIndex`
+    - **[ALL controllers]** Receive ConfigMap update → Gateway accepts connections to new main
+  - **If pod is `TargetSyncReplica`:**
+    - Controller logs error that MAIN will become read-only
+    - Wait for `TargetSyncReplica` to recover
+  - **If pod is neither pod-0 or pod-1:**
+    - Drop replication from `TargetMainPod`
+    - Wait for async replica to recover
 
 ## Gateway Design
 
@@ -150,6 +149,13 @@ The controller includes an embedded TCP gateway that provides transparent failov
 
 1. On new connection: if pod status of `TargetMainPod` is ready, proxy to `TargetMainPod`, otherwise reject connection.
 2. When `TargetMainPod` has changed (failover happening): immediately disconnect all connections.
+
+### Expected Client Experience on Failover
+
+- **Connection Window**: Eliminated - no connections to failed main possible
+- **Client Disruption**: Single clean reconnection (1-3 seconds)
+- **Error Elimination**: No connection failures to dead main
+- **Failover Visibility**: Transparent to clients via coordinated gateway rejection
 
 ## Deployment Characteristics
 

@@ -39,9 +39,6 @@ type MemgraphController struct {
 	isLeader       bool
 	leaderMu       sync.RWMutex
 
-	// State persistence
-	stateManager StateManagerInterface
-
 	// Cluster operations
 	cluster *MemgraphCluster
 
@@ -96,10 +93,10 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 
 	// Initialize state manager with release-based ConfigMap name
 	configMapName := generateStateConfigMapName()
-	controller.stateManager = NewStateManager(clientset, config.Namespace, configMapName)
+	stateManager := NewStateManager(clientset, config.Namespace, configMapName)
 
 	// Initialize cluster operations
-	controller.cluster = NewMemgraphCluster(clientset, config, controller.memgraphClient, controller.stateManager)
+	controller.cluster = NewMemgraphCluster(clientset, config, controller.memgraphClient, stateManager)
 
 	// Initialize controller state
 	controller.maxFailures = 5
@@ -112,6 +109,14 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	controller.setupInformers()
 
 	return controller
+}
+
+// getStateManager returns the StateManager instance from the cluster
+func (c *MemgraphController) getStateManager() StateManagerInterface {
+	if c.cluster == nil {
+		return nil
+	}
+	return c.cluster.GetStateManager()
 }
 
 // Delegation methods for backwards compatibility with tests
@@ -499,7 +504,7 @@ func (c *MemgraphController) GetLeaderElection() *LeaderElection {
 
 // loadControllerStateOnStartup loads persisted state and determines startup phase
 func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) error {
-	exists, err := c.stateManager.StateExists(ctx)
+	exists, err := c.getStateManager().StateExists(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to check state existence: %w", err)
 	}
@@ -509,7 +514,7 @@ func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) e
 		return nil // Keep default bootstrap=true
 	}
 
-	state, err := c.stateManager.LoadState(ctx)
+	state, err := c.getStateManager().LoadState(ctx)
 	if err != nil {
 		log.Printf("Warning: Failed to load state ConfigMap: %v", err)
 		log.Println("Will start in BOOTSTRAP phase as fallback")
@@ -532,12 +537,12 @@ func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) e
 // getTargetMainIndex returns the current target main index from state manager
 func (c *MemgraphController) getTargetMainIndex() int {
 	// Handle test cases where stateManager is nil
-	if c.stateManager == nil {
+	if c.getStateManager() == nil {
 		return -1 // Bootstrap phase / test scenario
 	}
 	
 	ctx := context.Background()
-	state, err := c.stateManager.LoadState(ctx)
+	state, err := c.getStateManager().LoadState(ctx)
 	if err != nil {
 		// Return -1 if no state available (bootstrap phase)
 		return -1
@@ -548,11 +553,11 @@ func (c *MemgraphController) getTargetMainIndex() int {
 // getCurrentMainFromState gets the current main pod name from state manager
 func (c *MemgraphController) getCurrentMainFromState(ctx context.Context) (string, error) {
 	// Handle test cases where stateManager is nil
-	if c.stateManager == nil {
+	if c.getStateManager() == nil {
 		return "", fmt.Errorf("no state manager available")
 	}
 	
-	state, err := c.stateManager.LoadState(ctx)
+	state, err := c.getStateManager().LoadState(ctx)
 	if err != nil {
 		return "", err
 	}
@@ -626,7 +631,7 @@ func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 	configMap := obj.(*v1.ConfigMap)
 	
 	// Only process our controller state ConfigMap
-	if configMap.Name != c.stateManager.ConfigMapName() {
+	if configMap.Name != c.getStateManager().ConfigMapName() {
 		return
 	}
 	
@@ -671,7 +676,7 @@ func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 	newConfigMap := newObj.(*v1.ConfigMap)
 	
 	// Only process our controller state ConfigMap
-	if newConfigMap.Name != c.stateManager.ConfigMapName() {
+	if newConfigMap.Name != c.getStateManager().ConfigMapName() {
 		return
 	}
 	
@@ -711,7 +716,7 @@ func (c *MemgraphController) onConfigMapDelete(obj interface{}) {
 	configMap := obj.(*v1.ConfigMap)
 	
 	// Only process our controller state ConfigMap
-	if configMap.Name != c.stateManager.ConfigMapName() {
+	if configMap.Name != c.getStateManager().ConfigMapName() {
 		return
 	}
 	
@@ -972,7 +977,7 @@ func (c *MemgraphController) performLeaderReconciliation(ctx context.Context) er
 
 // isConfigMapReady checks if the controller state ConfigMap exists and is valid
 func (c *MemgraphController) isConfigMapReady(ctx context.Context) (bool, error) {
-	state, err := c.stateManager.LoadState(ctx)
+	state, err := c.getStateManager().LoadState(ctx)
 	if err != nil {
 		// ConfigMap doesn't exist or is invalid
 		log.Printf("ConfigMap not ready: %v", err)

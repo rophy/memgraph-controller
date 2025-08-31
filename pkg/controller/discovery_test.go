@@ -299,8 +299,8 @@ func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 			}
 
 			// Create a mock state manager with the expected state
-			controller.stateManager = NewMockStateManager(tt.targetMainIndex)
-			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, controller.stateManager)
+			mockStateManager := NewMockStateManager(tt.targetMainIndex)
+			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, mockStateManager)
 
 			controller.applyDeterministicRoles(clusterState)
 
@@ -317,7 +317,6 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 			AppName:         "memgraph",
 			StatefulSetName: "memgraph-ha",
 		},
-		stateManager: NewEmptyMockStateManager(), // Start with empty state, will be updated by learnExistingTopology
 	}
 
 	tests := []struct {
@@ -349,13 +348,14 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			// Reset the state manager for each test to ensure predictable behavior
+			var mockStateManager StateManagerInterface
 			if tt.name == "multiple_mains_fallback" {
 				// For multiple mains case, set expected fallback to index 0
-				controller.stateManager = NewMockStateManager(0)
+				mockStateManager = NewMockStateManager(0)
 			} else {
-				controller.stateManager = NewEmptyMockStateManager()
+				mockStateManager = NewEmptyMockStateManager()
 			}
-			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, controller.stateManager)
+			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, mockStateManager)
 			
 			clusterState := &ClusterState{
 				Pods:            make(map[string]*PodInfo),
@@ -430,8 +430,8 @@ func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			controller.stateManager = NewMockStateManager(tt.targetMainIndex)
-			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, controller.stateManager)
+			mockStateManager := NewMockStateManager(tt.targetMainIndex)
+			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, mockStateManager)
 			
 			clusterState := &ClusterState{
 				StateType:        tt.stateType,

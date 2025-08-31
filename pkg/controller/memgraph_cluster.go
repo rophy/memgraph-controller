@@ -37,7 +37,7 @@ func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) (*ClusterState, err
 		return nil, err
 	}
 
-	clusterState := NewClusterState()
+	clusterState := NewClusterState(mc.stateManager)
 
 	for _, pod := range pods.Items {
 		// Only process running pods
@@ -77,7 +77,7 @@ func (mc *MemgraphCluster) GetPodsByLabel(ctx context.Context, labelSelector str
 		return nil, err
 	}
 
-	clusterState := NewClusterState()
+	clusterState := NewClusterState(mc.stateManager)
 
 	for _, pod := range pods.Items {
 		podInfo := NewPodInfo(&pod)
@@ -98,6 +98,11 @@ func (mc *MemgraphCluster) getTargetMainIndex() int {
 		return -1
 	}
 	return state.TargetMainIndex
+}
+
+// GetStateManager returns the StateManager instance for direct access when needed
+func (mc *MemgraphCluster) GetStateManager() StateManagerInterface {
+	return mc.stateManager
 }
 
 // GetTargetMainPod returns the pod name of the current target main pod

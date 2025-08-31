@@ -67,8 +67,6 @@ class Neo4jClient {
                         console.error(`[Neo4j] ${message}`);
                         // Count driver-level errors in metrics
                         this.metrics.recordError();
-                        const stats = this.metrics.getStats();
-                        console.error(`Driver error counted | Stats:`, JSON.stringify(stats, null, 2));
                     }
                 }
             }
@@ -86,57 +84,44 @@ class Neo4jClient {
             return true;
         } catch (error) {
             this.metrics.recordError();
-            const stats = this.metrics.getStats();
-            console.error(`✗ Failed to connect to Neo4j: ${error.message} | Stats:`, 
-                JSON.stringify(stats, null, 2));
+            console.error(`✗ Connection failed: ${error.message} | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
             return false;
         }
     }
 
     async writeData() {
-        const session = this.driver.session();
         const startTime = Date.now();
         
         try {
             const timestamp = new Date().toISOString();
             const id = `client_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
             
-            const result = await session.executeWrite(async tx => {
-                const query = `
-                    CREATE (n:ClientData {
-                        id: $id,
-                        timestamp: $timestamp,
-                        value: $value,
-                        created_at: datetime()
-                    })
-                    RETURN n.id as id
-                `;
-                
-                const res = await tx.run(query, {
-                    id: id,
-                    timestamp: timestamp,
-                    value: `data_${Date.now()}`
-                });
-                
-                return res.records[0].get('id');
+            const query = `
+                CREATE (n:ClientData {
+                    id: $id,
+                    timestamp: $timestamp,
+                    value: $value,
+                    created_at: datetime()
+                })
+                RETURN n.id as id
+            `;
+            
+            const result = await this.driver.executeQuery(query, {
+                id: id,
+                timestamp: timestamp,
+                value: `data_${Date.now()}`
             });
 
             const latency = Date.now() - startTime;
             this.metrics.recordSuccess(latency);
             
-            const stats = this.metrics.getStats();
-            console.log(`✓ Write successful | ID: ${result} | Latency: ${latency}ms | Stats:`, 
-                JSON.stringify(stats, null, 2));
+            console.log(`✓ Success | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
             
             return true;
         } catch (error) {
             this.metrics.recordError();
-            const stats = this.metrics.getStats();
-            console.error(`✗ Write failed | Error: ${error.message} | Stats:`, 
-                JSON.stringify(stats, null, 2));
+            console.error(`✗ Failed | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount} | Error: ${error.message}`);
             return false;
-        } finally {
-            await session.close();
         }
     }
 
@@ -168,8 +153,7 @@ class Neo4jClient {
         this.running = false;
         
         const finalStats = this.metrics.getStats();
-        console.log('\n📊 Final Statistics:');
-        console.log(JSON.stringify(finalStats, null, 2));
+        console.log(`📊 Final Stats | Total: ${finalStats.total}, Success: ${finalStats.success}, Errors: ${finalStats.errors} (${finalStats.errorRate}), Uptime: ${finalStats.uptime}`);
         
         await this.driver.close();
         console.log('✓ Client stopped');

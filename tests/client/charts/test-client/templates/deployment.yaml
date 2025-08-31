@@ -25,7 +25,7 @@ spec:
         - name: WRITE_INTERVAL
           value: "1000"  # Write every 1 second
         - name: NEO4J_USERNAME
-          value: ""  # Memgraph doesn't require auth by default
+          value: "memgraph"
         - name: NEO4J_PASSWORD
           value: ""
         resources:

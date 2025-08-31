@@ -54,6 +54,9 @@ Dockerfile
 scripts/
 tests/
 testdata/
+k8s/
+memgraph-sandbox/
+client/
 
 # Temporary files
 tmp/

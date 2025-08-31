@@ -11,8 +11,8 @@ import (
 
 // Test configuration constants
 const (
-	controllerStatusURL = "http://localhost:8080/api/v1/status"
-	gatewayURL          = "bolt://localhost:7687"
+	controllerStatusURL = "http://memgraph-controller:8080/api/v1/status"
+	gatewayURL          = "bolt://memgraph-controller:7687"
 	testTimeout         = 30 * time.Second
 	expectedPodCount    = 3
 )

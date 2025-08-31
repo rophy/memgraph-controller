@@ -15,11 +15,23 @@ make test
 
 ## Running E2E Tests
 
+**In-Cluster E2E Testing (Recommended):**
+
 1. Run `make down` to remove skaffold resources. If kubectl context failed to connect to a kubernetes cluster, FAIL IMMEDIATELY and prompt human to fix kubectl context.
 2. Run `make run` at background, which should buils and deploy a memgraph-ha cluster with skaffold.
 3. Wait for the memgraph-ha cluster to stablize. Docker build takes around 120s, other parts around 30s.
    Can check memgraph-controller pod logs to assist.
-4. Run `make test-e2e`, which run the e2e tests in tests/ folder.
+4. Run `make test-e2e`, which builds E2E test container and runs tests as Kubernetes Job.
+5. Run `make test-e2e-cleanup` to clean up test resources.
+
+**Local E2E Testing (Legacy):**
+- Use `make test-e2e-local` for local testing (requires manual port-forward setup)
+- Note: Local testing may not honor readiness probes and could connect to non-leader pods
+
+**E2E Test Architecture:**
+- Tests run as Kubernetes Jobs in the `memgraph` namespace
+- Connect directly to `memgraph-controller` service (honors readiness probes)
+- Only connects to leader pods, testing real production behavior
 
 ## Standard Development Process
 

@@ -18,13 +18,14 @@ build:
 
 # Default deploy configuration (memgraph + controller + test client)
 deploy:
+  statusCheck: false
   helm:
     releases:
     - name: memgraph-ha
       chartPath: charts/memgraph-ha
       namespace: memgraph
       createNamespace: true
-      wait: true
+      wait: false
     - name: test-client
       chartPath: tests/client/charts/test-client
       namespace: memgraph
@@ -35,33 +36,34 @@ deploy:
         writeInterval: "1000"
   logs:
     prefix: podAndContainer
-# Port forwarding for development (default profile - memgraph + controller)
-portForward:
-- resourceType: service
-  resourceName: memgraph-controller
-  namespace: memgraph
-  port: 7687
-  localPort: 7687
-- resourceType: service
-  resourceName: memgraph-controller
-  namespace: memgraph
-  port: 8080
-  localPort: 8080
-- resourceType: service
-  resourceName: memgraph-ha
-  namespace: memgraph
-  port: 7687
-  localPort: 7688
 
 # Profiles for different deployment scenarios
 profiles:
-# Profile for deploying only Memgraph cluster (no controller, no port forwarding)
-- name: memgraph-only
+
+# Profile for E2E testing - builds test image and deploys test job
+- name: e2e-test
+  build:
+    artifacts:
+    - image: e2e-test
+      context: tests
+      docker:
+        dockerfile: Dockerfile
+  manifests:
+    rawYaml:
+    - "tests/k8s/serviceaccount.yaml"
+    - "tests/k8s/e2e-test-job.yaml"
   deploy:
+    statusCheck: false
+    kubectl:
+      hooks:
+        before:
+        - host:
+            command: ["sh", "-c", "kubectl delete -n memgraph job e2e-test --ignore-not-found"]
+        after:
+        - host:
+            command: ["sh", "-c", "kubectl wait -n memgraph --for=condition=ready pod --selector=job-name=e2e-test --timeout=1m && kubectl logs -n memgraph -f job/e2e-test"]
+    # Override default helm to not deploy anything
     helm:
-      releases:
-      - name: memgraph
-        chartPath: charts/memgraph
-        namespace: memgraph
-        createNamespace: true
-        wait: true
+      releases: []
+    logs:
+      prefix: none

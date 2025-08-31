@@ -11,7 +11,8 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY . .
+COPY pkg/ ./pkg/
+COPY cmd/ ./cmd/
 
 # Build the controller binary
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o bin/memgraph-controller ./cmd/memgraph-controller

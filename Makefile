@@ -3,41 +3,54 @@ REGISTRY ?= ghcr.io/rophy
 TAG ?= latest
 IMAGE_NAME ?= memgraph-controller
 
-.PHONY: build test test-e2e clean up run down docker-build docker-push check
+# Default target - show help
+.DEFAULT_GOAL := help
+
+.PHONY: help build test test-e2e clean up run down docker-build docker-push check
+
+help: ## Show this help message
+	@echo "Available targets:"
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
 
 # Build targets
-build:
+build: ## Build the memgraph-controller binary
 	mkdir -p bin
 	go build -o bin/memgraph-controller ./cmd/memgraph-controller
 
-clean:
+clean: ## Remove build artifacts
 	rm -rf bin/
 
 # Test targets
-test:
+test: ## Run unit tests
 	go test -v ./...
 
-test-e2e:
-	cd tests && go mod tidy && go test -count=1 -v ./...
+test-e2e: ## Run E2E tests as Kubernetes Job (recommended)
+	@echo "Running E2E tests as Kubernetes Job..."
+	skaffold run -p e2e-test
+	@echo "E2E tests completed. Check logs above for results."
+
+test-e2e-cleanup: ## Clean up E2E test resources
+	@echo "Cleaning up E2E test resources..."
+	skaffold delete -p e2e-test
 
 # Development targets
-up:
+up: ## Deploy memgraph cluster only (no controller)
 	skaffold run --profile memgraph-only
 
-run:
-	skaffold run --tail --port-forward
+run: ## Deploy full memgraph-ha cluster with controller (background)
+	skaffold run --tail
 
-down:
+down: ## Remove all skaffold resources and PVCs
 	skaffold delete
 	kubectl delete pvc --all -n memgraph
 
-check:
+check: ## Run project checks and validations
 	scripts/check.sh
 
 # Docker targets
-docker-build:
+docker-build: ## Build Docker image locally
 	docker build -t $(IMAGE_NAME):$(TAG) .
 
-docker-push: docker-build
+docker-push: docker-build ## Build and push Docker image to registry
 	docker tag $(IMAGE_NAME):$(TAG) $(REGISTRY)/$(IMAGE_NAME):$(TAG)
 	docker push $(REGISTRY)/$(IMAGE_NAME):$(TAG)

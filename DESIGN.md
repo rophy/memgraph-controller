@@ -34,6 +34,15 @@ graph TD
 4. **Immediate Failover**: Sub-second failover response with automatic gateway coordination
 5. **Write Conflict Protection**: SYNC replication prevents dual-MAIN scenarios
 
+### Terminology and Definitions
+
+- `TargetMainIndex`: Integer (0 or 1) stored in ConfigMap indicating which pod should be MAIN
+- `TargetMainPod`: The pod derived from `TargetMainIndex`
+  - e.g., if TargetMainIndex=0, then TargetMainPod is the pod with pod name "memgraph-ha-0"
+- `TargetSyncReplica`: The complement pod name in the two-pod authority pair
+  - e.g. if TargetMainIndex=0, then TargetSyncReplica is the pod with pod name "memgraph-ha-1"
+- `data_info`: A field of memgraph `SHOW REPLICAS` output, see STUDY_NOTES.md.
+
 ## Controller High Availability
 
 Controller uses the [Lease API](https://kubernetes.io/docs/concepts/architecture/leases/#leader-election) to implement leader election.
@@ -58,29 +67,33 @@ Ground Rules:
 
 ### Reconciliation Loop
 
-1. If not leader then stop current iteration, otherwise continue next steps.
+1. If not leader then do no-op and ends the reconcile iteration.
 
-2. If configmap does not exist, perform actions in section "Discover Cluster State", which expects to get `TargetMainPod` and configmap.
+2. If configmap does not exist, perform actions in section "Discover Cluster State".
 
-3. Call kubernetes api to list all memgraph pods, along with their kubernetes status (ready or not).
+3. Finally, perform actions in section "Reconcile Actions".
 
-4. If `TargetMainPod` is not ready, log error, end the reconciliation.
+### Reconcile Actions
 
-5. Run `SHOW REPLICAS` to `TargetMainPod` to check replication status.
+1. Call kubernetes api to list all memgraph pods, along with their kubernetes status (ready or not). Define this list as `podList`
 
-6. If `data_info` of `TargetSyncReplica` is not "ready", drop the replication.
+2. If `TargetMainPod` is not ready, attempt to perform actions in section "Failover Actions".
 
-7. If pod status of `TargetSyncReplica` is not "ready", log warning.
+3. Run `SHOW REPLICAS` to `TargetMainPod` to get registered replications. Define this list as `replicatList`.
 
-8. If `data_info` for any ASYNC replica is not `ready`, drop the replication.
+4. If `data_info` of `TargetSyncReplica` is not "ready", drop the replication.
 
-9. If replication for any pod which outside pod-0/pod-1 is missing (could be dropped in step 3 or 4):
+5. If pod status of `TargetSyncReplica` is not "ready", log warning.
+
+6. If `data_info` for any ASYNC replica is not `ready`, drop the replication.
+
+7. If replication for any pod which outside pod-0/pod-1 is missing (could be dropped in step 3 or 4):
 
    1. If the pod is not ready (i.e. not in the list of step 3), log warning
    2. If the pod is ready, check replication role of the pod, if it is `MAIN`, demote it into `REPLICA`.
    3. Register ASYNC replica for the pod.
 
-10. Once all register done, run `SHOW REPLICAS` to check final result:
+8. Once all register done, run `SHOW REPLICAS` to check final result:
 
    - If `data_info` of SYNC replica is not `ready`, log big error.
    - If `data_info` of ASYNC replica is not `ready`, log warning.

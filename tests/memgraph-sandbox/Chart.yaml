@@ -1,0 +1,9 @@
+apiVersion: v2
+name: memgraph-ha
+type: application
+version: 1.0.0
+
+dependencies:
+- name: memgraph
+  version: "0.2.5"
+  repository: "https://memgraph.github.io/helm-charts"

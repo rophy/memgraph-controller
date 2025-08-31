@@ -11,7 +11,7 @@ Pure Memgraph Community Edition specifications and command reference.
 ### Running queries against Memgraph instances
 
 ```bash
-kubectl exec <pod-name> -- bash -c 'echo "<mgcommand>;" | mgconsole --output-format csv --username=memgraph'
+kubectl exec -c memgraph <pod-name> -- bash -c 'echo "<mgcommand>;" | mgconsole --output-format csv --username=memgraph'
 ```
 
 The `--username=memgraph` is not a real username but is used to avoid Memgraph showing these warnings:

@@ -43,3 +43,4 @@ Thumbs.db
 
 # Helm dependency charts
 charts/memgraph-ha/charts/
+tests/memgraph-sandbox/charts/

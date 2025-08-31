@@ -524,7 +524,7 @@ func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) e
 		log.Printf("Gateway transitioned to operational phase (ConfigMap indicates bootstrap completed)")
 	}
 
-	log.Printf("Loaded persisted state - will start in OPERATIONAL phase: masterIndex=%d", state.MasterIndex)
+	log.Printf("Loaded persisted state - will start in OPERATIONAL phase: targetMainIndex=%d", state.TargetMainIndex)
 
 	return nil
 }
@@ -542,7 +542,7 @@ func (c *MemgraphController) getTargetMainIndex() int {
 		// Return -1 if no state available (bootstrap phase)
 		return -1
 	}
-	return state.MasterIndex
+	return state.TargetMainIndex
 }
 
 // getCurrentMainFromState gets the current main pod name from state manager
@@ -556,7 +556,7 @@ func (c *MemgraphController) getCurrentMainFromState(ctx context.Context) (strin
 	if err != nil {
 		return "", err
 	}
-	return c.config.GetPodName(state.MasterIndex), nil
+	return c.config.GetPodName(state.TargetMainIndex), nil
 }
 
 // updateTargetMainIndex updates target main index in state manager
@@ -632,26 +632,31 @@ func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 	
 	log.Printf("🔄 ConfigMap added: %s", configMap.Name)
 	
-	// Extract masterIndex from ConfigMap
-	masterIndexStr, exists := configMap.Data["masterIndex"]
+	// Extract targetMainIndex from ConfigMap
+	targetMainIndexStr, exists := configMap.Data["targetMainIndex"]
 	if !exists {
-		log.Printf("Warning: ConfigMap %s missing masterIndex", configMap.Name)
-		return
+		// Try legacy masterIndex for backward compatibility
+		if legacyStr, legacyExists := configMap.Data["masterIndex"]; legacyExists {
+			targetMainIndexStr = legacyStr
+		} else {
+			log.Printf("Warning: ConfigMap %s missing targetMainIndex", configMap.Name)
+			return
+		}
 	}
 	
-	// Parse masterIndex
-	var newMasterIndex int
-	if _, err := fmt.Sscanf(masterIndexStr, "%d", &newMasterIndex); err != nil {
-		log.Printf("Failed to parse masterIndex from ConfigMap: %v", err)
+	// Parse targetMainIndex
+	var newTargetMainIndex int
+	if _, err := fmt.Sscanf(targetMainIndexStr, "%d", &newTargetMainIndex); err != nil {
+		log.Printf("Failed to parse targetMainIndex from ConfigMap: %v", err)
 		return
 	}
 	
 	// Check if this is different from our current state
 	currentIndex := c.cluster.getTargetMainIndex()
 	
-	if currentIndex != newMasterIndex {
-		log.Printf("Target main index changed: %d -> %d", currentIndex, newMasterIndex)
-		c.handleTargetMainChanged(newMasterIndex)
+	if currentIndex != newTargetMainIndex {
+		log.Printf("Target main index changed: %d -> %d", currentIndex, newTargetMainIndex)
+		c.handleTargetMainChanged(newTargetMainIndex)
 	}
 	
 	// Transition gateway to operational phase for non-leaders
@@ -670,30 +675,35 @@ func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 		return
 	}
 	
-	// Extract new masterIndex from ConfigMap
-	newMasterIndexStr, exists := newConfigMap.Data["masterIndex"]
+	// Extract new targetMainIndex from ConfigMap
+	newTargetMainIndexStr, exists := newConfigMap.Data["targetMainIndex"]
 	if !exists {
-		log.Printf("Warning: ConfigMap %s missing masterIndex", newConfigMap.Name)
-		return
+		// Try legacy masterIndex for backward compatibility
+		if legacyStr, legacyExists := newConfigMap.Data["masterIndex"]; legacyExists {
+			newTargetMainIndexStr = legacyStr
+		} else {
+			log.Printf("Warning: ConfigMap %s missing targetMainIndex", newConfigMap.Name)
+			return
+		}
 	}
 	
-	// Parse new masterIndex
-	var newMasterIndex int
-	if _, err := fmt.Sscanf(newMasterIndexStr, "%d", &newMasterIndex); err != nil {
-		log.Printf("Failed to parse masterIndex from ConfigMap: %v", err)
+	// Parse new targetMainIndex
+	var newTargetMainIndex int
+	if _, err := fmt.Sscanf(newTargetMainIndexStr, "%d", &newTargetMainIndex); err != nil {
+		log.Printf("Failed to parse targetMainIndex from ConfigMap: %v", err)
 		return
 	}
 	
 	// Compare with our current state (not old ConfigMap)
 	currentIndex := c.cluster.getTargetMainIndex()
 	
-	if currentIndex == newMasterIndex {
+	if currentIndex == newTargetMainIndex {
 		// No change from our perspective, ignore
 		return
 	}
 	
-	log.Printf("🔄 ConfigMap state change detected: MasterIndex %d -> %d", currentIndex, newMasterIndex)
-	c.handleTargetMainChanged(newMasterIndex)
+	log.Printf("🔄 ConfigMap state change detected: TargetMainIndex %d -> %d", currentIndex, newTargetMainIndex)
+	c.handleTargetMainChanged(newTargetMainIndex)
 }
 
 // onConfigMapDelete handles ConfigMap deletion events
@@ -709,7 +719,7 @@ func (c *MemgraphController) onConfigMapDelete(obj interface{}) {
 }
 
 // handleTargetMainChanged processes target main index changes and coordinates controller pods
-func (c *MemgraphController) handleTargetMainChanged(newMasterIndex int) {
+func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 	coordinationStartTime := time.Now()
 	
 	// Don't process our own changes if we're the leader
@@ -726,26 +736,26 @@ func (c *MemgraphController) handleTargetMainChanged(newMasterIndex int) {
 	}
 	
 	// Check if this is actually a change
-	if oldTargetIndex == newMasterIndex {
-		log.Printf("📋 Target main index unchanged (%d), ignoring", newMasterIndex)
+	if oldTargetIndex == newTargetMainIndex {
+		log.Printf("📋 Target main index unchanged (%d), ignoring", newTargetMainIndex)
 		return
 	}
 	
 	// Log detailed coordination information
-	log.Printf("🔄 COORDINATION EVENT: Non-leader detected MasterIndex change")
-	log.Printf("   📊 Change: %d -> %d", oldTargetIndex, newMasterIndex)
+	log.Printf("🔄 COORDINATION EVENT: Non-leader detected TargetMainIndex change")
+	log.Printf("   📊 Change: %d -> %d", oldTargetIndex, newTargetMainIndex)
 	log.Printf("   🏷️ Pod Identity: %s", c.getPodIdentity())
 	
 	// Phase 1: Update local controller state atomically
 	newLastKnownMain := ""
-	if newMasterIndex >= 0 {
-		newLastKnownMain = c.config.GetPodName(newMasterIndex)
+	if newTargetMainIndex >= 0 {
+		newLastKnownMain = c.config.GetPodName(newTargetMainIndex)
 	}
 	
 	// Update state directly via state manager (for non-leaders)
 	
 	log.Printf("   ✅ State updated: targetMainIndex=%d, lastKnownMain=%s -> %s", 
-		newMasterIndex, oldLastKnownMain, newLastKnownMain)
+		newTargetMainIndex, oldLastKnownMain, newLastKnownMain)
 	
 	// Phase 2: Coordinate gateway connection termination
 	connectionTerminationTime := time.Now()
@@ -780,7 +790,7 @@ func (c *MemgraphController) handleTargetMainChanged(newMasterIndex int) {
 	log.Printf("   📈 Total duration: %v", coordinationDuration)
 	log.Printf("   🔌 Connection handling: %v", terminationDuration)
 	log.Printf("   🏷️ Final state: targetMainIndex=%d, lastKnownMain=%s", 
-		newMasterIndex, newLastKnownMain)
+		newTargetMainIndex, newLastKnownMain)
 	log.Printf("   🕒 Coordinated at: %s", time.Now().Format(time.RFC3339))
 }
 
@@ -970,12 +980,12 @@ func (c *MemgraphController) isConfigMapReady(ctx context.Context) (bool, error)
 	}
 
 	// Validate that the state contains required information
-	if state.MasterIndex < 0 || state.MasterIndex > 1 {
-		log.Printf("ConfigMap contains invalid MasterIndex: %d", state.MasterIndex)
+	if state.TargetMainIndex < 0 || state.TargetMainIndex > 1 {
+		log.Printf("ConfigMap contains invalid TargetMainIndex: %d", state.TargetMainIndex)
 		return false, nil
 	}
 
-	log.Printf("ConfigMap is ready with MasterIndex: %d", state.MasterIndex)
+	log.Printf("ConfigMap is ready with TargetMainIndex: %d", state.TargetMainIndex)
 	return true, nil
 }
 

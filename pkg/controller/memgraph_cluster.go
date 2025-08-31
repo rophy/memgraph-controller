@@ -97,7 +97,38 @@ func (mc *MemgraphCluster) getTargetMainIndex() int {
 	if err != nil {
 		return -1
 	}
-	return state.MasterIndex
+	return state.TargetMainIndex
+}
+
+// GetTargetMainPod returns the pod name of the current target main pod
+func (mc *MemgraphCluster) GetTargetMainPod(ctx context.Context) string {
+	targetMainIndex := mc.getTargetMainIndex()
+	if targetMainIndex < 0 {
+		return ""
+	}
+	return mc.config.GetPodName(targetMainIndex)
+}
+
+// GetTargetSyncReplica returns the pod name of the target SYNC replica pod
+// Based on DESIGN.md two-pod authority: if main is pod-0, sync is pod-1; if main is pod-1, sync is pod-0
+func (mc *MemgraphCluster) GetTargetSyncReplica(ctx context.Context) string {
+	targetMainIndex := mc.getTargetMainIndex()
+	if targetMainIndex < 0 {
+		return ""
+	}
+	
+	// Two-pod authority: pod-0 and pod-1 form a pair
+	var syncReplicaIndex int
+	if targetMainIndex == 0 {
+		syncReplicaIndex = 1 // main=pod-0 → sync=pod-1
+	} else if targetMainIndex == 1 {
+		syncReplicaIndex = 0 // main=pod-1 → sync=pod-0  
+	} else {
+		// Invalid target main index (should only be 0 or 1)
+		return ""
+	}
+	
+	return mc.config.GetPodName(syncReplicaIndex)
 }
 
 // updateTargetMainIndex updates the target main index in ConfigMap
@@ -111,12 +142,12 @@ func (mc *MemgraphCluster) updateTargetMainIndex(ctx context.Context, newIndex i
 	if err != nil {
 		// Create new state if none exists
 		state = &ControllerState{
-			MasterIndex: newIndex,
+			TargetMainIndex: newIndex,
 		}
 	} else {
 		// Update existing state
-		oldIndex := state.MasterIndex
-		state.MasterIndex = newIndex
+		oldIndex := state.TargetMainIndex
+		state.TargetMainIndex = newIndex
 		log.Printf("✅ Updated target main index: %d -> %d (%s)", oldIndex, newIndex, reason)
 	}
 

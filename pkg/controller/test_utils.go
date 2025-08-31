@@ -15,7 +15,7 @@ type MockStateManager struct {
 func NewMockStateManager(masterIndex int) *MockStateManager {
 	return &MockStateManager{
 		state: &ControllerState{
-			MasterIndex: masterIndex,
+			TargetMainIndex: masterIndex,
 		},
 		exists: true,
 	}

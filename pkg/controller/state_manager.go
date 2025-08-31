@@ -15,7 +15,7 @@ import (
 
 // ControllerState represents the persistent state stored in ConfigMap
 type ControllerState struct {
-	MasterIndex int `json:"masterIndex"`
+	TargetMainIndex int `json:"targetMainIndex"`
 }
 
 // StateManagerInterface defines the interface for state management
@@ -57,33 +57,38 @@ func (sm *StateManager) LoadState(ctx context.Context) (*ControllerState, error)
 		return nil, fmt.Errorf("failed to get state ConfigMap: %w", err)
 	}
 
-	// Parse masterIndex
-	masterIndexStr, exists := configMap.Data["masterIndex"]
+	// Parse targetMainIndex
+	targetMainIndexStr, exists := configMap.Data["targetMainIndex"]
 	if !exists {
-		return nil, fmt.Errorf("masterIndex not found in ConfigMap")
+		// Try legacy masterIndex for backward compatibility
+		if legacyStr, legacyExists := configMap.Data["masterIndex"]; legacyExists {
+			targetMainIndexStr = legacyStr
+		} else {
+			return nil, fmt.Errorf("targetMainIndex not found in ConfigMap")
+		}
 	}
 
-	masterIndex, err := strconv.Atoi(masterIndexStr)
+	targetMainIndex, err := strconv.Atoi(targetMainIndexStr)
 	if err != nil {
-		return nil, fmt.Errorf("failed to parse masterIndex: %w", err)
+		return nil, fmt.Errorf("failed to parse targetMainIndex: %w", err)
 	}
 
 	state := &ControllerState{
-		MasterIndex: masterIndex,
+		TargetMainIndex: targetMainIndex,
 	}
 
-	log.Printf("Loaded controller state: masterIndex=%d", state.MasterIndex)
+	log.Printf("Loaded controller state: targetMainIndex=%d", state.TargetMainIndex)
 
 	return state, nil
 }
 
 // SaveState persists the controller state to ConfigMap
 func (sm *StateManager) SaveState(ctx context.Context, state *ControllerState) error {
-	log.Printf("Saving controller state: masterIndex=%d", state.MasterIndex)
+	log.Printf("Saving controller state: targetMainIndex=%d", state.TargetMainIndex)
 
 	// Create ConfigMap data
 	data := map[string]string{
-		"masterIndex": strconv.Itoa(state.MasterIndex),
+		"targetMainIndex": strconv.Itoa(state.TargetMainIndex),
 	}
 
 	// Get owner reference for the controller deployment

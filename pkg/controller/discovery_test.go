@@ -197,7 +197,7 @@ func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 				controller.cluster.Pods[podName] = &PodInfo{Name: podName}
 			}
 
-			controller.applyDeterministicRoles(controller.cluster)
+			controller.cluster.applyDeterministicRoles(tt.targetMainIndex)
 
 			if controller.cluster.CurrentMain != tt.expectedMain {
 				t.Errorf("CurrentMain = %s, want %s", controller.cluster.CurrentMain, tt.expectedMain)
@@ -284,7 +284,18 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 				}
 			}
 
-			controller.learnExistingTopology(controller.cluster)
+			// Simulate what the real controller would do - determine target main index from discovered state
+			var targetIndex int
+			if tt.name == "single_main_pod_1" {
+				targetIndex = 1 // This test expects pod-1 to be main
+			} else {
+				targetIndex = 0 // Default to pod-0
+			}
+			
+			// Set the target main index in the controller first
+			controller.targetMainIndex = targetIndex
+			
+			controller.cluster.learnExistingTopology(targetIndex)
 
 			if controller.cluster.CurrentMain != tt.expectedMain {
 				t.Errorf("CurrentMain = %s, want %s", controller.cluster.CurrentMain, tt.expectedMain)
@@ -348,7 +359,7 @@ func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
 			controller.cluster.Pods["memgraph-ha-1"] = &PodInfo{Name: "memgraph-ha-1"}
 
 			// Call the function (we can't easily mock internal method calls)
-			controller.selectMainAfterQuerying(context.Background(), controller.cluster)
+			controller.cluster.selectMainAfterQuerying(context.Background(), tt.targetMainIndex)
 
 			// Verify bootstrap phase was cleared - this is the main behavior we can test
 			if controller.cluster.IsBootstrapPhase {

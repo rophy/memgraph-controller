@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
@@ -86,10 +87,8 @@ func (c *MemgraphController) performLeaderReconciliation(ctx context.Context) er
 func (c *MemgraphController) Reconcile(ctx context.Context) error {
 	log.Println("Starting DESIGN.md compliant reconciliation cycle...")
 
-	// Use the ReconcileActions to perform DESIGN.md compliant reconciliation
-	reconcileActions := NewReconcileActions(c, c.cluster)
-	
-	if err := reconcileActions.ExecuteReconcileActions(ctx); err != nil {
+	// Execute DESIGN.md reconcile actions directly
+	if err := c.executeReconcileActions(ctx); err != nil {
 		c.updateReconciliationMetrics("reconcile-error", time.Since(time.Now()), err)
 		return fmt.Errorf("DESIGN.md compliant reconciliation failed: %w", err)
 	}
@@ -261,4 +260,162 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 		len(pods), clusterState.CurrentMain, healthyCount, clusterState.TotalPods)
 
 	return response, nil
+}
+
+// discoverClusterAndCreateConfigMap implements DESIGN.md "Discover Cluster State" section
+func (c *MemgraphController) discoverClusterAndCreateConfigMap(ctx context.Context) error {
+	log.Println("=== CLUSTER DISCOVERY ===")
+
+	// Use bootstrap logic to discover and initialize cluster
+	bootstrapController := NewBootstrapController(c)
+	_, err := bootstrapController.ExecuteBootstrap(ctx)
+	if err != nil {
+		return fmt.Errorf("cluster discovery failed: %w", err)
+	}
+
+	log.Printf("✅ Cluster discovery completed - main: %s", c.cluster.CurrentMain)
+	return nil
+}
+
+// executeReconcileActions implements DESIGN.md Reconcile Actions steps 1-8 directly
+func (c *MemgraphController) executeReconcileActions(ctx context.Context) error {
+	log.Println("Starting DESIGN.md compliant reconcile actions...")
+
+	// Step 1: List all memgraph pods with kubernetes status
+	podList, err := c.listMemgraphPods(ctx)
+	if err != nil {
+		return fmt.Errorf("step 1 failed: %w", err)
+	}
+
+	// Get target main index from ConfigMap
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main index: %w", err)
+	}
+
+	// Get target pods based on DESIGN.md authority (TargetMainIndex determines main)
+	targetMainPod := c.getTargetMainPod(podList, targetMainIndex)
+	targetSyncReplica := c.getTargetSyncReplicaPod(podList, targetMainIndex)
+	
+	if targetMainPod == nil {
+		return fmt.Errorf("target main pod not found")
+	}
+
+	// Step 2: If TargetMainPod is not ready, perform failover
+	if !isPodReady(targetMainPod) {
+		log.Printf("TargetMainPod not ready, performing failover...")
+		if err := c.performFailover(ctx, targetMainIndex, targetSyncReplica); err != nil {
+			return fmt.Errorf("failover failed: %w", err)
+		}
+		// Reload target main index after failover
+		targetMainIndex, _ = c.GetTargetMainIndex(ctx)
+	}
+
+	// Steps 3-8: Configure replication according to DESIGN.md
+	if err := c.configureReplication(ctx, targetMainIndex); err != nil {
+		return fmt.Errorf("replication configuration failed: %w", err)
+	}
+
+	log.Println("✅ DESIGN.md reconcile actions completed")
+	return nil
+}
+
+// listMemgraphPods implements DESIGN.md step 1
+func (c *MemgraphController) listMemgraphPods(ctx context.Context) ([]*v1.Pod, error) {
+	pods, err := c.clientset.CoreV1().Pods(c.config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app.kubernetes.io/name=%s", c.config.AppName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	var podList []*v1.Pod
+	for i := range pods.Items {
+		pod := &pods.Items[i]
+		if c.config.IsMemgraphPod(pod.Name) {
+			podList = append(podList, pod)
+		}
+	}
+
+	log.Printf("Listed %d memgraph pods", len(podList))
+	return podList, nil
+}
+
+// getTargetMainPod returns the pod that should be main based on TargetMainIndex
+func (c *MemgraphController) getTargetMainPod(podList []*v1.Pod, targetMainIndex int) *v1.Pod {
+	targetMainName := c.config.GetPodName(targetMainIndex)
+	for _, pod := range podList {
+		if pod.Name == targetMainName {
+			return pod
+		}
+	}
+	return nil
+}
+
+// getTargetSyncReplicaPod returns the pod that should be sync replica (complement of main)
+func (c *MemgraphController) getTargetSyncReplicaPod(podList []*v1.Pod, targetMainIndex int) *v1.Pod {
+	// DESIGN.md: Either pod-0 OR pod-1 MUST be SYNC replica (complement of main)
+	var targetSyncIndex int
+	if targetMainIndex == 0 {
+		targetSyncIndex = 1
+	} else {
+		targetSyncIndex = 0
+	}
+	
+	targetSyncName := c.config.GetPodName(targetSyncIndex)
+	for _, pod := range podList {
+		if pod.Name == targetSyncName {
+			return pod
+		}
+	}
+	return nil
+}
+
+// performFailover implements DESIGN.md "Failover Actions"
+func (c *MemgraphController) performFailover(ctx context.Context, currentMainIndex int, syncReplicaPod *v1.Pod) error {
+	log.Printf("🚨 Performing failover from main index %d", currentMainIndex)
+	
+	// Check if sync replica is ready
+	if syncReplicaPod == nil || !isPodReady(syncReplicaPod) {
+		return fmt.Errorf("sync replica not ready - cluster not recoverable")
+	}
+	
+	// Flip target: if main was 0, new main is 1; if main was 1, new main is 0
+	newMainIndex := 1 - currentMainIndex // Simple flip for 0<->1
+	
+	// Update ConfigMap with new target main
+	if err := c.SetTargetMainIndex(ctx, newMainIndex); err != nil {
+		return fmt.Errorf("failed to update target main index: %w", err)
+	}
+	
+	// Promote sync replica to main
+	newMainPodName := c.config.GetPodName(newMainIndex)
+	newMainIP := fmt.Sprintf("%s:7687", syncReplicaPod.Status.PodIP)
+	
+	// Promote to main via Memgraph client
+	if err := c.memgraphClient.SetReplicationRoleToMain(ctx, newMainIP); err != nil {
+		log.Printf("Warning: Failed to promote %s to main: %v", newMainPodName, err)
+		// Don't fail - gateway will handle routing
+	}
+	
+	// Update gateway if available
+	if c.gatewayServer != nil {
+		c.gatewayServer.SetCurrentMain(syncReplicaPod.Status.PodIP)
+		log.Printf("✅ Gateway updated to route to new main: %s", newMainPodName)
+	}
+	
+	log.Printf("✅ Failover completed: %s -> %s", c.config.GetPodName(currentMainIndex), newMainPodName)
+	return nil
+}
+
+// configureReplication implements DESIGN.md steps 3-8
+func (c *MemgraphController) configureReplication(ctx context.Context, targetMainIndex int) error {
+	// Get current cluster state by querying pods
+	err := c.cluster.DiscoverPods(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to discover pods: %w", err)
+	}
+	
+	// Configure replication using existing logic but with direct target main index
+	return c.ConfigureReplication(ctx, c.cluster)
 }

@@ -1,51 +1,8 @@
 package controller
 
 import (
-	"context"
 	"log"
 )
-
-// detectMainFailover detects if the current main has failed
-func (c *MemgraphController) detectMainFailover(cluster *MemgraphCluster) bool {
-	// Get current main from target main index for operational phase failover detection
-	ctx := context.Background()
-	targetMainIndex, err := c.GetTargetMainIndex(ctx)
-	if err != nil {
-		// No target main index - not a failover scenario (likely fresh bootstrap)
-		return false
-	}
-	lastKnownMain := c.config.GetPodName(targetMainIndex)
-	if lastKnownMain == "" {
-		// No last known main - not a failover scenario (likely fresh bootstrap)
-		return false
-	}
-
-	log.Printf("Checking failover for last known main: %s", lastKnownMain)
-
-	// Check if last known main pod still exists
-	mainPod, exists := cluster.MemgraphNodes[lastKnownMain]
-	if !exists {
-		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s no longer exists", lastKnownMain)
-		return true
-	}
-
-	// Check if last known main is still healthy
-	if !c.isPodHealthyForMain(mainPod) {
-		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s is no longer healthy", lastKnownMain)
-		return true
-	}
-
-	// Check if last known main still has MAIN role
-	if mainPod.MemgraphRole != "main" {
-		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s no longer has MAIN role (current: %s)",
-			lastKnownMain, mainPod.MemgraphRole)
-		return true
-	}
-
-	log.Printf("✅ Last known main %s is still healthy and has MAIN role", lastKnownMain)
-	return false
-}
-
 
 // handleMainFailurePromotion handles main failure and promotes SYNC replica
 

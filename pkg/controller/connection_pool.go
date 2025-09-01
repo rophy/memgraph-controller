@@ -9,14 +9,13 @@ import (
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j/config"
 )
 
 type ConnectionPool struct {
-	drivers   map[string]neo4j.DriverWithContext // boltAddress -> driver
-	podIPs    map[string]string                   // podName -> currentIP  
-	mutex     sync.RWMutex
-	config    *Config
+	drivers map[string]neo4j.DriverWithContext // boltAddress -> driver
+	podIPs  map[string]string                  // podName -> currentIP
+	mutex   sync.RWMutex
+	config  *Config
 }
 
 type RetryConfig struct {
@@ -68,13 +67,7 @@ func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) 
 
 	driver, err := neo4j.NewDriverWithContext(
 		fmt.Sprintf("bolt://%s", boltAddress),
-		neo4j.NoAuth(),
-		func(c *config.Config) {
-			c.ConnectionAcquisitionTimeout = 10 * time.Second
-			c.SocketConnectTimeout = 5 * time.Second
-			c.MaxConnectionLifetime = 30 * time.Minute
-			c.MaxConnectionPoolSize = 5
-		},
+		neo4j.BasicAuth("memgraph", "", ""),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create driver for %s: %w", boltAddress, err)
@@ -106,7 +99,7 @@ func (cp *ConnectionPool) removeDriver(boltAddress string) {
 func (cp *ConnectionPool) UpdatePodIP(podName, newIP string) {
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
-	
+
 	if existingIP, exists := cp.podIPs[podName]; exists && existingIP != newIP {
 		// IP changed - invalidate old connection
 		oldBoltAddress := existingIP + ":7687"
@@ -116,7 +109,7 @@ func (cp *ConnectionPool) UpdatePodIP(podName, newIP string) {
 			log.Printf("Invalidated connection for pod %s: IP changed from %s to %s", podName, existingIP, newIP)
 		}
 	}
-	
+
 	cp.podIPs[podName] = newIP
 }
 
@@ -124,7 +117,7 @@ func (cp *ConnectionPool) UpdatePodIP(podName, newIP string) {
 func (cp *ConnectionPool) InvalidatePodConnection(podName string) {
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
-	
+
 	if ip, exists := cp.podIPs[podName]; exists {
 		boltAddress := ip + ":7687"
 		if driver, exists := cp.drivers[boltAddress]; exists {
@@ -179,7 +172,7 @@ func WithRetry(ctx context.Context, operation func() error, retryConfig RetryCon
 			delay = retryConfig.MaxDelay
 		}
 
-		log.Printf("Operation failed (attempt %d/%d): %v. Retrying in %v", 
+		log.Printf("Operation failed (attempt %d/%d): %v. Retrying in %v",
 			attempt+1, retryConfig.MaxRetries+1, err, delay)
 
 		select {
@@ -229,7 +222,7 @@ func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfi
 			delay = retryConfig.MaxDelay
 		}
 
-		log.Printf("Operation failed (attempt %d/%d): %v. Retrying in %v", 
+		log.Printf("Operation failed (attempt %d/%d): %v. Retrying in %v",
 			attempt+1, retryConfig.MaxRetries+1, err, delay)
 
 		select {

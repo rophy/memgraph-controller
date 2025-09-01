@@ -36,13 +36,19 @@ func (c *MemgraphController) ConfigureReplication(ctx context.Context, cluster *
 	}
 
 	log.Println("Starting replication configuration...")
-	currentMain := cluster.CurrentMain
-
+	
+	// Get the current main from controller's target main index
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main index: %w", err)
+	}
+	
+	currentMain := c.config.GetPodName(targetMainIndex)
 	if currentMain == "" {
 		return fmt.Errorf("no main pod selected for replication configuration")
 	}
 
-	log.Printf("Configuring replication with main: %s", currentMain)
+	log.Printf("Configuring replication with main: %s (index %d)", currentMain, targetMainIndex)
 
 	// Phase 1: Configure pod roles (MAIN/REPLICA)
 	var configErrors []error
@@ -183,7 +189,13 @@ func (c *MemgraphController) selectSyncReplicaFallback(cluster *MemgraphCluster,
 func (c *MemgraphController) configureReplicationWithEnhancedSyncStrategy(ctx context.Context, cluster *MemgraphCluster) error {
 	log.Printf("Configuring enhanced SYNC/ASYNC replication with controller state authority...")
 
-	currentMain := cluster.CurrentMain
+	// Get the current main from controller's target main index
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main index: %w", err)
+	}
+	
+	currentMain := c.config.GetPodName(targetMainIndex)
 	if currentMain == "" {
 		return fmt.Errorf("no main pod selected for enhanced SYNC replication configuration")
 	}
@@ -255,7 +267,13 @@ func (c *MemgraphController) ensureCorrectSyncReplica(ctx context.Context, clust
 
 // configureAsyncReplicas configures all non-main, non-SYNC pods as ASYNC replicas
 func (c *MemgraphController) configureAsyncReplicas(ctx context.Context, cluster *MemgraphCluster, syncReplicaPod string) error {
-	currentMain := cluster.CurrentMain
+	// Get the current main from controller's target main index
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main index: %w", err)
+	}
+	
+	currentMain := c.config.GetPodName(targetMainIndex)
 	mainPod := cluster.MemgraphNodes[currentMain]
 	var configErrors []error
 
@@ -341,7 +359,12 @@ func (c *MemgraphController) verifySyncReplicaConfiguration(ctx context.Context,
 
 	case 1:
 		// Verify SYNC replica health from main's perspective
-		currentMain := cluster.CurrentMain
+		targetMainIndex, err := c.GetTargetMainIndex(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get target main index: %w", err)
+		}
+		
+		currentMain := c.config.GetPodName(targetMainIndex)
 		if currentMain == "" {
 			log.Printf("⚠️  WARNING: Cannot verify SYNC replica health - no main available")
 			return fmt.Errorf("no main available to verify SYNC replica")
@@ -411,7 +434,13 @@ func (c *MemgraphController) verifySyncReplicaConfiguration(ctx context.Context,
 
 // detectSyncReplicaHealth monitors SYNC replica health and handles failures
 func (c *MemgraphController) detectSyncReplicaHealth(ctx context.Context, cluster *MemgraphCluster) error {
-	currentMain := cluster.CurrentMain
+	// Get the current main from controller's target main index
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main index: %w", err)
+	}
+	
+	currentMain := c.config.GetPodName(targetMainIndex)
 	if currentMain == "" {
 		return fmt.Errorf("no main available for SYNC replica health monitoring")
 	}
@@ -473,7 +502,13 @@ func (c *MemgraphController) detectSyncReplicaHealth(ctx context.Context, cluste
 
 // handleSyncReplicaFailure responds to SYNC replica becoming unavailable with enhanced emergency procedures
 func (c *MemgraphController) handleSyncReplicaFailure(ctx context.Context, cluster *MemgraphCluster, failedSyncReplica string) error {
-	currentMain := cluster.CurrentMain
+	// Get the current main from controller's target main index
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main index: %w", err)
+	}
+	
+	currentMain := c.config.GetPodName(targetMainIndex)
 	if currentMain == "" {
 		return fmt.Errorf("no main available during SYNC replica failure")
 	}
@@ -516,7 +551,13 @@ func (c *MemgraphController) handleSyncReplicaFailure(ctx context.Context, clust
 
 // configurePodAsSyncReplica configures a specific pod as SYNC replica
 func (c *MemgraphController) configurePodAsSyncReplica(ctx context.Context, cluster *MemgraphCluster, podName string) error {
-	currentMain := cluster.CurrentMain
+	// Get the current main from controller's target main index
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main index: %w", err)
+	}
+	
+	currentMain := c.config.GetPodName(targetMainIndex)
 	if currentMain == "" {
 		return fmt.Errorf("no main available for SYNC replica configuration")
 	}

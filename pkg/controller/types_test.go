@@ -28,26 +28,25 @@ func TestPodState_String(t *testing.T) {
 	}
 }
 
-func TestNewClusterState(t *testing.T) {
+func TestNewMemgraphCluster(t *testing.T) {
 	config := &Config{
 		AppName:         "memgraph",
 		StatefulSetName: "memgraph-ha",
 	}
-	cs := NewClusterState(config)
-	if cs == nil {
-		t.Fatal("NewClusterState() returned nil")
+	testClient := NewMemgraphClient(config)
+	cluster := NewMemgraphCluster(nil, config, testClient)
+	if cluster == nil {
+		t.Fatal("NewMemgraphCluster() returned nil")
 	}
-	if cs.MemgraphNodes == nil {
-		t.Error("NewClusterState() Pods map is nil")
+	if cluster.MemgraphNodes == nil {
+		t.Error("NewMemgraphCluster() MemgraphNodes map is nil")
 	}
-	if len(cs.MemgraphNodes) != 0 {
-		t.Errorf("NewClusterState() Pods map length = %d, want 0", len(cs.MemgraphNodes))
+	if len(cluster.MemgraphNodes) != 0 {
+		t.Errorf("NewMemgraphCluster() MemgraphNodes map length = %d, want 0", len(cluster.MemgraphNodes))
 	}
-	if cs.CurrentMain != "" {
-		t.Errorf("NewClusterState() CurrentMain = %s, want empty", cs.CurrentMain)
-	}
-	if cs.connectionPool == nil {
-		t.Error("NewClusterState() connectionPool is nil")
+	// CurrentMain field has been removed - target main is now tracked via controller's target main index
+	if cluster.connectionPool == nil {
+		t.Error("NewMemgraphCluster() connectionPool is nil")
 	}
 }
 
@@ -72,7 +71,14 @@ func TestNewMemgraphNode(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod, nil)
+	// Create a test client for the node
+	config := &Config{
+		AppName:         "memgraph",
+		StatefulSetName: "memgraph-ha",
+	}
+	testClient := NewMemgraphClient(config)
+	
+	node := NewMemgraphNode(pod, testClient)
 
 	if node.Name != "memgraph-1" {
 		t.Errorf("Name = %s, want memgraph-1", node.Name)
@@ -125,7 +131,14 @@ func TestNewMemgraphNode_NoStartTime(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod, nil)
+	// Create a test client for the node
+	config := &Config{
+		AppName:         "memgraph",
+		StatefulSetName: "memgraph-ha",
+	}
+	testClient := NewMemgraphClient(config)
+	
+	node := NewMemgraphNode(pod, testClient)
 
 	// Should fall back to CreationTimestamp
 	expectedTime := creationTime.Time
@@ -146,7 +159,14 @@ func TestNewMemgraphNode_NoPodIP(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod, nil)
+	// Create a test client for the node
+	config := &Config{
+		AppName:         "memgraph",
+		StatefulSetName: "memgraph-ha",
+	}
+	testClient := NewMemgraphClient(config)
+	
+	node := NewMemgraphNode(pod, testClient)
 
 	if node.BoltAddress != "" {
 		t.Errorf("BoltAddress = %s, want empty", node.BoltAddress)

@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -74,7 +73,8 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 		clientset: fakeClient,
 		config:    config,
 	}
-	controller.cluster = NewMemgraphCluster(fakeClient, config, nil)
+	testClient := NewMemgraphClient(config)
+	controller.cluster = NewMemgraphCluster(fakeClient, config, testClient)
 	err := controller.cluster.DiscoverPods(context.Background())
 
 	if err != nil {
@@ -108,10 +108,7 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 		t.Error("Pod memgraph-1 not found")
 	}
 
-	// After discovery, main selection is deferred until after Memgraph querying
-	if controller.cluster.CurrentMain != "" {
-		t.Errorf("CurrentMain = %s, want empty (deferred until after Memgraph querying)", controller.cluster.CurrentMain)
-	}
+	// CurrentMain field has been removed - target main is now tracked via controller's target main index
 }
 
 func TestMemgraphController_GetPodsByLabel(t *testing.T) {
@@ -138,7 +135,8 @@ func TestMemgraphController_GetPodsByLabel(t *testing.T) {
 		clientset: fakeClient,
 		config:    config,
 	}
-	controller.cluster = NewMemgraphCluster(fakeClient, config, nil)
+	testClient := NewMemgraphClient(config)
+	controller.cluster = NewMemgraphCluster(fakeClient, config, testClient)
 	err := controller.cluster.GetPodsByLabel(context.Background(), "custom=label")
 
 	if err != nil {
@@ -157,214 +155,11 @@ func TestMemgraphController_GetPodsByLabel(t *testing.T) {
 // Tests for main controller discovery functions
 
 
-func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
-	controller := &MemgraphController{
-		config: &Config{
-			AppName:         "memgraph",
-			StatefulSetName: "memgraph-ha",
-		},
-	}
+// TestMemgraphController_ApplyDeterministicRoles was removed since the method was simplified
+// and integrated into the discoverClusterState logic
 
-	tests := []struct {
-		name            string
-		targetMainIndex int
-		expectedMain    string
-		podCount        int
-	}{
-		{
-			name:            "main_index_0",
-			targetMainIndex: 0,
-			expectedMain:    "memgraph-ha-0",
-			podCount:        3,
-		},
-		{
-			name:            "main_index_1",
-			targetMainIndex: 1,
-			expectedMain:    "memgraph-ha-1",
-			podCount:        3,
-		},
-	}
+// TestMemgraphController_LearnExistingTopology was removed since the method was simplified
+// and integrated into the discoverClusterState logic
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set up target main index in controller for the test
-			controller.targetMainIndex = tt.targetMainIndex
-			controller.cluster = NewMemgraphCluster(nil, controller.config, nil)
-
-			// Add mock pods
-			for i := 0; i < tt.podCount; i++ {
-				podName := fmt.Sprintf("memgraph-ha-%d", i)
-				controller.cluster.MemgraphNodes[podName] = &MemgraphNode{Name: podName}
-			}
-
-			controller.cluster.applyDeterministicRoles(tt.targetMainIndex)
-
-			if controller.cluster.CurrentMain != tt.expectedMain {
-				t.Errorf("CurrentMain = %s, want %s", controller.cluster.CurrentMain, tt.expectedMain)
-			}
-		})
-	}
-}
-
-func TestMemgraphController_LearnExistingTopology(t *testing.T) {
-	controller := &MemgraphController{
-		config: &Config{
-			AppName:         "memgraph",
-			StatefulSetName: "memgraph-ha",
-		},
-	}
-
-	tests := []struct {
-		name         string
-		mainPods     []string
-		expectedMain string
-		shouldWarn   bool
-	}{
-		{
-			name:         "single_main_pod_0",
-			mainPods:     []string{"memgraph-ha-0"},
-			expectedMain: "memgraph-ha-0",
-			shouldWarn:   false,
-		},
-		{
-			name:         "single_main_pod_1",
-			mainPods:     []string{"memgraph-ha-1"},
-			expectedMain: "memgraph-ha-1",
-			shouldWarn:   false,
-		},
-		{
-			name:         "multiple_mains_fallback",
-			mainPods:     []string{"memgraph-ha-0", "memgraph-ha-1"},
-			expectedMain: "memgraph-ha-0", // Should use fallback
-			shouldWarn:   true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Set up fake clientset with ConfigMap for ConfigMap operations
-			fakeClient := fake.NewSimpleClientset()
-			controller.clientset = fakeClient
-			controller.configMapName = "test-configmap"
-			controller.config.Namespace = "test"
-			
-			// Reset the cluster for each test to ensure predictable behavior
-			controller.cluster = NewMemgraphCluster(fakeClient, controller.config, nil)
-			
-			// Set up the target main index in the controller for each test
-			if tt.name == "multiple_mains_fallback" {
-				// For multiple mains case, set expected fallback to index 0
-				controller.targetMainIndex = 0
-			} else if tt.name == "single_main_pod_1" {
-				// Start with wrong index, should be corrected by learnExistingTopology
-				controller.targetMainIndex = 0 
-			} else {
-				// For single_main_pod_0, start with correct index
-				controller.targetMainIndex = 0
-			}
-
-			// Set up pods based on test case
-			for _, podName := range tt.mainPods {
-				controller.cluster.MemgraphNodes[podName] = &MemgraphNode{
-					Name:         podName,
-					MemgraphRole: "main",
-				}
-			}
-
-			// Add SYNC replica for testing
-			if len(tt.mainPods) == 1 {
-				otherPodName := "memgraph-ha-1"
-				if tt.mainPods[0] == "memgraph-ha-1" {
-					otherPodName = "memgraph-ha-0"
-				}
-				controller.cluster.MemgraphNodes[otherPodName] = &MemgraphNode{
-					Name:          otherPodName,
-					MemgraphRole:  "replica",
-					IsSyncReplica: true,
-				}
-			}
-
-			// Simulate what the real controller would do - determine target main index from discovered state
-			var targetIndex int
-			if tt.name == "single_main_pod_1" {
-				targetIndex = 1 // This test expects pod-1 to be main
-			} else {
-				targetIndex = 0 // Default to pod-0
-			}
-			
-			// Set the target main index in the controller first
-			controller.targetMainIndex = targetIndex
-			
-			controller.cluster.learnExistingTopology(targetIndex)
-
-			if controller.cluster.CurrentMain != tt.expectedMain {
-				t.Errorf("CurrentMain = %s, want %s", controller.cluster.CurrentMain, tt.expectedMain)
-			}
-
-			// Verify target main index was updated for single main cases
-			if len(tt.mainPods) == 1 {
-				expectedIndex := controller.config.ExtractPodIndex(tt.expectedMain)
-				ctx := context.Background()
-				actualIndex, err := controller.GetTargetMainIndex(ctx)
-				if err != nil {
-					t.Fatalf("Failed to get target main index: %v", err)
-				}
-				if actualIndex != expectedIndex {
-					t.Errorf("targetMainIndex = %d, want %d", actualIndex, expectedIndex)
-				}
-			}
-		})
-	}
-}
-
-func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
-	controller := &MemgraphController{
-		config: &Config{
-			AppName:         "memgraph",
-			StatefulSetName: "memgraph-ha",
-		},
-	}
-
-	tests := []struct {
-		name            string
-		stateType       ClusterStateType
-		targetMainIndex int
-		expectMethod    string // Which method should be called
-	}{
-		{
-			name:            "initial_state_calls_apply_deterministic",
-			stateType:       INITIAL_STATE,
-			targetMainIndex: 0,
-			expectMethod:    "applyDeterministicRoles",
-		},
-		{
-			name:            "operational_state_calls_learn_topology",
-			stateType:       OPERATIONAL_STATE,
-			targetMainIndex: 1,
-			expectMethod:    "learnExistingTopology",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			controller.targetMainIndex = tt.targetMainIndex
-			controller.cluster = NewMemgraphCluster(nil, controller.config, nil)
-			
-			// Setup test state
-			controller.cluster.StateType = tt.stateType
-			controller.cluster.IsBootstrapPhase = true // Should be set to false
-
-			// Setup minimal pod structure for function to work
-			controller.cluster.MemgraphNodes["memgraph-ha-0"] = &MemgraphNode{Name: "memgraph-ha-0"}
-			controller.cluster.MemgraphNodes["memgraph-ha-1"] = &MemgraphNode{Name: "memgraph-ha-1"}
-
-			// Call the function (we can't easily mock internal method calls)
-			controller.cluster.selectMainAfterQuerying(context.Background(), tt.targetMainIndex)
-
-			// Verify bootstrap phase was cleared - this is the main behavior we can test
-			if controller.cluster.IsBootstrapPhase {
-				t.Errorf("IsBootstrapPhase should be false after selection")
-			}
-		})
-	}
-}
+// TestMemgraphController_SelectMainAfterQuerying was removed since the method was simplified
+// and integrated into the discoverClusterState logic

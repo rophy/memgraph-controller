@@ -54,9 +54,7 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			log.Println("🎯 Became leader - loading state and starting controller operations")
 
 			// Load state to determine startup phase (BOOTSTRAP vs OPERATIONAL)
-			if err := c.loadControllerStateOnStartup(ctx); err != nil {
-				log.Printf("Warning: Failed to load startup state: %v", err)
-			}
+			// State loading now handled via GetTargetMainIndex() calls
 		},
 		func() {
 			// OnStoppedLeading: This controller instance lost leadership
@@ -104,23 +102,28 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 	// IMMEDIATE ANALYSIS: Check for critical main pod health changes
 	if c.IsLeader() {
 		lastState, stateAge := c.getCachedState()
-		if lastState != nil && lastState.CurrentMain == newPod.Name {
-			// This is the current main pod - check for immediate health issues
-			if c.isPodBecomeUnhealthy(oldPod, newPod) {
-				log.Printf("🚨 IMMEDIATE EVENT: Main pod %s became unhealthy, triggering immediate failover", newPod.Name)
-				
-				// Trigger immediate failover in background
-				go c.handleImmediateFailover(newPod.Name)
-				
-				// Don't queue regular reconciliation - immediate action taken
-				return
+		// Get current main from target index to check if this is the main pod
+		targetMainIndex, err := c.GetTargetMainIndex(context.Background())
+		if err == nil {
+			currentMain := c.config.GetPodName(targetMainIndex)
+			if currentMain == newPod.Name {
+				// This is the current main pod - check for immediate health issues
+				if c.isPodBecomeUnhealthy(oldPod, newPod) {
+					log.Printf("🚨 IMMEDIATE EVENT: Main pod %s became unhealthy, triggering immediate failover", newPod.Name)
+
+					// Trigger immediate failover in background
+					go c.handleImmediateFailover(newPod.Name)
+
+					// Don't queue regular reconciliation - immediate action taken
+					return
+				}
 			}
 		}
-		
+
 		// Log cached state age for debugging
 		if lastState != nil {
-			log.Printf("🔍 Event analysis: cached state age=%v, currentMain=%s, eventPod=%s", 
-				time.Since(stateAge), lastState.CurrentMain, newPod.Name)
+			log.Printf("🔍 Event analysis: cached state age=%v, currentMain from target index=%s, eventPod=%s",
+				time.Since(stateAge), c.config.GetPodName(targetMainIndex), newPod.Name)
 		}
 	}
 
@@ -187,11 +190,7 @@ func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 	}
 
 	// Update our cached state if we're not the leader (leaders maintain state directly)
-	if !c.IsLeader() {
-		if err := c.loadControllerStateOnStartup(context.Background()); err != nil {
-			log.Printf("Warning: Failed to reload state after ConfigMap creation: %v", err)
-		}
-	}
+	// State loading now handled via GetTargetMainIndex() calls
 }
 
 // onConfigMapUpdate handles ConfigMap update events for distributed state synchronization
@@ -225,7 +224,7 @@ func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 			log.Printf("Failed to get current target main index: %v", err)
 			return
 		}
-		
+
 		if currentTargetIndex != newTargetMainIndex {
 			log.Printf("🔄 Target main changed externally: %d -> %d", currentTargetIndex, newTargetMainIndex)
 			c.handleTargetMainChanged(newTargetMainIndex)
@@ -254,12 +253,12 @@ func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 	if cachedState != nil {
 		// Update gateway to point to new main using IP address
 		newMainName := c.config.GetPodName(newTargetMainIndex)
-		
+
 		if c.gatewayServer != nil {
 			// Get IP-based endpoint to avoid DNS refresh timing issues
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			
+
 			newMainIP, err := c.getPodIPEndpoint(ctx, newTargetMainIndex)
 			if err != nil {
 				log.Printf("❌ Failed to get IP for new main pod %s: %v", newMainName, err)
@@ -269,21 +268,20 @@ func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 			}
 		}
 
-		// Update cached state
-		cachedState.CurrentMain = newMainName
+		// Update cached state - no need to track CurrentMain anymore since we use GetTargetMainIndex
 		c.updateCachedState(cachedState)
 	}
 
 	// Enqueue reconciliation to fully process the change
 	c.enqueuePodEvent("target-main-changed")
-	
+
 	// CRITICAL: Trigger immediate reconciliation for main changes
 	if c.IsLeader() {
 		log.Println("🚨 CRITICAL: Target main changed - performing immediate reconciliation")
 		go func() {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
-			
+
 			if err := c.performLeaderReconciliation(ctx); err != nil {
 				log.Printf("❌ Failed immediate reconciliation after main change: %v", err)
 			} else {
@@ -331,36 +329,12 @@ func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
 	return false
 }
 
-
-// loadControllerStateOnStartup loads persisted state and determines startup phase
-func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) error {
-	// Try to get target main index - if it fails, the ConfigMap doesn't exist or is invalid
-	targetMainIndex, err := c.GetTargetMainIndex(ctx)
-	if err != nil {
-		log.Println("No valid state ConfigMap found - will start in BOOTSTRAP phase")
-		return nil // Keep default bootstrap=true
-	}
-
-	// If state exists, assume bootstrap is completed and start in OPERATIONAL phase
-
-	// Transition gateway to operational phase for non-leaders per DESIGN.md
-	if c.gatewayServer != nil {
-		c.gatewayServer.SetBootstrapPhase(false)
-		log.Printf("✅ Gateway transitioned to operational phase (ConfigMap loaded, bootstrap complete)")
-	}
-
-	log.Printf("Loaded persisted state - will start in OPERATIONAL phase: targetMainIndex=%d", targetMainIndex)
-
-	return nil
-}
-
 // updateTargetMainIndex updates target main index
 func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, newTargetIndex int, reason string) error {
 	currentIndex, _ := c.GetTargetMainIndex(ctx)
 	log.Printf("Updating target main index: %d → %d (reason: %s)", currentIndex, newTargetIndex, reason)
 	return c.SetTargetMainIndex(ctx, newTargetIndex)
 }
-
 
 // handleImmediateFailover performs immediate failover when main pod fails
 func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
@@ -395,7 +369,7 @@ func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
 
 	// Update gateway immediately to point to new main using IP address
 	newMainName := c.config.GetPodName(newMainIndex)
-	
+
 	if c.gatewayServer != nil {
 		// Get IP-based endpoint to avoid DNS refresh timing issues
 		newMainIP, err := c.getPodIPEndpoint(ctx, newMainIndex)

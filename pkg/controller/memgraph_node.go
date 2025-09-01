@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -11,23 +12,28 @@ import (
 
 // MemgraphNode represents a single Memgraph instance in the cluster
 type MemgraphNode struct {
-	Name               string
-	State              PodState      // Derived from Memgraph queries only
-	Timestamp          time.Time     // Pod creation/restart time
-	MemgraphRole       string        // Result of SHOW REPLICATION ROLE ("MAIN", "REPLICA")
-	BoltAddress        string        // Pod IP:7687 for Bolt connections
-	ReplicaName        string        // Pod name with dashes → underscores for REGISTER REPLICA
-	Replicas           []string      // Result of SHOW REPLICAS (only for MAIN nodes)
-	ReplicasInfo       []ReplicaInfo // Detailed replica information including sync mode
-	IsSyncReplica      bool          // True if this replica is configured as SYNC
-	Pod                *v1.Pod       // Reference to Kubernetes pod object
-	
+	Name          string
+	State         PodState      // Derived from Memgraph queries only
+	Timestamp     time.Time     // Pod creation/restart time
+	MemgraphRole  string        // Result of SHOW REPLICATION ROLE ("MAIN", "REPLICA")
+	StorageInfo   *StorageInfo  // Result of querying storage info (vertex/edge count)
+	BoltAddress   string        // Pod IP:7687 for Bolt connections
+	ReplicaName   string        // Pod name with dashes → underscores for REGISTER REPLICA
+	Replicas      []string      // Result of SHOW REPLICAS (only for MAIN nodes)
+	ReplicasInfo  []ReplicaInfo // Detailed replica information including sync mode
+	IsSyncReplica bool          // True if this replica is configured as SYNC
+	Pod           *v1.Pod       // Reference to Kubernetes pod object
+
 	// Memgraph client for database operations (shared connection pool underneath)
 	client *MemgraphClient
 }
 
-// NewMemgraphNode creates a new MemgraphNode from a Kubernetes pod with optional client injection
+// NewMemgraphNode creates a new MemgraphNode from a Kubernetes pod with required client injection
 func NewMemgraphNode(pod *v1.Pod, client *MemgraphClient) *MemgraphNode {
+	if client == nil {
+		panic("MemgraphClient cannot be nil - all node methods require a valid client")
+	}
+
 	podName := pod.Name
 
 	// Extract timestamp (prefer status start time, fallback to creation time)
@@ -46,17 +52,17 @@ func NewMemgraphNode(pod *v1.Pod, client *MemgraphClient) *MemgraphNode {
 	replicaName := convertPodNameForReplica(podName)
 
 	return &MemgraphNode{
-		Name:               podName,
-		State:              INITIAL, // Will be determined later
-		Timestamp:          timestamp,
-		MemgraphRole:       "", // Will be queried later
-		BoltAddress:        boltAddress,
-		ReplicaName:        replicaName,
-		Replicas:           []string{},
-		ReplicasInfo:       []ReplicaInfo{},
-		IsSyncReplica:      false,
-		Pod:                pod,
-		client:             client, // Can be nil, injected by MemgraphCluster
+		Name:          podName,
+		State:         INITIAL, // Will be determined later
+		Timestamp:     timestamp,
+		MemgraphRole:  "", // Will be queried later
+		BoltAddress:   boltAddress,
+		ReplicaName:   replicaName,
+		Replicas:      []string{},
+		ReplicasInfo:  []ReplicaInfo{},
+		IsSyncReplica: false,
+		Pod:           pod,
+		client:        client, // Required - all node methods depend on this
 	}
 }
 
@@ -190,11 +196,14 @@ func buildInconsistencyDescription(node *MemgraphNode) string {
 // Node-specific client methods that use the shared connection pool
 
 // QueryReplicationRole queries the replication role of this node
-func (node *MemgraphNode) QueryReplicationRole(ctx context.Context) (*ReplicationRole, error) {
-	if node.client == nil {
-		return nil, fmt.Errorf("client not injected for node %s", node.Name)
+func (node *MemgraphNode) QueryReplicationRole(ctx context.Context) error {
+	roleResp, err := node.client.QueryReplicationRoleWithRetry(ctx, node.BoltAddress)
+	if err != nil {
+		return fmt.Errorf("failed to query replication role for node %s: %w", node.Name, err)
 	}
-	return node.client.QueryReplicationRoleWithRetry(ctx, node.BoltAddress)
+	node.MemgraphRole = roleResp.Role
+	log.Printf("Pod %s has Memgraph role: %s", node.Pod.Name, roleResp.Role)
+	return nil
 }
 
 // QueryReplicas queries the registered replicas from this node (only for MAIN nodes)
@@ -238,11 +247,14 @@ func (node *MemgraphNode) CheckConnectivity(ctx context.Context) error {
 }
 
 // QueryStorageInfo queries the storage information (vertex/edge count) from this node
-func (node *MemgraphNode) QueryStorageInfo(ctx context.Context) (*StorageInfo, error) {
-	if node.client == nil {
-		return nil, fmt.Errorf("client not injected for node %s", node.Name)
+func (node *MemgraphNode) QueryStorageInfo(ctx context.Context) error {
+	storageInfo, err := node.client.QueryStorageInfoWithRetry(ctx, node.BoltAddress)
+	if err != nil {
+		return fmt.Errorf("failed to query storage info for node %s: %w", node.Name, err)
 	}
-	return node.client.QueryStorageInfoWithRetry(ctx, node.BoltAddress)
+	node.StorageInfo = storageInfo
+	log.Printf("Pod %s has storage info: vertices=%d, edges=%d", node.Pod.Name, storageInfo.VertexCount, storageInfo.EdgeCount)
+	return nil
 }
 
 // DropReplica drops a replica registration on this MAIN node

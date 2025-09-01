@@ -50,27 +50,14 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 
 			if !configMapReady {
 				log.Println("ConfigMap not ready - performing discovery and creating ConfigMap...")
-				if err := c.discoverClusterAndCreateConfigMap(ctx); err != nil {
-					return fmt.Errorf("failed to discover cluster and create ConfigMap: %w", err)
+				if err := c.discoverClusterState(ctx); err != nil {
+					return fmt.Errorf("failed to discover cluster state: %w", err)
 				}
-				log.Println("✅ Cluster discovered and ConfigMap created")
+				log.Println("✅ Cluster discovered and ConfigMap updated")
 			}
 
-			// Reconciliation logic per DESIGN.md:
-			// if leader:
-			//   if configmap not ready then discoverClusterAndCreateConfigMap()
-			//   reconcile()
-			// else (non-leader): noop
-			if c.IsLeader() {
-				if err := c.performLeaderReconciliation(ctx); err != nil {
-					log.Printf("Leader reconciliation failed: %v", err)
-				}
-			} else {
-				// Load controller state for non-leaders to stay in sync
-				if err := c.loadControllerStateOnStartup(ctx); err != nil {
-					log.Printf("Non-leader failed to sync state: %v", err)
-				}
-				log.Printf("Not leader, skipping reconciliation cycle")
+			if err := c.performLeaderReconciliation(ctx); err != nil {
+				log.Printf("Leader reconciliation failed: %v", err)
 			}
 		}
 	}
@@ -86,10 +73,10 @@ func (c *MemgraphController) performLeaderReconciliation(ctx context.Context) er
 
 	if !configMapReady {
 		log.Println("ConfigMap not ready - performing discovery and creating ConfigMap...")
-		if err := c.discoverClusterAndCreateConfigMap(ctx); err != nil {
-			return fmt.Errorf("failed to discover cluster and create ConfigMap: %w", err)
+		if err := c.discoverClusterState(ctx); err != nil {
+			return fmt.Errorf("failed to discover cluster state: %w", err)
 		}
-		log.Println("✅ Cluster discovered and ConfigMap created")
+		log.Println("✅ Cluster discovered and ConfigMap updated")
 	}
 
 	// Perform regular reconciliation
@@ -234,9 +221,16 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 		return nil, fmt.Errorf("no cached cluster state available")
 	}
 
+	// Get current main from controller's target main index
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	currentMain := ""
+	if err == nil {
+		currentMain = c.config.GetPodName(targetMainIndex)
+	}
+
 	// Build cluster state summary
 	clusterState := ClusterStatus{
-		CurrentMain:        cachedState.CurrentMain,
+		CurrentMain:        currentMain,
 		CurrentSyncReplica: "", // Will be determined below
 		TotalPods:          len(cachedState.MemgraphNodes),
 	}
@@ -280,45 +274,28 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	return response, nil
 }
 
-// discoverClusterAndCreateConfigMap implements DESIGN.md "Discover Cluster State" section
-func (c *MemgraphController) discoverClusterAndCreateConfigMap(ctx context.Context) error {
+// discoverClusterState implements DESIGN.md "Discover Cluster State" section
+func (c *MemgraphController) discoverClusterState(ctx context.Context) error {
 	log.Println("=== CLUSTER DISCOVERY ===")
 
-	// Discover pods first
+	// Discover current pods and populate cluster state
 	if err := c.cluster.DiscoverPods(ctx); err != nil {
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}
 
-	// Discover cluster state using DESIGN.md steps
-	if err := c.cluster.discoverClusterState(ctx); err != nil {
-		return fmt.Errorf("cluster state discovery failed: %w", err)
+	// Discover cluster state and determine target main index
+	targetMainIndex, err := c.cluster.discoverClusterState(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to discover cluster state: %w", err)
 	}
-
-	// If INITIAL_STATE detected, initialize the cluster
-	if c.cluster.StateType == INITIAL_STATE {
-		log.Println("INITIAL_STATE detected - initializing cluster")
-		if err := c.cluster.initializeCluster(ctx); err != nil {
-			return fmt.Errorf("cluster initialization failed: %w", err)
-		}
+	if targetMainIndex < 0 {
+		return fmt.Errorf("ambiguous cluster state detected - manual intervention required")
 	}
-
-	// Create ConfigMap with target main index
-	var targetMainIndex int
-	if c.cluster.CurrentMain != "" {
-		targetMainIndex = c.config.ExtractPodIndex(c.cluster.CurrentMain)
-		if targetMainIndex < 0 {
-			return fmt.Errorf("invalid current main pod name: %s", c.cluster.CurrentMain)
-		}
-	} else {
-		targetMainIndex = 0 // Default fallback
-	}
-
-	// Create/update ConfigMap
 	if err := c.SetTargetMainIndex(ctx, targetMainIndex); err != nil {
-		return fmt.Errorf("failed to create/update ConfigMap: %w", err)
+		return fmt.Errorf("failed to set target main index in ConfigMap: %w", err)
 	}
+	log.Printf("✅ Cluster discovered with target main index: %d", targetMainIndex)
 
-	log.Printf("✅ Cluster discovery completed - main: %s, target index: %d", c.cluster.CurrentMain, targetMainIndex)
 	return nil
 }
 

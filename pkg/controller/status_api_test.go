@@ -27,7 +27,14 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod, nil)
+	// Create a test client for the node
+	config := &Config{
+		AppName:         "memgraph",
+		StatefulSetName: "memgraph-ha",
+	}
+	testClient := NewMemgraphClient(config)
+	
+	node := NewMemgraphNode(pod, testClient)
 	node.MemgraphRole = "main"
 	node.Replicas = []string{"memgraph_1", "memgraph_2"}
 	node.State = MAIN
@@ -90,7 +97,14 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod, nil)
+	// Create a test client for the node
+	config := &Config{
+		AppName:         "memgraph",
+		StatefulSetName: "memgraph-ha",
+	}
+	testClient := NewMemgraphClient(config)
+	
+	node := NewMemgraphNode(pod, testClient)
 	node.MemgraphRole = "replica"
 	node.State = REPLICA
 	node.IsSyncReplica = true
@@ -123,11 +137,16 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 	// Create a simple unit test that doesn't rely on network calls
 	// Test the HTTP response format and structure
 
-	// Create a ClusterState with mock data
-	clusterState := &ClusterState{
-		MemgraphNodes:        make(map[string]*MemgraphNode),
-		CurrentMain: "memgraph-0",
+	// Create a test client for the nodes
+	config := &Config{
+		AppName:         "memgraph",
+		StatefulSetName: "memgraph-ha",
 	}
+	testClient := NewMemgraphClient(config)
+	
+	// Create a MemgraphCluster with mock data
+	clusterState := NewMemgraphCluster(nil, config, testClient)
+	// CurrentMain field has been removed - target main is now tracked via controller's target main index
 
 	// Add mock pod data
 	pod1 := &v1.Pod{
@@ -152,11 +171,11 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 		},
 	}
 
-	node1 := NewMemgraphNode(pod1, nil)
+	node1 := NewMemgraphNode(pod1, testClient)
 	node1.MemgraphRole = "main"
 	node1.State = MAIN
 
-	node2 := NewMemgraphNode(pod2, nil)
+	node2 := NewMemgraphNode(pod2, testClient)
 	node2.MemgraphRole = "replica"
 	node2.State = REPLICA
 	node2.IsSyncReplica = true
@@ -171,7 +190,7 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 			TotalPods:          len(clusterState.MemgraphNodes),
 			HealthyPods:        2,
 			UnhealthyPods:      0,
-			CurrentMain:        clusterState.CurrentMain,
+			CurrentMain:        "memgraph-0", // hardcode for test
 			CurrentSyncReplica: "memgraph-1",
 			SyncReplicaHealthy: true,
 		},

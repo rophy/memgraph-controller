@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
-	v1 "k8s.io/api/core/v1"
 )
 
 type PodState int
@@ -68,18 +66,6 @@ type ClusterState struct {
 	LastStateChange  time.Time
 }
 
-type MemgraphNode struct {
-	Name               string
-	State              PodState      // Derived from Memgraph queries only
-	Timestamp          time.Time     // Pod creation/restart time
-	MemgraphRole       string        // Result of SHOW REPLICATION ROLE ("MAIN", "REPLICA")
-	BoltAddress        string        // Pod IP:7687 for Bolt connections
-	ReplicaName        string        // Pod name with dashes → underscores for REGISTER REPLICA
-	Replicas           []string      // Result of SHOW REPLICAS (only for MAIN nodes)
-	ReplicasInfo       []ReplicaInfo // Detailed replica information including sync mode
-	IsSyncReplica      bool          // True if this replica is configured as SYNC
-	Pod                *v1.Pod       // Reference to Kubernetes pod object
-}
 
 func NewClusterState(config *Config) *ClusterState {
 	return NewClusterStateWithConnectionPool(config, nil)
@@ -95,102 +81,9 @@ func NewClusterStateWithConnectionPool(config *Config, connectionPool *Connectio
 	}
 }
 
-func NewMemgraphNode(pod *v1.Pod) *MemgraphNode {
-	podName := pod.Name
 
-	// Extract timestamp (prefer status start time, fallback to creation time)
-	timestamp := pod.CreationTimestamp.Time
-	if pod.Status.StartTime != nil {
-		timestamp = pod.Status.StartTime.Time
-	}
 
-	// Build addresses
-	boltAddress := ""
-	if pod.Status.PodIP != "" {
-		boltAddress = pod.Status.PodIP + ":7687"
-	}
 
-	// Convert pod name for replica registration (dashes to underscores)
-	replicaName := convertPodNameForReplica(podName)
-
-	return &MemgraphNode{
-		Name:               podName,
-		State:              INITIAL, // Will be determined later
-		Timestamp:          timestamp,
-		MemgraphRole:       "", // Will be queried later
-		BoltAddress:        boltAddress,
-		ReplicaName:        replicaName,
-		Replicas:           []string{},
-		ReplicasInfo:       []ReplicaInfo{},
-		IsSyncReplica:      false,
-		Pod:                pod,
-	}
-}
-
-// convertPodNameForReplica converts pod name to replica name by replacing dashes with underscores
-// Example: "memgraph-1" -> "memgraph_1"
-func convertPodNameForReplica(podName string) string {
-	result := ""
-	for _, char := range podName {
-		if char == '-' {
-			result += "_"
-		} else {
-			result += string(char)
-		}
-	}
-	return result
-}
-
-// ClassifyPodState determines the actual pod state based on Memgraph role and replica configuration
-func (pi *MemgraphNode) ClassifyState() PodState {
-	// If we don't have Memgraph role information yet, return current state
-	if pi.MemgraphRole == "" {
-		return pi.State
-	}
-
-	// State classification based on actual Memgraph configuration:
-	// - INITIAL: Memgraph role is main with no replicas (standalone)
-	// - MAIN: Memgraph role is main with replicas configured
-	// - REPLICA: Memgraph role is replica
-
-	// Note: We classify based on actual Memgraph state only.
-
-	switch {
-	case pi.MemgraphRole == "main" && len(pi.Replicas) == 0:
-		return INITIAL
-	case pi.MemgraphRole == "main" && len(pi.Replicas) > 0:
-		return MAIN
-	case pi.MemgraphRole == "replica":
-		return REPLICA
-	default:
-		// Unknown Memgraph role, return current state
-		return pi.State
-	}
-}
-
-// DetectStateInconsistency checks if pod state is inconsistent with Memgraph role
-func (pi *MemgraphNode) DetectStateInconsistency() *StateInconsistency {
-	if pi.MemgraphRole == "" {
-		// Can't detect inconsistency without Memgraph role info
-		return nil
-	}
-
-	expectedState := pi.ClassifyState()
-
-	// Check if current state matches expected state based on Memgraph role
-	if pi.State == expectedState {
-		return nil // No inconsistency
-	}
-
-	return &StateInconsistency{
-		PodName:       pi.Name,
-		MemgraphRole:  pi.MemgraphRole,
-		CurrentState:  pi.State,
-		ExpectedState: expectedState,
-		ReplicaCount:  len(pi.Replicas),
-		Description:   buildInconsistencyDescription(pi),
-	}
-}
 
 type StateInconsistency struct {
 	PodName       string
@@ -201,61 +94,12 @@ type StateInconsistency struct {
 	Description   string
 }
 
-func buildInconsistencyDescription(pi *MemgraphNode) string {
-	expectedState := pi.ClassifyState()
-	return fmt.Sprintf("Pod state %s does not match expected state %s (Memgraph role: %s, replicas: %d)",
-		pi.State.String(), expectedState.String(), pi.MemgraphRole, len(pi.Replicas))
-}
 
-// GetReplicaName converts pod name to replica name (dashes to underscores)
-func (pi *MemgraphNode) GetReplicaName() string {
-	return strings.ReplaceAll(pi.Name, "-", "_")
-}
 
-// GetReplicationAddress returns the replication address using pod IP for reliable connectivity
-func (pi *MemgraphNode) GetReplicationAddress() string {
-	if pi.Pod != nil && pi.Pod.Status.PodIP != "" {
-		return fmt.Sprintf("%s:10000", pi.Pod.Status.PodIP)
-	}
-	return "" // Pod IP not available
-}
 
-// IsReadyForReplication checks if pod is ready for replication (has IP and passes readiness checks)
-func (pi *MemgraphNode) IsReadyForReplication() bool {
-	if pi.Pod == nil || pi.Pod.Status.PodIP == "" {
-		return false
-	}
 
-	// Check Kubernetes readiness conditions
-	for _, condition := range pi.Pod.Status.Conditions {
-		if condition.Type == v1.PodReady {
-			return condition.Status == v1.ConditionTrue
-		}
-	}
 
-	return false
-}
 
-// ShouldBecomeMain determines if this pod should be promoted to main
-func (pi *MemgraphNode) ShouldBecomeMain(currentMainName string) bool {
-	// Pod should become main if:
-	// 1. It's currently selected as the main pod (by timestamp)
-	// 2. AND it's not already in MAIN state
-	return pi.Name == currentMainName && pi.State != MAIN
-}
-
-// ShouldBecomeReplica determines if this pod should be demoted to replica
-func (pi *MemgraphNode) ShouldBecomeReplica(currentMainName string) bool {
-	// Pod should become replica if:
-	// 1. It's NOT the selected main pod
-	// 2. AND it's not already in REPLICA state
-	return pi.Name != currentMainName && pi.State != REPLICA
-}
-
-// NeedsReplicationConfiguration determines if this pod needs replication changes
-func (pi *MemgraphNode) NeedsReplicationConfiguration(currentMainName string) bool {
-	return pi.ShouldBecomeMain(currentMainName) || pi.ShouldBecomeReplica(currentMainName)
-}
 
 // ClassifyClusterState determines the cluster state type based on README.md Bootstrap Phase rules
 // This method requires config to calculate pod names properly

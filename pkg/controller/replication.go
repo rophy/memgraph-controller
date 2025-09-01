@@ -62,7 +62,7 @@ func (c *MemgraphController) ConfigureReplication(ctx context.Context, cluster *
 			}
 
 			log.Printf("Promoting pod %s to MAIN role", podName)
-			if err := c.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, node.BoltAddress); err != nil {
+			if err := node.SetToMainRole(ctx); err != nil {
 				log.Printf("Failed to promote pod %s to MAIN: %v", podName, err)
 				configErrors = append(configErrors, fmt.Errorf("promote %s to MAIN: %w", podName, err))
 				continue
@@ -78,7 +78,7 @@ func (c *MemgraphController) ConfigureReplication(ctx context.Context, cluster *
 			}
 
 			log.Printf("Demoting pod %s to REPLICA role", podName)
-			if err := c.memgraphClient.SetReplicationRoleToReplicaWithRetry(ctx, node.BoltAddress); err != nil {
+			if err := node.SetToReplicaRole(ctx); err != nil {
 				log.Printf("Failed to demote pod %s to REPLICA: %v", podName, err)
 				configErrors = append(configErrors, fmt.Errorf("demote %s to REPLICA: %w", podName, err))
 				continue
@@ -213,7 +213,7 @@ func (c *MemgraphController) configureReplicationWithEnhancedSyncStrategy(ctx co
 
 	// Refresh replica information from main to get current state after configuration
 	mainPod := cluster.MemgraphNodes[currentMain]
-	if replicasResp, err := c.memgraphClient.QueryReplicasWithRetry(ctx, mainPod.BoltAddress); err != nil {
+	if replicasResp, err := mainPod.QueryReplicas(ctx); err != nil {
 		log.Printf("Warning: Failed to refresh replicas info from main %s: %v", currentMain, err)
 	} else {
 		mainPod.ReplicasInfo = replicasResp.Replicas
@@ -303,12 +303,12 @@ func (c *MemgraphController) configurePodAsAsyncReplica(ctx context.Context, mai
 
 	// Need to register/re-register as ASYNC
 	// Drop existing registration first (if any)
-	if err := c.memgraphClient.DropReplicaWithRetry(ctx, mainPod.BoltAddress, replicaName); err != nil {
+	if err := mainPod.DropReplica(ctx, replicaName); err != nil {
 		log.Printf("Warning: Could not drop existing replica %s: %v", replicaName, err)
 	}
 
 	// Register as ASYNC replica
-	if err := c.memgraphClient.RegisterReplicaWithModeAndRetry(ctx, mainPod.BoltAddress, replicaName, replicaAddress, "ASYNC"); err != nil {
+	if err := mainPod.RegisterReplicaWithMode(ctx, replicaName, replicaAddress, "ASYNC"); err != nil {
 		return fmt.Errorf("failed to register ASYNC replica %s: %w", replicaName, err)
 	}
 
@@ -498,7 +498,7 @@ func (c *MemgraphController) handleSyncReplicaFailure(ctx context.Context, clust
 	// Strategy 2: Drop failed SYNC replica registration to unblock writes
 	log.Printf("Strategy 2: Dropping failed SYNC replica registration to unblock writes")
 	failedReplicaName := strings.ReplaceAll(failedSyncReplica, "-", "_")
-	if err := c.memgraphClient.DropReplicaWithRetry(ctx, mainPod.BoltAddress, failedReplicaName); err != nil {
+	if err := mainPod.DropReplica(ctx, failedReplicaName); err != nil {
 		log.Printf("Warning: Failed to drop failed SYNC replica %s: %v", failedReplicaName, err)
 	} else {
 		log.Printf("Dropped failed SYNC replica registration: %s", failedReplicaName)
@@ -548,12 +548,12 @@ func (c *MemgraphController) configurePodAsSyncReplica(ctx context.Context, clus
 	}
 
 	// Drop existing registration first (if any)
-	if err := c.memgraphClient.DropReplicaWithRetry(ctx, mainPod.BoltAddress, replicaName); err != nil {
+	if err := mainPod.DropReplica(ctx, replicaName); err != nil {
 		log.Printf("Warning: Could not drop existing replica %s: %v", replicaName, err)
 	}
 
 	// Register as SYNC replica
-	if err := c.memgraphClient.RegisterReplicaWithModeAndRetry(ctx, mainPod.BoltAddress, replicaName, replicaAddress, "SYNC"); err != nil {
+	if err := mainPod.RegisterReplicaWithMode(ctx, replicaName, replicaAddress, "SYNC"); err != nil {
 		return fmt.Errorf("failed to register SYNC replica %s: %w", replicaName, err)
 	}
 

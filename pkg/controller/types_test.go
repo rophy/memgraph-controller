@@ -72,7 +72,7 @@ func TestNewMemgraphNode(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod)
+	node := NewMemgraphNode(pod, nil)
 
 	if node.Name != "memgraph-1" {
 		t.Errorf("Name = %s, want memgraph-1", node.Name)
@@ -125,7 +125,7 @@ func TestNewMemgraphNode_NoStartTime(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod)
+	node := NewMemgraphNode(pod, nil)
 
 	// Should fall back to CreationTimestamp
 	expectedTime := creationTime.Time
@@ -146,7 +146,7 @@ func TestNewMemgraphNode_NoPodIP(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod)
+	node := NewMemgraphNode(pod, nil)
 
 	if node.BoltAddress != "" {
 		t.Errorf("BoltAddress = %s, want empty", node.BoltAddress)

@@ -27,7 +27,7 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod)
+	node := NewMemgraphNode(pod, nil)
 	node.MemgraphRole = "main"
 	node.Replicas = []string{"memgraph_1", "memgraph_2"}
 	node.State = MAIN
@@ -90,7 +90,7 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 		},
 	}
 
-	node := NewMemgraphNode(pod)
+	node := NewMemgraphNode(pod, nil)
 	node.MemgraphRole = "replica"
 	node.State = REPLICA
 	node.IsSyncReplica = true
@@ -152,11 +152,11 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 		},
 	}
 
-	node1 := NewMemgraphNode(pod1)
+	node1 := NewMemgraphNode(pod1, nil)
 	node1.MemgraphRole = "main"
 	node1.State = MAIN
 
-	node2 := NewMemgraphNode(pod2)
+	node2 := NewMemgraphNode(pod2, nil)
 	node2.MemgraphRole = "replica"
 	node2.State = REPLICA
 	node2.IsSyncReplica = true

@@ -94,7 +94,7 @@ func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) error {
 			continue
 		}
 
-		node := NewMemgraphNode(&pod)
+		node := NewMemgraphNode(&pod, mc.memgraphClient)
 		mc.MemgraphNodes[pod.Name] = node
 
 		log.Printf("Discovered pod: %s, IP: %s, Timestamp: %s",
@@ -119,7 +119,7 @@ func (mc *MemgraphCluster) GetPodsByLabel(ctx context.Context, labelSelector str
 	mc.MemgraphNodes = make(map[string]*MemgraphNode)
 
 	for _, pod := range pods.Items {
-		node := NewMemgraphNode(&pod)
+		node := NewMemgraphNode(&pod, mc.memgraphClient)
 		mc.MemgraphNodes[pod.Name] = node
 	}
 
@@ -194,7 +194,7 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 		log.Printf("Querying replication role for pod %s at %s", podName, node.BoltAddress)
 
 		// Query replication role with retry
-		role, err := mc.memgraphClient.QueryReplicationRoleWithRetry(ctx, node.BoltAddress)
+		role, err := node.QueryReplicationRole(ctx)
 		if err != nil {
 			log.Printf("Failed to query replication role for pod %s: %v", podName, err)
 			queryErrors = append(queryErrors, fmt.Errorf("pod %s role query: %w", podName, err))
@@ -208,7 +208,7 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 		if role.Role == "main" {
 			log.Printf("Querying replicas for main pod %s", podName)
 
-			replicasResp, err := mc.memgraphClient.QueryReplicasWithRetry(ctx, node.BoltAddress)
+			replicasResp, err := node.QueryReplicas(ctx)
 			if err != nil {
 				log.Printf("Failed to query replicas for pod %s: %v", podName, err)
 				queryErrors = append(queryErrors, fmt.Errorf("pod %s replicas query: %w", podName, err))
@@ -571,18 +571,16 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 
 	// Step 1: Run command against pod-1 to demote it into replica
 	log.Printf("Step 1: Demoting pod-1 (%s) to replica role", pod1Name)
-	demoteCmd := "SET REPLICATION ROLE TO REPLICA WITH PORT 10000"
-	if err := mc.memgraphClient.ExecuteCommandWithRetry(ctx, pod1Info.BoltAddress, demoteCmd); err != nil {
+	if err := pod1Info.SetToReplicaRole(ctx); err != nil {
 		return fmt.Errorf("step 1 failed - demote pod-1 to replica: %w", err)
 	}
 
 	// Step 2: Run command against pod-0 to set up sync replication
 	log.Printf("Step 2: Setting up SYNC replication from pod-0 to pod-1")
 	replicaName := pod1Info.GetReplicaName()
-	replicaAddress := fmt.Sprintf("%s:10000", pod1Info.Pod.Status.PodIP)
-	registerCmd := fmt.Sprintf("REGISTER REPLICA %s SYNC TO \"%s\"", replicaName, replicaAddress)
+	replicaAddress := pod1Info.GetReplicationAddress()
 
-	if err := mc.memgraphClient.ExecuteCommandWithRetry(ctx, pod0Info.BoltAddress, registerCmd); err != nil {
+	if err := pod0Info.RegisterReplica(ctx, replicaName, replicaAddress, "SYNC"); err != nil {
 		return fmt.Errorf("step 2 failed - register SYNC replica: %w", err)
 	}
 
@@ -613,7 +611,7 @@ func (mc *MemgraphCluster) queryMemgraphRoles(ctx context.Context) error {
 			continue
 		}
 
-		roleResp, err := mc.memgraphClient.QueryReplicationRoleWithRetry(ctx, node.BoltAddress)
+		roleResp, err := node.QueryReplicationRole(ctx)
 		if err != nil {
 			log.Printf("Failed to query role for %s: %v", podName, err)
 			continue
@@ -673,7 +671,7 @@ func (mc *MemgraphCluster) hasEmptyStorage(ctx context.Context, node *MemgraphNo
 		return false
 	}
 
-	storageInfo, err := mc.memgraphClient.QueryStorageInfoWithRetry(ctx, node.BoltAddress)
+	storageInfo, err := node.QueryStorageInfo(ctx)
 	if err != nil {
 		log.Printf("Failed to query storage info for %s: %v", node.Name, err)
 		return false
@@ -692,7 +690,7 @@ func (mc *MemgraphCluster) verifyReplicationWithRetry(ctx context.Context, mainP
 	baseDelay := 2 * time.Second
 
 	for attempt := 1; attempt <= maxRetries; attempt++ {
-		replicasResp, err := mc.memgraphClient.QueryReplicasWithRetry(ctx, mainPod.BoltAddress)
+		replicasResp, err := mainPod.QueryReplicas(ctx)
 		if err != nil {
 			if attempt == maxRetries {
 				return fmt.Errorf("failed to query replicas after %d attempts: %w", maxRetries, err)

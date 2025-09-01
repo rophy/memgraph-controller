@@ -23,18 +23,46 @@ func (c *MemgraphController) discoverClusterAndCreateConfigMap(ctx context.Conte
 
 // applyDeterministicRoles applies deterministic role assignment per DESIGN.md
 func (c *MemgraphController) applyDeterministicRoles(cluster *MemgraphCluster) {
-	// Delegate to cluster implementation
-	cluster.applyDeterministicRoles()
+	// Get target main index and delegate to cluster implementation
+	targetMainIndex, err := c.GetTargetMainIndex(context.Background())
+	if err != nil {
+		log.Printf("Warning: failed to get target main index for deterministic roles, using 0: %v", err)
+		targetMainIndex = 0
+	}
+	cluster.applyDeterministicRoles(targetMainIndex)
 }
 
 // learnExistingTopology discovers the current cluster topology from Memgraph
 func (c *MemgraphController) learnExistingTopology(cluster *MemgraphCluster) {
-	// Delegate to cluster implementation
-	cluster.learnExistingTopology()
+	// Get current target main index and delegate to cluster implementation
+	targetMainIndex, err := c.GetTargetMainIndex(context.Background())
+	if err != nil {
+		log.Printf("Warning: failed to get target main index for learn topology, using 0: %v", err)
+		targetMainIndex = 0
+	}
+	
+	cluster.learnExistingTopology(targetMainIndex)
+	
+	// Update target main index if cluster discovered a different main
+	if cluster.CurrentMain != "" {
+		discoveredMainIndex := c.config.ExtractPodIndex(cluster.CurrentMain)
+		if discoveredMainIndex >= 0 && discoveredMainIndex != targetMainIndex {
+			if err := c.SetTargetMainIndex(context.Background(), discoveredMainIndex); err != nil {
+				log.Printf("Warning: failed to update target main index to %d: %v", discoveredMainIndex, err)
+			} else {
+				log.Printf("Updated target main index to match discovered main: %d", discoveredMainIndex)
+			}
+		}
+	}
 }
 
 // selectMainAfterQuerying selects the main pod after querying Memgraph states
 func (c *MemgraphController) selectMainAfterQuerying(ctx context.Context, cluster *MemgraphCluster) {
-	// Delegate to cluster implementation
-	cluster.selectMainAfterQuerying(ctx)
+	// Get target main index and delegate to cluster implementation
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		log.Printf("Warning: failed to get target main index for select main, using 0: %v", err)
+		targetMainIndex = 0
+	}
+	cluster.selectMainAfterQuerying(ctx, targetMainIndex)
 }

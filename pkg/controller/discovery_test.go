@@ -74,7 +74,7 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 		clientset: fakeClient,
 		config:    config,
 	}
-	controller.cluster = NewMemgraphCluster(fakeClient, config, nil, nil)
+	controller.cluster = NewMemgraphCluster(fakeClient, config, nil)
 	err := controller.cluster.DiscoverPods(context.Background())
 
 	if err != nil {
@@ -138,7 +138,7 @@ func TestMemgraphController_GetPodsByLabel(t *testing.T) {
 		clientset: fakeClient,
 		config:    config,
 	}
-	controller.cluster = NewMemgraphCluster(fakeClient, config, nil, nil)
+	controller.cluster = NewMemgraphCluster(fakeClient, config, nil)
 	err := controller.cluster.GetPodsByLabel(context.Background(), "custom=label")
 
 	if err != nil {
@@ -187,9 +187,9 @@ func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Create a mock state manager with the expected state
-			mockStateManager := NewMockStateManager(tt.targetMainIndex)
-			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, mockStateManager)
+			// Set up target main index in controller for the test
+			controller.targetMainIndex = tt.targetMainIndex
+			controller.cluster = NewMemgraphCluster(nil, controller.config, nil)
 
 			// Add mock pods
 			for i := 0; i < tt.podCount; i++ {
@@ -242,15 +242,26 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Reset the state manager for each test to ensure predictable behavior
-			var mockStateManager StateManagerInterface
+			// Set up fake clientset with ConfigMap for ConfigMap operations
+			fakeClient := fake.NewSimpleClientset()
+			controller.clientset = fakeClient
+			controller.configMapName = "test-configmap"
+			controller.config.Namespace = "test"
+			
+			// Reset the cluster for each test to ensure predictable behavior
+			controller.cluster = NewMemgraphCluster(fakeClient, controller.config, nil)
+			
+			// Set up the target main index in the controller for each test
 			if tt.name == "multiple_mains_fallback" {
 				// For multiple mains case, set expected fallback to index 0
-				mockStateManager = NewMockStateManager(0)
+				controller.targetMainIndex = 0
+			} else if tt.name == "single_main_pod_1" {
+				// Start with wrong index, should be corrected by learnExistingTopology
+				controller.targetMainIndex = 0 
 			} else {
-				mockStateManager = NewEmptyMockStateManager()
+				// For single_main_pod_0, start with correct index
+				controller.targetMainIndex = 0
 			}
-			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, mockStateManager)
 
 			// Set up pods based on test case
 			for _, podName := range tt.mainPods {
@@ -282,7 +293,11 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 			// Verify target main index was updated for single main cases
 			if len(tt.mainPods) == 1 {
 				expectedIndex := controller.config.ExtractPodIndex(tt.expectedMain)
-				actualIndex := controller.getTargetMainIndex()
+				ctx := context.Background()
+				actualIndex, err := controller.GetTargetMainIndex(ctx)
+				if err != nil {
+					t.Fatalf("Failed to get target main index: %v", err)
+				}
 				if actualIndex != expectedIndex {
 					t.Errorf("targetMainIndex = %d, want %d", actualIndex, expectedIndex)
 				}
@@ -321,8 +336,8 @@ func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			mockStateManager := NewMockStateManager(tt.targetMainIndex)
-			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, mockStateManager)
+			controller.targetMainIndex = tt.targetMainIndex
+			controller.cluster = NewMemgraphCluster(nil, controller.config, nil)
 			
 			// Setup test state
 			controller.cluster.StateType = tt.stateType

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
@@ -36,6 +37,11 @@ type MemgraphController struct {
 	leaderElection *LeaderElection
 	isLeader       bool
 	leaderMu       sync.RWMutex
+
+	// State management
+	targetMainIndex int
+	configMapName   string
+	targetMutex     sync.RWMutex
 
 	// Cluster operations
 	cluster *MemgraphCluster
@@ -90,12 +96,12 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	controller.leaderElection = NewLeaderElection(clientset, config)
 	controller.setupLeaderElectionCallbacks()
 
-	// Initialize state manager with release-based ConfigMap name
-	configMapName := generateStateConfigMapName()
-	stateManager := NewStateManager(clientset, config.Namespace, configMapName)
+	// Initialize state management with release-based ConfigMap name
+	controller.configMapName = generateStateConfigMapName()
+	controller.targetMainIndex = -1 // -1 indicates not yet loaded from ConfigMap
 
 	// Initialize cluster operations
-	controller.cluster = NewMemgraphCluster(clientset, config, controller.memgraphClient, stateManager)
+	controller.cluster = NewMemgraphCluster(clientset, config, controller.memgraphClient)
 
 	// Initialize controller state
 	controller.maxFailures = 5
@@ -110,19 +116,77 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	return controller
 }
 
-// getStateManager returns the StateManager instance from the cluster
-func (c *MemgraphController) getStateManager() StateManagerInterface {
-	if c.cluster == nil {
-		return nil
+// GetTargetMainIndex returns the target main index from ConfigMap or error if not available
+func (c *MemgraphController) GetTargetMainIndex(ctx context.Context) (int, error) {
+	if c.targetMainIndex != -1 {
+		return c.targetMainIndex, nil
 	}
-	return c.cluster.GetStateManager()
+
+	// Need to load from ConfigMap
+	c.targetMutex.Lock()
+	defer c.targetMutex.Unlock()
+
+	// Load state from ConfigMap
+	configMap, err := c.clientset.CoreV1().ConfigMaps(c.config.Namespace).Get(ctx, c.configMapName, metav1.GetOptions{})
+	if err != nil {
+		return 0, fmt.Errorf("ConfigMap not available: %w", err)
+	}
+
+	targetMainIndexStr, exists := configMap.Data["targetMainIndex"]
+	if !exists {
+		return 0, fmt.Errorf("targetMainIndex not found in ConfigMap")
+	}
+
+	var targetMainIndex int
+	if _, err := fmt.Sscanf(targetMainIndexStr, "%d", &targetMainIndex); err != nil {
+		return 0, fmt.Errorf("invalid targetMainIndex format: %w", err)
+	}
+
+	c.targetMainIndex = targetMainIndex
+	return targetMainIndex, nil
+}
+
+// SetTargetMainIndex updates both in-memory target and ConfigMap
+func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) error {
+
+	c.targetMutex.Lock()
+	defer c.targetMutex.Unlock()
+
+	// Update ConfigMap first
+	configMapData := map[string]string{
+		"targetMainIndex": fmt.Sprintf("%d", index),
+	}
+
+	configMap := &v1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      c.configMapName,
+			Namespace: c.config.Namespace,
+		},
+		Data: configMapData,
+	}
+
+	_, err := c.clientset.CoreV1().ConfigMaps(c.config.Namespace).Update(ctx, configMap, metav1.UpdateOptions{})
+	if err != nil {
+		// Try to create if it doesn't exist
+		if errors.IsNotFound(err) {
+			_, err = c.clientset.CoreV1().ConfigMaps(c.config.Namespace).Create(ctx, configMap, metav1.CreateOptions{})
+		}
+		if err != nil {
+			return fmt.Errorf("failed to update ConfigMap: %w", err)
+		}
+	}
+
+	// Update in-memory value
+	c.targetMainIndex = index
+	log.Printf("Updated TargetMainIndex to %d", index)
+	return nil
 }
 
 // updateCachedState updates the in-memory cluster state
 func (c *MemgraphController) updateCachedState(cluster *MemgraphCluster) {
 	c.stateMutex.Lock()
 	defer c.stateMutex.Unlock()
-	
+
 	// Deep copy the cluster state for thread safety
 	c.cluster = cluster
 	c.stateLastUpdated = time.Now()
@@ -196,7 +260,7 @@ func (c *MemgraphController) TestConnection() error {
 		return fmt.Errorf("failed to connect to Kubernetes API: %w", err)
 	}
 
-	log.Printf("Successfully connected to Kubernetes API. Found pods with app.kubernetes.io/name=%s in namespace %s", 
+	log.Printf("Successfully connected to Kubernetes API. Found pods with app.kubernetes.io/name=%s in namespace %s",
 		c.config.AppName, c.config.Namespace)
 	return nil
 }
@@ -214,7 +278,7 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 	}
 
 	log.Printf("Testing Memgraph connections to %d pods...", len(pods))
-	
+
 	var lastErr error
 	connectedCount := 0
 	for podName, pod := range pods {
@@ -238,45 +302,26 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 
 // GetCurrentMainEndpoint returns the current main endpoint for the gateway
 func (c *MemgraphController) GetCurrentMainEndpoint(ctx context.Context) (string, error) {
-	targetMainIndex := c.getTargetMainIndex()
-	if targetMainIndex < 0 {
-		return "", fmt.Errorf("no target main index set")
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to get target main index: %w", err)
 	}
 
 	podName := c.config.GetPodName(targetMainIndex)
-	
+
 	// Get the actual pod IP instead of using FQDN to avoid DNS refresh timing issues
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to get pod %s: %w", podName, err)
 	}
-	
+
 	if pod.Status.PodIP == "" {
 		return "", fmt.Errorf("pod %s has no IP address assigned", podName)
 	}
-	
+
 	endpoint := fmt.Sprintf("%s:7687", pod.Status.PodIP)
-	
+
 	return endpoint, nil
-}
-
-// getTargetMainIndex returns the current target main index from state
-func (c *MemgraphController) getTargetMainIndex() int {
-	stateManager := c.getStateManager()
-	if stateManager == nil {
-		return -1
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	
-	state, err := stateManager.LoadState(ctx)
-	if err != nil {
-		log.Printf("Failed to load state for target main index: %v", err)
-		return -1
-	}
-	
-	return state.TargetMainIndex
 }
 
 // StartHTTPServer starts the HTTP server
@@ -297,7 +342,7 @@ func (c *MemgraphController) StopHTTPServer(ctx context.Context) error {
 // StartInformers starts the Kubernetes informers and waits for cache sync
 func (c *MemgraphController) StartInformers() error {
 	c.informerFactory.Start(c.stopCh)
-	
+
 	// Wait for informer caches to sync
 	if !cache.WaitForCacheSync(c.stopCh, c.podInformer.HasSynced, c.configMapInformer.HasSynced) {
 		return fmt.Errorf("failed to sync informer caches")
@@ -368,16 +413,16 @@ func (c *MemgraphController) stop() {
 // getPodIPEndpoint gets the IP-based endpoint for a pod by index
 func (c *MemgraphController) getPodIPEndpoint(ctx context.Context, podIndex int) (string, error) {
 	podName := c.config.GetPodName(podIndex)
-	
+
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		return "", fmt.Errorf("failed to get pod %s: %w", podName, err)
 	}
-	
+
 	if pod.Status.PodIP == "" {
 		return "", fmt.Errorf("pod %s has no IP address assigned", podName)
 	}
-	
+
 	return pod.Status.PodIP, nil
 }
 

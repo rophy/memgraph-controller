@@ -273,7 +273,7 @@ func TestClusterStateSummary(t *testing.T) {
 		LastStateChange:  now,
 	}
 
-	summary := clusterState.GetClusterHealthSummary()
+	summary := clusterState.GetClusterHealthSummary(0)
 
 	// Verify summary contains expected fields
 	if summary["total_pods"] != 3 {

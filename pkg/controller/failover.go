@@ -2,18 +2,20 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"strings"
-	"time"
 )
 
 // detectMainFailover detects if the current main has failed
 func (c *MemgraphController) detectMainFailover(cluster *MemgraphCluster) bool {
-	// Get current main from state manager for operational phase failover detection
+	// Get current main from target main index for operational phase failover detection
 	ctx := context.Background()
-	lastKnownMain, err := c.getCurrentMainFromState(ctx)
-	if err != nil || lastKnownMain == "" {
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		// No target main index - not a failover scenario (likely fresh bootstrap)
+		return false
+	}
+	lastKnownMain := c.config.GetPodName(targetMainIndex)
+	if lastKnownMain == "" {
 		// No last known main - not a failover scenario (likely fresh bootstrap)
 		return false
 	}
@@ -42,184 +44,6 @@ func (c *MemgraphController) detectMainFailover(cluster *MemgraphCluster) bool {
 
 	log.Printf("✅ Last known main %s is still healthy and has MAIN role", lastKnownMain)
 	return false
-}
-
-// handleMainFailover handles main failover scenarios with SYNC replica priority
-func (c *MemgraphController) handleMainFailover(ctx context.Context, cluster *MemgraphCluster) error {
-	log.Printf("🔄 Handling main failover...")
-
-	// Get the failed main from state manager
-	oldMain, err := c.getCurrentMainFromState(ctx)
-	if err != nil {
-		return fmt.Errorf("cannot get current main for failover: %w", err)
-	}
-	log.Printf("Handling failover for failed main: %s", oldMain)
-
-	// Design-Contract-Based Failover Logic
-	// README.md guarantee: In OPERATIONAL state, either pod-0 OR pod-1 MUST be SYNC replica
-	var newMain *PodInfo
-	var promotionReason string
-
-	if cluster.StateType == OPERATIONAL_STATE {
-		// Use design contract: the other main-eligible pod MUST be the SYNC replica
-		failedMainIndex := c.config.ExtractPodIndex(oldMain)
-		
-		// Validate design contract assumption
-		if failedMainIndex < 0 || failedMainIndex > 1 {
-			log.Printf("❌ DESIGN CONTRACT VIOLATION: Failed main %s has invalid index %d (only 0,1 allowed)", oldMain, failedMainIndex)
-			return fmt.Errorf("design contract violation: main pod %s has invalid index %d", oldMain, failedMainIndex)
-		}
-
-		// The other pod (0 or 1) MUST be the SYNC replica by design
-		var newMainIndex int
-		if failedMainIndex == 0 {
-			newMainIndex = 1 // pod-1 is SYNC replica
-		} else {
-			newMainIndex = 0 // pod-0 is SYNC replica
-		}
-
-		newMainName := c.config.GetPodName(newMainIndex)
-		var exists bool
-		newMain, exists = cluster.Pods[newMainName]
-		
-		if !exists {
-			log.Printf("❌ CRITICAL: Design contract SYNC replica %s not found in cluster state", newMainName)
-			return fmt.Errorf("design contract SYNC replica %s not available", newMainName)
-		}
-
-		if !c.isPodHealthyForMain(newMain) {
-			log.Printf("❌ CRITICAL: Design contract SYNC replica %s is not healthy", newMainName)
-			return fmt.Errorf("design contract SYNC replica %s is not healthy", newMainName)
-		}
-
-		promotionReason = "SYNC replica failover (design contract guarantee)"
-		log.Printf("✅ SYNC REPLICA FAILOVER: Promoting %s (guaranteed zero data loss by design contract)", newMainName)
-		log.Printf("📋 Design Contract: pod-%d failed → pod-%d is SYNC replica by README.md guarantee", failedMainIndex, newMainIndex)
-
-	} else {
-		// Non-OPERATIONAL state: fall back to discovery-based approach
-		log.Printf("⚠️  Non-OPERATIONAL state (%s): using discovery-based failover", cluster.StateType)
-		
-		var healthyReplicas []*PodInfo
-		for _, podInfo := range cluster.Pods {
-			if podInfo.Name == oldMain {
-				continue // Skip the failed main
-			}
-			if c.isPodHealthyForMain(podInfo) {
-				healthyReplicas = append(healthyReplicas, podInfo)
-			}
-		}
-
-		if len(healthyReplicas) > 0 {
-			newMain = c.selectBestReplicaForPromotion(healthyReplicas, c.getTargetMainIndex())
-			if newMain != nil {
-				promotionReason = "Discovery-based replica failover (non-operational state)"
-				log.Printf("⚠️  DISCOVERY FAILOVER: Promoting %s (cluster not in operational state)", newMain.Name)
-			} else {
-				log.Printf("❌ CRITICAL: No main-eligible replicas available")
-				return fmt.Errorf("no main-eligible replicas available for failover")
-			}
-		} else {
-			log.Printf("❌ CRITICAL: No healthy replicas available for failover")
-			return fmt.Errorf("no healthy replicas available for main failover")
-		}
-	}
-
-	// IMMEDIATE failover following README.md design
-	if newMain != nil {
-		failoverStartTime := time.Now()
-		log.Printf("🚀 IMMEDIATE failover: %s → %s (reason: %s)",
-			oldMain, newMain.Name, promotionReason)
-
-		// Step 1: IMMEDIATE state update (critical path - triggers gateway switch)
-		newMainIndex := c.config.ExtractPodIndex(newMain.Name)
-		if newMainIndex >= 0 && newMainIndex <= 1 {
-			if err := c.updateTargetMainIndex(context.Background(), newMainIndex,
-				fmt.Sprintf("IMMEDIATE failover: %s → %s", oldMain, newMain.Name)); err != nil {
-				return fmt.Errorf("CRITICAL: failed to update target main index: %w", err)
-			}
-			
-			// Update cluster state
-			cluster.CurrentMain = newMain.Name
-			
-			log.Printf("⚡ IMMEDIATE state update completed in %v: targetMainIndex=%d, gateway switching...", 
-				time.Since(failoverStartTime), newMainIndex)
-		} else {
-			return fmt.Errorf("invalid pod index for failover: %d", newMainIndex)
-		}
-
-		// Step 2: Single-attempt promotion (best effort, don't block on failure)
-		promotionStartTime := time.Now()
-		if err := c.memgraphClient.SetReplicationRoleToMain(ctx, newMain.BoltAddress); err != nil {
-			log.Printf("⚠️  Promotion command failed (non-blocking): %v", err)
-			log.Printf("   → Gateway already switched, reconciliation will retry promotion later")
-		} else {
-			log.Printf("✅ Promotion command succeeded in %v", time.Since(promotionStartTime))
-		}
-
-		// Step 3: Remove failed pod from cluster state to prevent reconciliation delays
-		if oldMain != "" {
-			delete(cluster.Pods, oldMain)
-			log.Printf("🗑️  Filtered failed pod %s from reconciliation to prevent delays", oldMain)
-		}
-
-		totalFailoverTime := time.Since(failoverStartTime)
-		log.Printf("🎯 IMMEDIATE failover completed in %v: pod-%d is now MAIN", 
-			totalFailoverTime, newMainIndex)
-		log.Printf("   → Gateway: ✅ switched | Memgraph: ✅ promoted | Reconciliation: 🗑️  filtered")
-
-		// Log failover event with detailed metrics
-		isOperationalFailover := cluster.StateType == OPERATIONAL_STATE
-		failoverMetrics := &MainSelectionMetrics{
-			Timestamp:            time.Now(),
-			StateType:            cluster.StateType,
-			SelectedMain:         newMain.Name,
-			SelectionReason:      promotionReason,
-			HealthyPodsCount:     len(cluster.Pods) - 1, // Total pods minus failed main
-			SyncReplicaAvailable: isOperationalFailover,      // OPERATIONAL state guarantees SYNC replica
-			FailoverDetected:     true,
-			DecisionFactors:      []string{fmt.Sprintf("old_main_failed:%s", oldMain), fmt.Sprintf("design_contract:%t", isOperationalFailover)},
-		}
-
-		log.Printf("📊 FAILOVER EVENT: old_main=%s, new_main=%s, reason=%s, design_contract=%t",
-			oldMain, newMain.Name, promotionReason, isOperationalFailover)
-
-		cluster.LogMainSelectionDecision(failoverMetrics)
-	}
-
-	return nil
-}
-
-// selectBestReplicaForPromotion selects the best available replica for promotion to main
-// Used only for non-OPERATIONAL states where design contract doesn't apply
-func (c *MemgraphController) selectBestReplicaForPromotion(replicas []*PodInfo, targetIndex int) *PodInfo {
-	// Prefer replica that matches target main index
-	targetMainName := c.config.GetPodName(targetIndex)
-	for _, replica := range replicas {
-		if replica.Name == targetMainName {
-			log.Printf("Selected replica matching target index: %s", replica.Name)
-			return replica
-		}
-	}
-
-	// Fallback: select replica with lowest index (deterministic, main-eligible pods only)
-	var bestReplica *PodInfo
-	bestIndex := 999
-
-	for _, replica := range replicas {
-		replicaIndex := c.config.ExtractPodIndex(replica.Name)
-		// Only consider pods 0 and 1 as main-eligible (2-pod MAIN/SYNC strategy)
-		if replicaIndex >= 0 && replicaIndex <= 1 && replicaIndex < bestIndex {
-			bestIndex = replicaIndex
-			bestReplica = replica
-		}
-	}
-
-	if bestReplica != nil {
-		log.Printf("Selected replica with lowest eligible index: %s (index %d)", bestReplica.Name, bestIndex)
-	}
-
-	return bestReplica
 }
 
 
@@ -260,39 +84,3 @@ func (c *MemgraphController) identifyFailedMainIndex(cluster *MemgraphCluster) i
 	}
 }
 
-// updateSyncReplicaInfo updates IsSyncReplica field for all pods based on actual main replica data
-func (c *MemgraphController) updateSyncReplicaInfo(cluster *MemgraphCluster) {
-	// Find current MAIN node
-	var mainPod *PodInfo
-	for _, podInfo := range cluster.Pods {
-		if podInfo.MemgraphRole == "main" {
-			mainPod = podInfo
-			break
-		}
-	}
-
-	if mainPod == nil {
-		// No MAIN node found, clear all SYNC replica flags
-		for _, podInfo := range cluster.Pods {
-			podInfo.IsSyncReplica = false
-		}
-		return
-	}
-
-	// Mark all replicas as ASYNC first
-	for _, podInfo := range cluster.Pods {
-		podInfo.IsSyncReplica = false
-	}
-
-	// Identify SYNC replicas from main's replica information
-	for _, replica := range mainPod.ReplicasInfo {
-		if replica.SyncMode == "sync" { // Memgraph returns lowercase "sync"
-			// Convert replica name back to pod name (underscores to dashes)
-			podName := strings.ReplaceAll(replica.Name, "_", "-")
-			if podInfo, exists := cluster.Pods[podName]; exists {
-				podInfo.IsSyncReplica = true
-				log.Printf("Identified SYNC replica: %s", podName)
-			}
-		}
-	}
-}

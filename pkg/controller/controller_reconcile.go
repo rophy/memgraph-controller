@@ -60,11 +60,9 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 func (c *MemgraphController) performLeaderReconciliation(ctx context.Context) error {
 	log.Println("Performing leader reconciliation...")
 
-	// Check if ConfigMap is ready (exists and has valid state)
-	configMapReady, err := c.isConfigMapReady(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to check ConfigMap readiness: %w", err)
-	}
+	// Check if ConfigMap is ready by trying to get the target main index
+	_, err := c.GetTargetMainIndex(ctx)
+	configMapReady := err == nil
 
 	if !configMapReady {
 		log.Println("ConfigMap not ready - performing discovery and creating ConfigMap...")
@@ -127,24 +125,6 @@ func (c *MemgraphController) SyncPodLabels(ctx context.Context, cluster *Memgrap
 	return nil
 }
 
-// isConfigMapReady checks if the controller state ConfigMap exists and is valid
-func (c *MemgraphController) isConfigMapReady(ctx context.Context) (bool, error) {
-	state, err := c.getStateManager().LoadState(ctx)
-	if err != nil {
-		// ConfigMap doesn't exist or is invalid
-		log.Printf("ConfigMap not ready: %v", err)
-		return false, nil
-	}
-
-	// Validate that the state contains required information
-	if state.TargetMainIndex < 0 || state.TargetMainIndex > 1 {
-		log.Printf("ConfigMap contains invalid TargetMainIndex: %d", state.TargetMainIndex)
-		return false, nil
-	}
-
-	log.Printf("ConfigMap is ready with TargetMainIndex: %d", state.TargetMainIndex)
-	return true, nil
-}
 
 // isNonRetryableError determines if an error should stop retries
 func (c *MemgraphController) isNonRetryableError(err error) bool {

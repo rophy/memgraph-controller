@@ -433,13 +433,13 @@ func (r *ReconcileActions) step8_ValidateFinalResult(ctx context.Context, target
 
 func (r *ReconcileActions) getTargetPods(podList []v1.Pod) (*v1.Pod, *v1.Pod) {
 	// Get current target main index from ConfigMap
-	state, err := r.controller.getStateManager().LoadState(context.Background())
+	targetMainIndex, err := r.controller.GetTargetMainIndex(context.Background())
 	if err != nil {
-		log.Printf("Warning: failed to load state, defaulting to pod-0 as main: %v", err)
+		log.Printf("Warning: failed to load target main index, defaulting to pod-0 as main: %v", err)
 		return r.getTargetPodsWithIndex(podList, 0)
 	}
 	
-	return r.getTargetPodsWithIndex(podList, state.TargetMainIndex)
+	return r.getTargetPodsWithIndex(podList, targetMainIndex)
 }
 
 func (r *ReconcileActions) getTargetPodsWithIndex(podList []v1.Pod, targetMainIndex int) (*v1.Pod, *v1.Pod) {
@@ -606,12 +606,10 @@ func (r *ReconcileActions) performFailoverActions(ctx context.Context, podList [
 	log.Printf("Failover Step 4: Flipping target pod roles...")
 	
 	// Get current target main index from ConfigMap
-	state, err := r.controller.getStateManager().LoadState(ctx)
+	currentTargetIndex, err := r.controller.GetTargetMainIndex(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to load state for authority flip: %w", err)
+		return fmt.Errorf("failed to load target main index for authority flip: %w", err)
 	}
-	
-	currentTargetIndex := state.TargetMainIndex
 	var newTargetIndex int
 	if currentTargetIndex == 0 {
 		newTargetIndex = 1 // pod-0 failed → pod-1 becomes new TargetMainPod
@@ -641,16 +639,15 @@ func (r *ReconcileActions) performFailoverActions(ctx context.Context, podList [
 
 // updateTargetMainIndex updates the target main index in the ConfigMap
 func (r *ReconcileActions) updateTargetMainIndex(ctx context.Context, newIndex int, reason string) error {
-	state, err := r.controller.getStateManager().LoadState(ctx)
+	currentIndex, err := r.controller.GetTargetMainIndex(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to load current state: %w", err)
+		return fmt.Errorf("failed to load current target main index: %w", err)
 	}
 	
-	log.Printf("Updating target main index: %d → %d (reason: %s)", state.TargetMainIndex, newIndex, reason)
-	state.TargetMainIndex = newIndex
+	log.Printf("Updating target main index: %d → %d (reason: %s)", currentIndex, newIndex, reason)
 	
-	if err := r.controller.getStateManager().SaveState(ctx, state); err != nil {
-		return fmt.Errorf("failed to save updated state: %w", err)
+	if err := r.controller.SetTargetMainIndex(ctx, newIndex); err != nil {
+		return fmt.Errorf("failed to save updated target main index: %w", err)
 	}
 	
 	return nil

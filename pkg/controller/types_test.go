@@ -33,7 +33,7 @@ func TestNewClusterState(t *testing.T) {
 		AppName:         "memgraph",
 		StatefulSetName: "memgraph-ha",
 	}
-	cs := NewClusterState(nil, config) // Test with nil stateManager
+	cs := NewClusterState(config)
 	if cs == nil {
 		t.Fatal("NewClusterState() returned nil")
 	}

@@ -60,8 +60,6 @@ type ClusterState struct {
 	// Connection management - integrated with cluster state
 	connectionPool *ConnectionPool
 
-	// State persistence - StateManager for TargetMainIndex tracking
-	stateManager StateManagerInterface
 
 	// Controller state tracking
 	StateType        ClusterStateType
@@ -83,18 +81,17 @@ type PodInfo struct {
 	Pod                *v1.Pod       // Reference to Kubernetes pod object
 }
 
-func NewClusterState(stateManager StateManagerInterface, config *Config) *ClusterState {
-	return NewClusterStateWithConnectionPool(stateManager, config, nil)
+func NewClusterState(config *Config) *ClusterState {
+	return NewClusterStateWithConnectionPool(config, nil)
 }
 
-func NewClusterStateWithConnectionPool(stateManager StateManagerInterface, config *Config, connectionPool *ConnectionPool) *ClusterState {
+func NewClusterStateWithConnectionPool(config *Config, connectionPool *ConnectionPool) *ClusterState {
 	if connectionPool == nil {
 		connectionPool = NewConnectionPool(config)
 	}
 	return &ClusterState{
 		Pods:           make(map[string]*PodInfo),
 		connectionPool: connectionPool,
-		stateManager:   stateManager,
 	}
 }
 
@@ -476,7 +473,7 @@ func (cs *ClusterState) LogMainSelectionDecision(metrics *MainSelectionMetrics) 
 }
 
 // GetClusterHealthSummary returns a summary of cluster health
-func (cs *ClusterState) GetClusterHealthSummary() map[string]interface{} {
+func (cs *ClusterState) GetClusterHealthSummary(targetIndex int) map[string]interface{} {
 	healthyPods := 0
 	totalPods := len(cs.Pods)
 	syncReplicaCount := 0
@@ -508,40 +505,13 @@ func (cs *ClusterState) GetClusterHealthSummary() map[string]interface{} {
 		"replica_pods":    replicaPods,
 		"sync_replicas":   syncReplicaCount,
 		"current_main":    cs.CurrentMain,
-		"target_index":    cs.GetTargetMainIndex(),
+		"target_index":    targetIndex,
 		"state_type":      cs.StateType.String(),
 		"bootstrap_phase": cs.IsBootstrapPhase,
 		"last_change":     cs.LastStateChange,
 	}
 }
 
-// GetTargetMainIndex retrieves the target main index from persistent state
-func (cs *ClusterState) GetTargetMainIndex() int {
-	if cs.stateManager == nil {
-		return -1 // Bootstrap phase or test scenario
-	}
-	
-	ctx := context.Background()
-	state, err := cs.stateManager.LoadState(ctx)
-	if err != nil {
-		log.Printf("Warning: Failed to load target main index: %v", err)
-		return -1
-	}
-	return state.TargetMainIndex
-}
-
-// SetTargetMainIndex persists the target main index to state storage
-func (cs *ClusterState) SetTargetMainIndex(ctx context.Context, targetIndex int) error {
-	if cs.stateManager == nil {
-		return fmt.Errorf("state manager not initialized")
-	}
-	
-	state := &ControllerState{
-		TargetMainIndex: targetIndex,
-	}
-	
-	return cs.stateManager.SaveState(ctx, state)
-}
 
 // ReconciliationMetrics tracks reconciliation performance and behavior
 type ReconciliationMetrics struct {

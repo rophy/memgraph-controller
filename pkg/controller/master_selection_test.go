@@ -62,15 +62,14 @@ func TestMainFailoverDetection(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			// Set up mock state manager based on the current main in cluster state
-			var mockStateManager StateManagerInterface
+			// Set up target main index in controller based on the current main in cluster state
 			if tt.clusterState.CurrentMain != "" {
 				mainIndex := config.ExtractPodIndex(tt.clusterState.CurrentMain)
-				mockStateManager = NewMockStateManager(mainIndex)
+				controller.targetMainIndex = mainIndex
 			} else {
-				mockStateManager = NewEmptyMockStateManager()
+				controller.targetMainIndex = -1 // Empty state
 			}
-			controller.cluster = NewMemgraphCluster(nil, controller.config, nil, mockStateManager)
+			controller.cluster = NewMemgraphCluster(nil, controller.config, nil)
 			
 			result := controller.detectMainFailover(tt.clusterState)
 			if result != tt.expectedFailover {

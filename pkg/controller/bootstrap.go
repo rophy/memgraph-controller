@@ -265,16 +265,22 @@ func (bc *BootstrapController) handleInitialState(ctx context.Context, cluster *
 func (bc *BootstrapController) handleOperationalState(ctx context.Context, cluster *MemgraphCluster) error {
 	log.Printf("Handling OPERATIONAL_STATE: Learning existing topology with main %s", bc.controller.cluster.CurrentMain)
 	
-	// Update controller's tracking state using consolidated method
-	targetMainIndex := bc.controller.getTargetMainIndex()
+	// Get current target main index 
+	targetMainIndex, err := bc.controller.GetTargetMainIndex(ctx)
+	if err != nil {
+		log.Printf("Warning: Failed to get current target main index: %v", err)
+		// Default to index 0 for operational state learning
+		targetMainIndex = 0
+	}
+	
 	if err := bc.controller.updateTargetMainIndex(ctx, targetMainIndex,
 		fmt.Sprintf("Learning from OPERATIONAL_STATE with main %s", bc.controller.cluster.CurrentMain)); err != nil {
 		return fmt.Errorf("failed to update target main index: %w", err)
 	}
-	// Main is now tracked in state manager via updateTargetMainIndex call above
+	// Main is now tracked via updateTargetMainIndex call above
 	
 	log.Printf("✅ OPERATIONAL_STATE learning completed: main=%s, target_index=%d", 
-		bc.controller.cluster.CurrentMain, bc.controller.getTargetMainIndex())
+		bc.controller.cluster.CurrentMain, targetMainIndex)
 	return nil
 }
 

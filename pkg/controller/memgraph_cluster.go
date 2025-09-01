@@ -29,11 +29,10 @@ type MemgraphCluster struct {
 	clientset      kubernetes.Interface
 	config         *Config
 	memgraphClient *MemgraphClient
-	stateManager   StateManagerInterface
 }
 
 // NewMemgraphCluster creates a new MemgraphCluster instance
-func NewMemgraphCluster(clientset kubernetes.Interface, config *Config, memgraphClient *MemgraphClient, stateManager StateManagerInterface) *MemgraphCluster {
+func NewMemgraphCluster(clientset kubernetes.Interface, config *Config, memgraphClient *MemgraphClient) *MemgraphCluster {
 	var connectionPool *ConnectionPool
 	if memgraphClient != nil {
 		connectionPool = memgraphClient.connectionPool
@@ -60,7 +59,6 @@ func NewMemgraphCluster(clientset kubernetes.Interface, config *Config, memgraph
 		clientset:      clientset,
 		config:         config,
 		memgraphClient: memgraphClient,
-		stateManager:   stateManager,
 	}
 	
 	// Ensure MemgraphClient uses the shared connection pool
@@ -132,27 +130,9 @@ func (mc *MemgraphCluster) GetPodsByLabel(ctx context.Context, labelSelector str
 	return nil
 }
 
-// getTargetMainIndex gets the target main index from state manager
-func (mc *MemgraphCluster) getTargetMainIndex() int {
-	if mc.stateManager == nil {
-		return -1 // Bootstrap phase / test scenario
-	}
-	ctx := context.Background()
-	state, err := mc.stateManager.LoadState(ctx)
-	if err != nil {
-		return -1
-	}
-	return state.TargetMainIndex
-}
 
-// GetStateManager returns the StateManager instance for direct access when needed
-func (mc *MemgraphCluster) GetStateManager() StateManagerInterface {
-	return mc.stateManager
-}
-
-// GetTargetMainPod returns the pod name of the current target main pod
-func (mc *MemgraphCluster) GetTargetMainPod(ctx context.Context) string {
-	targetMainIndex := mc.getTargetMainIndex()
+// GetTargetMainPod returns the pod name for the given target main index
+func (mc *MemgraphCluster) GetTargetMainPod(targetMainIndex int) string {
 	if targetMainIndex < 0 {
 		return ""
 	}
@@ -161,8 +141,7 @@ func (mc *MemgraphCluster) GetTargetMainPod(ctx context.Context) string {
 
 // GetTargetSyncReplica returns the pod name of the target SYNC replica pod
 // Based on DESIGN.md two-pod authority: if main is pod-0, sync is pod-1; if main is pod-1, sync is pod-0
-func (mc *MemgraphCluster) GetTargetSyncReplica(ctx context.Context) string {
-	targetMainIndex := mc.getTargetMainIndex()
+func (mc *MemgraphCluster) GetTargetSyncReplica(targetMainIndex int) string {
 	if targetMainIndex < 0 {
 		return ""
 	}
@@ -181,29 +160,6 @@ func (mc *MemgraphCluster) GetTargetSyncReplica(ctx context.Context) string {
 	return mc.config.GetPodName(syncReplicaIndex)
 }
 
-// updateTargetMainIndex updates the target main index in ConfigMap
-func (mc *MemgraphCluster) updateTargetMainIndex(ctx context.Context, newIndex int, reason string) error {
-	if mc.stateManager == nil {
-		return fmt.Errorf("state manager not initialized")
-	}
-
-	// Load current state or create new one
-	state, err := mc.stateManager.LoadState(ctx)
-	if err != nil {
-		// Create new state if none exists
-		state = &ControllerState{
-			TargetMainIndex: newIndex,
-		}
-	} else {
-		// Update existing state
-		oldIndex := state.TargetMainIndex
-		state.TargetMainIndex = newIndex
-		log.Printf("✅ Updated target main index: %d -> %d (%s)", oldIndex, newIndex, reason)
-	}
-
-	// Save updated state
-	return mc.stateManager.SaveState(ctx, state)
-}
 
 // RefreshClusterInfo refreshes cluster state information in operational phase
 func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncReplicaInfoFunc func(*MemgraphCluster), detectMainFailoverFunc func(*MemgraphCluster) bool, handleMainFailoverFunc func(context.Context, *MemgraphCluster) error) error {
@@ -326,9 +282,7 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 		}
 	}
 
-	// NOW select main based on actual Memgraph state (not pod labels)
-	log.Println("Selecting main based on actual Memgraph replication state...")
-	mc.selectMainAfterQuerying(ctx)
+	// Controller will call selectMainAfterQuerying separately
 
 	// Log summary of query results
 	log.Printf("Cluster discovery complete: %d/%d pods successfully queried",
@@ -345,38 +299,36 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 }
 
 // selectMainAfterQuerying selects main based on actual Memgraph replication state
-func (mc *MemgraphCluster) selectMainAfterQuerying(ctx context.Context) {
+func (mc *MemgraphCluster) selectMainAfterQuerying(ctx context.Context, targetMainIndex int) {
 	// After bootstrap validation, we now have authority to make decisions
 	mc.IsBootstrapPhase = false
 
 	// Enhanced main selection using controller state authority
-	targetMainIndex := mc.getTargetMainIndex()
 	log.Printf("Enhanced main selection: state=%s, target_index=%d",
 		mc.StateType.String(), targetMainIndex)
 
 	// Use controller state authority based on cluster state
 	switch mc.StateType {
 	case INITIAL_STATE:
-		mc.applyDeterministicRoles()
+		mc.applyDeterministicRoles(targetMainIndex)
 	case OPERATIONAL_STATE:
-		mc.learnExistingTopology()
+		mc.learnExistingTopology(targetMainIndex)
 	default:
 		// For unknown states, use simple fallback as per DESIGN.md
 		log.Printf("Unknown cluster state %s - using deterministic fallback", mc.StateType)
-		mc.applyDeterministicRoles()
+		mc.applyDeterministicRoles(targetMainIndex)
 	}
 
 	// Log comprehensive cluster health summary
-	healthSummary := mc.GetClusterHealthSummary()
+	healthSummary := mc.GetClusterHealthSummary(targetMainIndex)
 	log.Printf("📋 CLUSTER HEALTH SUMMARY: %+v", healthSummary)
 }
 
 // applyDeterministicRoles applies roles for fresh/initial clusters
-func (mc *MemgraphCluster) applyDeterministicRoles() {
+func (mc *MemgraphCluster) applyDeterministicRoles(targetMainIndex int) {
 	log.Printf("Applying deterministic role assignment for fresh cluster")
 
 	// Use the determined target main index
-	targetMainIndex := mc.getTargetMainIndex()
 	targetMainName := mc.config.GetPodName(targetMainIndex)
 	mc.CurrentMain = targetMainName
 
@@ -402,7 +354,7 @@ func (mc *MemgraphCluster) applyDeterministicRoles() {
 }
 
 // learnExistingTopology learns the current operational topology
-func (mc *MemgraphCluster) learnExistingTopology() {
+func (mc *MemgraphCluster) learnExistingTopology(targetMainIndex int) {
 	log.Printf("Learning existing operational topology")
 
 	mainPods := mc.GetMainPods()
@@ -411,16 +363,9 @@ func (mc *MemgraphCluster) learnExistingTopology() {
 		mc.CurrentMain = currentMain
 		log.Printf("Learned existing main: %s", currentMain)
 
-		// Extract current main index for tracking using consolidated method
+		// The controller should update the target main index based on discovered main
 		currentMainIndex := mc.config.ExtractPodIndex(currentMain)
-		if currentMainIndex >= 0 {
-			if err := mc.updateTargetMainIndex(context.Background(), currentMainIndex,
-				fmt.Sprintf("Updating from discovered main %s", currentMain)); err != nil {
-				log.Printf("Warning: failed to update target main index: %v", err)
-			} else {
-				log.Printf("Updated target main index to match existing: %d", currentMainIndex)
-			}
-		}
+		log.Printf("Discovered existing main index: %d", currentMainIndex)
 
 		// Log current SYNC replica
 		for podName, podInfo := range mc.Pods {
@@ -435,7 +380,6 @@ func (mc *MemgraphCluster) learnExistingTopology() {
 			len(mainPods), mainPods)
 
 		// Use the determined target main as fallback
-		targetMainIndex := mc.getTargetMainIndex()
 		targetMainName := mc.config.GetPodName(targetMainIndex)
 		mc.CurrentMain = targetMainName
 		log.Printf("Using determined target main as fallback: %s", targetMainName)
@@ -443,7 +387,7 @@ func (mc *MemgraphCluster) learnExistingTopology() {
 }
 
 // GetClusterHealthSummary returns a comprehensive health summary of the cluster
-func (mc *MemgraphCluster) GetClusterHealthSummary() map[string]interface{} {
+func (mc *MemgraphCluster) GetClusterHealthSummary(targetIndex int) map[string]interface{} {
 	healthyPods := 0
 	totalPods := len(mc.Pods)
 	syncReplicaCount := 0
@@ -467,8 +411,7 @@ func (mc *MemgraphCluster) GetClusterHealthSummary() map[string]interface{} {
 		}
 	}
 
-	// Get target index for summary
-	targetIndex := mc.getTargetMainIndex()
+	// Target index provided as parameter
 
 	return map[string]interface{}{
 		"total_pods":       totalPods,

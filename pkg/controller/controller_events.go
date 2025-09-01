@@ -4,9 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"os"
 	"strconv"
-	"strings"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -146,10 +144,12 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 
 	// Check if the deleted pod is the current main - trigger IMMEDIATE failover
 	ctx := context.Background()
-	currentMain, err := c.getCurrentMainFromState(ctx)
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	currentMain := ""
 	if err != nil {
-		log.Printf("Could not get current main from state: %v", err)
-		currentMain = ""
+		log.Printf("Could not get current main from target index: %v", err)
+	} else {
+		currentMain = c.config.GetPodName(targetMainIndex)
 	}
 
 	if currentMain != "" && pod.Name == currentMain {
@@ -172,7 +172,7 @@ func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 	configMap := obj.(*v1.ConfigMap)
 
 	// Only process our controller state ConfigMap
-	if configMap.Name != c.getStateManager().ConfigMapName() {
+	if configMap.Name != c.configMapName {
 		return
 	}
 
@@ -199,7 +199,7 @@ func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 	newConfigMap := newObj.(*v1.ConfigMap)
 
 	// Only process our controller state ConfigMap
-	if newConfigMap.Name != c.getStateManager().ConfigMapName() {
+	if newConfigMap.Name != c.configMapName {
 		return
 	}
 
@@ -220,7 +220,11 @@ func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
 
 	// Only react to changes if we're the leader
 	if c.IsLeader() {
-		currentTargetIndex := c.getTargetMainIndex()
+		currentTargetIndex, err := c.GetTargetMainIndex(context.Background())
+		if err != nil {
+			log.Printf("Failed to get current target main index: %v", err)
+			return
+		}
 		
 		if currentTargetIndex != newTargetMainIndex {
 			log.Printf("🔄 Target main changed externally: %d -> %d", currentTargetIndex, newTargetMainIndex)
@@ -234,7 +238,7 @@ func (c *MemgraphController) onConfigMapDelete(obj interface{}) {
 	configMap := obj.(*v1.ConfigMap)
 
 	// Only process our controller state ConfigMap
-	if configMap.Name != c.getStateManager().ConfigMapName() {
+	if configMap.Name != c.configMapName {
 		return
 	}
 
@@ -327,37 +331,14 @@ func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
 	return false
 }
 
-// getCurrentMainFromState gets the current main pod name from state manager
-func (c *MemgraphController) getCurrentMainFromState(ctx context.Context) (string, error) {
-	// Handle test cases where stateManager is nil
-	if c.getStateManager() == nil {
-		return "", fmt.Errorf("no state manager available")
-	}
-
-	state, err := c.getStateManager().LoadState(ctx)
-	if err != nil {
-		return "", err
-	}
-	return c.config.GetPodName(state.TargetMainIndex), nil
-}
 
 // loadControllerStateOnStartup loads persisted state and determines startup phase
 func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) error {
-	exists, err := c.getStateManager().StateExists(ctx)
+	// Try to get target main index - if it fails, the ConfigMap doesn't exist or is invalid
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to check state existence: %w", err)
-	}
-
-	if !exists {
-		log.Println("No state ConfigMap found - will start in BOOTSTRAP phase")
+		log.Println("No valid state ConfigMap found - will start in BOOTSTRAP phase")
 		return nil // Keep default bootstrap=true
-	}
-
-	state, err := c.getStateManager().LoadState(ctx)
-	if err != nil {
-		log.Printf("Warning: Failed to load state ConfigMap: %v", err)
-		log.Println("Will start in BOOTSTRAP phase as fallback")
-		return nil // Don't fail startup, just use bootstrap
 	}
 
 	// If state exists, assume bootstrap is completed and start in OPERATIONAL phase
@@ -368,30 +349,18 @@ func (c *MemgraphController) loadControllerStateOnStartup(ctx context.Context) e
 		log.Printf("✅ Gateway transitioned to operational phase (ConfigMap loaded, bootstrap complete)")
 	}
 
-	log.Printf("Loaded persisted state - will start in OPERATIONAL phase: targetMainIndex=%d", state.TargetMainIndex)
+	log.Printf("Loaded persisted state - will start in OPERATIONAL phase: targetMainIndex=%d", targetMainIndex)
 
 	return nil
 }
 
-// updateTargetMainIndex updates target main index in state manager
+// updateTargetMainIndex updates target main index
 func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, newTargetIndex int, reason string) error {
-	if c.cluster != nil {
-		return c.cluster.updateTargetMainIndex(ctx, newTargetIndex, reason)
-	}
-	return fmt.Errorf("cluster not initialized")
+	currentIndex, _ := c.GetTargetMainIndex(ctx)
+	log.Printf("Updating target main index: %d → %d (reason: %s)", currentIndex, newTargetIndex, reason)
+	return c.SetTargetMainIndex(ctx, newTargetIndex)
 }
 
-// getPodIdentity extracts the pod identity (index) from a pod name
-func (c *MemgraphController) getPodIdentity() string {
-	// This is used for leader election identity
-	hostname, _ := os.Getenv("HOSTNAME"), "unknown"
-	parts := strings.Split(hostname, "-")
-	if len(parts) >= 2 {
-		// Extract the hash portion for uniqueness
-		return strings.Join(parts[len(parts)-2:], "-")
-	}
-	return hostname
-}
 
 // handleImmediateFailover performs immediate failover when main pod fails
 func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {

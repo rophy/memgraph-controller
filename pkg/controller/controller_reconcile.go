@@ -266,14 +266,41 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 func (c *MemgraphController) discoverClusterAndCreateConfigMap(ctx context.Context) error {
 	log.Println("=== CLUSTER DISCOVERY ===")
 
-	// Use bootstrap logic to discover and initialize cluster
-	bootstrapController := NewBootstrapController(c)
-	_, err := bootstrapController.ExecuteBootstrap(ctx)
-	if err != nil {
-		return fmt.Errorf("cluster discovery failed: %w", err)
+	// Discover pods first
+	if err := c.cluster.DiscoverPods(ctx); err != nil {
+		return fmt.Errorf("failed to discover pods: %w", err)
 	}
 
-	log.Printf("✅ Cluster discovery completed - main: %s", c.cluster.CurrentMain)
+	// Discover cluster state using DESIGN.md steps
+	if err := c.cluster.discoverClusterState(ctx); err != nil {
+		return fmt.Errorf("cluster state discovery failed: %w", err)
+	}
+
+	// If INITIAL_STATE detected, initialize the cluster
+	if c.cluster.StateType == INITIAL_STATE {
+		log.Println("INITIAL_STATE detected - initializing cluster")
+		if err := c.cluster.initializeCluster(ctx); err != nil {
+			return fmt.Errorf("cluster initialization failed: %w", err)
+		}
+	}
+
+	// Create ConfigMap with target main index
+	var targetMainIndex int
+	if c.cluster.CurrentMain != "" {
+		targetMainIndex = c.config.ExtractPodIndex(c.cluster.CurrentMain)
+		if targetMainIndex < 0 {
+			return fmt.Errorf("invalid current main pod name: %s", c.cluster.CurrentMain)
+		}
+	} else {
+		targetMainIndex = 0 // Default fallback
+	}
+
+	// Create/update ConfigMap
+	if err := c.SetTargetMainIndex(ctx, targetMainIndex); err != nil {
+		return fmt.Errorf("failed to create/update ConfigMap: %w", err)
+	}
+
+	log.Printf("✅ Cluster discovery completed - main: %s, target index: %d", c.cluster.CurrentMain, targetMainIndex)
 	return nil
 }
 

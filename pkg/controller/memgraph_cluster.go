@@ -518,3 +518,234 @@ func (mc *MemgraphCluster) CloseAllConnections(ctx context.Context) {
 	}
 }
 
+// discoverClusterState implements DESIGN.md "Discover Cluster State" section (steps 1-4)
+func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) error {
+	log.Println("=== DISCOVERING CLUSTER STATE ===")
+
+	// Step 1: If kubernetes status of either pod-0 or pod-1 is not ready, log warning and stop
+	pod0Name := mc.config.GetPodName(0)
+	pod1Name := mc.config.GetPodName(1)
+
+	pod0Info, pod0Exists := mc.Pods[pod0Name]
+	pod1Info, pod1Exists := mc.Pods[pod1Name]
+
+	if !pod0Exists || !pod1Exists || !isPodReady(pod0Info.Pod) || !isPodReady(pod1Info.Pod) {
+		return fmt.Errorf("DESIGN.md step 1: pod-0 or pod-1 not ready - cannot proceed with discovery")
+	}
+
+	// Query Memgraph roles for both pods
+	if err := mc.queryMemgraphRoles(ctx); err != nil {
+		return fmt.Errorf("failed to query Memgraph roles: %w", err)
+	}
+
+	// Step 2: If both pod-0 and pod-1 have replication role as `MAIN` and storage shows 0 edge_count, 0 vertex_count
+	if mc.isBothMainWithEmptyStorage(ctx) {
+		log.Println("✅ DESIGN.md step 2: INITIAL_STATE detected (both MAIN, empty storage)")
+		mc.StateType = INITIAL_STATE
+		return nil
+	}
+
+	// Step 3: If one of pod-0 and pod-1 has replication role as `REPLICA`, the other one as `MAIN`
+	if mainPodName := mc.getSingleMainPod(); mainPodName != "" {
+		log.Printf("✅ DESIGN.md step 3: OPERATIONAL_STATE detected (main: %s)", mainPodName)
+		mc.StateType = OPERATIONAL_STATE
+		mc.CurrentMain = mainPodName
+		return nil
+	}
+
+	// Step 4: Otherwise, memgraph-ha is in an unknown state, controller log error and crash immediately
+	log.Printf("❌ DESIGN.md step 4: UNKNOWN_STATE detected")
+	log.Printf("Pod roles: pod-0=%s, pod-1=%s", pod0Info.MemgraphRole, pod1Info.MemgraphRole)
+	mc.StateType = UNKNOWN_STATE
+	return fmt.Errorf("UNKNOWN_STATE: controller must crash - manual intervention required")
+}
+
+// initializeCluster implements DESIGN.md "Initialize Memgraph Cluster" section
+func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
+	log.Println("=== INITIALIZING MEMGRAPH CLUSTER ===")
+	log.Println("Controller always use pod-0 as MAIN, pod-1 as SYNC REPLICA")
+
+	pod0Name := mc.config.GetPodName(0)
+	pod1Name := mc.config.GetPodName(1)
+
+	pod0Info := mc.Pods[pod0Name]
+	pod1Info := mc.Pods[pod1Name]
+
+	if pod0Info == nil || pod1Info == nil {
+		return fmt.Errorf("pod-0 or pod-1 not found for initialization")
+	}
+
+	// Step 1: Run command against pod-1 to demote it into replica
+	log.Printf("Step 1: Demoting pod-1 (%s) to replica role", pod1Name)
+	demoteCmd := "SET REPLICATION ROLE TO REPLICA WITH PORT 10000"
+	if err := mc.memgraphClient.ExecuteCommandWithRetry(ctx, pod1Info.BoltAddress, demoteCmd); err != nil {
+		return fmt.Errorf("step 1 failed - demote pod-1 to replica: %w", err)
+	}
+
+	// Step 2: Run command against pod-0 to set up sync replication
+	log.Printf("Step 2: Setting up SYNC replication from pod-0 to pod-1")
+	replicaName := pod1Info.GetReplicaName()
+	replicaAddress := fmt.Sprintf("%s:10000", pod1Info.Pod.Status.PodIP)
+	registerCmd := fmt.Sprintf("REGISTER REPLICA %s SYNC TO \"%s\"", replicaName, replicaAddress)
+
+	if err := mc.memgraphClient.ExecuteCommandWithRetry(ctx, pod0Info.BoltAddress, registerCmd); err != nil {
+		return fmt.Errorf("step 2 failed - register SYNC replica: %w", err)
+	}
+
+	// Step 3: Run command against pod-0 to verify replication
+	log.Printf("Step 3: Verifying replication status")
+	if err := mc.verifyReplicationWithRetry(ctx, pod0Info, replicaName); err != nil {
+		return fmt.Errorf("step 3 failed - replication verification: %w", err)
+	}
+
+	// Update cluster state to reflect initialization
+	mc.CurrentMain = pod0Name
+	pod1Info.IsSyncReplica = true
+	mc.StateType = OPERATIONAL_STATE
+
+	log.Printf("✅ Initialize Memgraph Cluster completed: pod-0 is MAIN, pod-1 is SYNC REPLICA")
+	return nil
+}
+
+// queryMemgraphRoles queries replication roles from both pods
+func (mc *MemgraphCluster) queryMemgraphRoles(ctx context.Context) error {
+	for podName, podInfo := range mc.Pods {
+		if !mc.config.IsMemgraphPod(podName) {
+			continue
+		}
+
+		if podInfo.BoltAddress == "" {
+			log.Printf("Skipping role query for %s: no bolt address", podName)
+			continue
+		}
+
+		roleResp, err := mc.memgraphClient.QueryReplicationRoleWithRetry(ctx, podInfo.BoltAddress)
+		if err != nil {
+			log.Printf("Failed to query role for %s: %v", podName, err)
+			continue
+		}
+
+		podInfo.MemgraphRole = roleResp.Role
+		log.Printf("Pod %s has Memgraph role: %s", podName, roleResp.Role)
+	}
+
+	return nil
+}
+
+// isBothMainWithEmptyStorage checks DESIGN.md step 2 condition
+func (mc *MemgraphCluster) isBothMainWithEmptyStorage(ctx context.Context) bool {
+	pod0Name := mc.config.GetPodName(0)
+	pod1Name := mc.config.GetPodName(1)
+
+	pod0Info := mc.Pods[pod0Name]
+	pod1Info := mc.Pods[pod1Name]
+
+	// Both must have MAIN role
+	if pod0Info.MemgraphRole != "main" || pod1Info.MemgraphRole != "main" {
+		return false
+	}
+
+	// Both must have empty storage
+	return mc.hasEmptyStorage(ctx, pod0Info) && mc.hasEmptyStorage(ctx, pod1Info)
+}
+
+// getSingleMainPod checks DESIGN.md step 3 condition - returns main pod name if exactly one main found
+func (mc *MemgraphCluster) getSingleMainPod() string {
+	pod0Name := mc.config.GetPodName(0)
+	pod1Name := mc.config.GetPodName(1)
+
+	pod0Info := mc.Pods[pod0Name]
+	pod1Info := mc.Pods[pod1Name]
+
+	if pod0Info == nil || pod1Info == nil {
+		return ""
+	}
+
+	// Check if exactly one is main and one is replica
+	if pod0Info.MemgraphRole == "main" && pod1Info.MemgraphRole == "replica" {
+		return pod0Name
+	}
+	if pod1Info.MemgraphRole == "main" && pod0Info.MemgraphRole == "replica" {
+		return pod1Name
+	}
+
+	return ""
+}
+
+// hasEmptyStorage checks if pod has empty storage (0 edges, 0 vertices)
+func (mc *MemgraphCluster) hasEmptyStorage(ctx context.Context, podInfo *PodInfo) bool {
+	if podInfo.BoltAddress == "" {
+		log.Printf("Cannot check storage for pod %s: no bolt address", podInfo.Name)
+		return false
+	}
+
+	storageInfo, err := mc.memgraphClient.QueryStorageInfoWithRetry(ctx, podInfo.BoltAddress)
+	if err != nil {
+		log.Printf("Failed to query storage info for %s: %v", podInfo.Name, err)
+		return false
+	}
+
+	isEmpty := storageInfo.EdgeCount == 0 && storageInfo.VertexCount == 0
+	log.Printf("Pod %s storage: %d vertices, %d edges (empty: %v)", 
+		podInfo.Name, storageInfo.VertexCount, storageInfo.EdgeCount, isEmpty)
+	
+	return isEmpty
+}
+
+// verifyReplicationWithRetry verifies replication status with exponential retry
+func (mc *MemgraphCluster) verifyReplicationWithRetry(ctx context.Context, mainPod *PodInfo, replicaName string) error {
+	maxRetries := 5
+	baseDelay := 2 * time.Second
+
+	for attempt := 1; attempt <= maxRetries; attempt++ {
+		replicasResp, err := mc.memgraphClient.QueryReplicasWithRetry(ctx, mainPod.BoltAddress)
+		if err != nil {
+			if attempt == maxRetries {
+				return fmt.Errorf("failed to query replicas after %d attempts: %w", maxRetries, err)
+			}
+			delay := time.Duration(attempt) * baseDelay
+			log.Printf("Replica query failed (attempt %d/%d), retrying in %v: %v", attempt, maxRetries, delay, err)
+			time.Sleep(delay)
+			continue
+		}
+
+		// Find the replica and check if ready
+		for _, replica := range replicasResp.Replicas {
+			if replica.Name == replicaName {
+				if mc.isReplicaReady(replica) {
+					log.Printf("✅ Replication verification successful: %s is ready", replicaName)
+					return nil
+				}
+				log.Printf("Replica %s not ready yet: %s", replicaName, replica.DataInfo)
+			}
+		}
+
+		if attempt < maxRetries {
+			delay := time.Duration(attempt) * baseDelay
+			log.Printf("Replication not ready (attempt %d/%d), retrying in %v", attempt, maxRetries, delay)
+			time.Sleep(delay)
+		}
+	}
+
+	return fmt.Errorf("replication verification failed after %d attempts", maxRetries)
+}
+
+// isReplicaReady checks if replica has ready status in data_info
+func (mc *MemgraphCluster) isReplicaReady(replica ReplicaInfo) bool {
+	// According to DESIGN.md, we expect: {memgraph: {behind: 0, status: "ready", ts: 0}}
+	// For SYNC replicas, empty {} might also be valid
+	if replica.DataInfo == "{}" {
+		return true // SYNC replicas may show empty data_info when ready
+	}
+
+	// Parse data_info to check status
+	parsed, err := parseDataInfo(replica.DataInfo)
+	if err != nil {
+		log.Printf("Failed to parse data_info for replica %s: %v", replica.Name, err)
+		return false
+	}
+
+	// Check if status is "ready" 
+	return parsed.Status == "ready"
+}
+

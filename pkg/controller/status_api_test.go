@@ -11,7 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-func TestConvertPodInfoToStatus(t *testing.T) {
+func TestConvertMemgraphNodeToStatus(t *testing.T) {
 	// Create a mock pod
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -27,13 +27,13 @@ func TestConvertPodInfoToStatus(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod)
-	podInfo.MemgraphRole = "main"
-	podInfo.Replicas = []string{"memgraph_1", "memgraph_2"}
-	podInfo.State = MAIN
+	node := NewMemgraphNode(pod)
+	node.MemgraphRole = "main"
+	node.Replicas = []string{"memgraph_1", "memgraph_2"}
+	node.State = MAIN
 
 	// Test healthy pod conversion
-	status := convertPodInfoToStatus(podInfo, true)
+	status := convertMemgraphNodeToStatus(node, true)
 
 	if status.Name != "memgraph-0" {
 		t.Errorf("Expected name 'memgraph-0', got '%s'", status.Name)
@@ -60,8 +60,8 @@ func TestConvertPodInfoToStatus(t *testing.T) {
 	}
 
 	// Test unhealthy pod conversion
-	podInfo.MemgraphRole = "" // Simulate unreachable pod
-	statusUnhealthy := convertPodInfoToStatus(podInfo, false)
+	node.MemgraphRole = "" // Simulate unreachable pod
+	statusUnhealthy := convertMemgraphNodeToStatus(node, false)
 
 	if statusUnhealthy.Healthy {
 		t.Error("Expected pod to be unhealthy")
@@ -74,7 +74,7 @@ func TestConvertPodInfoToStatus(t *testing.T) {
 	}
 }
 
-func TestConvertPodInfoToStatus_SyncReplica(t *testing.T) {
+func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 	// Create a mock SYNC replica pod
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
@@ -90,13 +90,13 @@ func TestConvertPodInfoToStatus_SyncReplica(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod)
-	podInfo.MemgraphRole = "replica"
-	podInfo.State = REPLICA
-	podInfo.IsSyncReplica = true
+	node := NewMemgraphNode(pod)
+	node.MemgraphRole = "replica"
+	node.State = REPLICA
+	node.IsSyncReplica = true
 
 	// Test SYNC replica conversion
-	status := convertPodInfoToStatus(podInfo, true)
+	status := convertMemgraphNodeToStatus(node, true)
 
 	if status.Name != "memgraph-1" {
 		t.Errorf("Expected name 'memgraph-1', got '%s'", status.Name)
@@ -125,7 +125,7 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 
 	// Create a ClusterState with mock data
 	clusterState := &ClusterState{
-		Pods:        make(map[string]*PodInfo),
+		MemgraphNodes:        make(map[string]*MemgraphNode),
 		CurrentMain: "memgraph-0",
 	}
 
@@ -152,23 +152,23 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 		},
 	}
 
-	podInfo1 := NewPodInfo(pod1)
-	podInfo1.MemgraphRole = "main"
-	podInfo1.State = MAIN
+	node1 := NewMemgraphNode(pod1)
+	node1.MemgraphRole = "main"
+	node1.State = MAIN
 
-	podInfo2 := NewPodInfo(pod2)
-	podInfo2.MemgraphRole = "replica"
-	podInfo2.State = REPLICA
-	podInfo2.IsSyncReplica = true
+	node2 := NewMemgraphNode(pod2)
+	node2.MemgraphRole = "replica"
+	node2.State = REPLICA
+	node2.IsSyncReplica = true
 
-	clusterState.Pods["memgraph-0"] = podInfo1
-	clusterState.Pods["memgraph-1"] = podInfo2
+	clusterState.MemgraphNodes["memgraph-0"] = node1
+	clusterState.MemgraphNodes["memgraph-1"] = node2
 
 	// Create API response directly
 	response := StatusResponse{
 		Timestamp: time.Now(),
 		ClusterState: ClusterStatus{
-			TotalPods:          len(clusterState.Pods),
+			TotalPods:          len(clusterState.MemgraphNodes),
 			HealthyPods:        2,
 			UnhealthyPods:      0,
 			CurrentMain:        clusterState.CurrentMain,
@@ -176,8 +176,8 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 			SyncReplicaHealthy: true,
 		},
 		Pods: []PodStatus{
-			convertPodInfoToStatus(podInfo1, true),
-			convertPodInfoToStatus(podInfo2, true),
+			convertMemgraphNodeToStatus(node1, true),
+			convertMemgraphNodeToStatus(node2, true),
 		},
 	}
 

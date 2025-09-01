@@ -86,12 +86,12 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 	}
 
 	// Should find 2 running pods, skip the pending one
-	if len(controller.cluster.Pods) != 2 {
-		t.Errorf("Found %d pods, want 2", len(controller.cluster.Pods))
+	if len(controller.cluster.MemgraphNodes) != 2 {
+		t.Errorf("Found %d pods, want 2", len(controller.cluster.MemgraphNodes))
 	}
 
 	// Check pod1
-	if podInfo, exists := controller.cluster.Pods["memgraph-0"]; exists {
+	if podInfo, exists := controller.cluster.MemgraphNodes["memgraph-0"]; exists {
 		if podInfo.BoltAddress != "10.0.0.1:7687" {
 			t.Errorf("Pod memgraph-0 BoltAddress = %s, want 10.0.0.1:7687", podInfo.BoltAddress)
 		}
@@ -100,7 +100,7 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 	}
 
 	// Check pod2
-	if podInfo, exists := controller.cluster.Pods["memgraph-1"]; exists {
+	if podInfo, exists := controller.cluster.MemgraphNodes["memgraph-1"]; exists {
 		if podInfo.ReplicaName != "memgraph_1" {
 			t.Errorf("Pod memgraph-1 ReplicaName = %s, want memgraph_1", podInfo.ReplicaName)
 		}
@@ -145,11 +145,11 @@ func TestMemgraphController_GetPodsByLabel(t *testing.T) {
 		t.Fatalf("GetPodsByLabel() failed: %v", err)
 	}
 
-	if len(controller.cluster.Pods) != 1 {
-		t.Errorf("Found %d pods, want 1", len(controller.cluster.Pods))
+	if len(controller.cluster.MemgraphNodes) != 1 {
+		t.Errorf("Found %d pods, want 1", len(controller.cluster.MemgraphNodes))
 	}
 
-	if _, exists := controller.cluster.Pods["custom-pod"]; !exists {
+	if _, exists := controller.cluster.MemgraphNodes["custom-pod"]; !exists {
 		t.Error("Pod custom-pod not found")
 	}
 }
@@ -194,7 +194,7 @@ func TestMemgraphController_ApplyDeterministicRoles(t *testing.T) {
 			// Add mock pods
 			for i := 0; i < tt.podCount; i++ {
 				podName := fmt.Sprintf("memgraph-ha-%d", i)
-				controller.cluster.Pods[podName] = &PodInfo{Name: podName}
+				controller.cluster.MemgraphNodes[podName] = &MemgraphNode{Name: podName}
 			}
 
 			controller.cluster.applyDeterministicRoles(tt.targetMainIndex)
@@ -265,7 +265,7 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 
 			// Set up pods based on test case
 			for _, podName := range tt.mainPods {
-				controller.cluster.Pods[podName] = &PodInfo{
+				controller.cluster.MemgraphNodes[podName] = &MemgraphNode{
 					Name:         podName,
 					MemgraphRole: "main",
 				}
@@ -277,7 +277,7 @@ func TestMemgraphController_LearnExistingTopology(t *testing.T) {
 				if tt.mainPods[0] == "memgraph-ha-1" {
 					otherPodName = "memgraph-ha-0"
 				}
-				controller.cluster.Pods[otherPodName] = &PodInfo{
+				controller.cluster.MemgraphNodes[otherPodName] = &MemgraphNode{
 					Name:          otherPodName,
 					MemgraphRole:  "replica",
 					IsSyncReplica: true,
@@ -355,8 +355,8 @@ func TestMemgraphController_SelectMainAfterQuerying(t *testing.T) {
 			controller.cluster.IsBootstrapPhase = true // Should be set to false
 
 			// Setup minimal pod structure for function to work
-			controller.cluster.Pods["memgraph-ha-0"] = &PodInfo{Name: "memgraph-ha-0"}
-			controller.cluster.Pods["memgraph-ha-1"] = &PodInfo{Name: "memgraph-ha-1"}
+			controller.cluster.MemgraphNodes["memgraph-ha-0"] = &MemgraphNode{Name: "memgraph-ha-0"}
+			controller.cluster.MemgraphNodes["memgraph-ha-1"] = &MemgraphNode{Name: "memgraph-ha-1"}
 
 			// Call the function (we can't easily mock internal method calls)
 			controller.cluster.selectMainAfterQuerying(context.Background(), tt.targetMainIndex)

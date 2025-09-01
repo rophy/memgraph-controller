@@ -7,14 +7,14 @@ import (
 func TestDetermineMainIndex(t *testing.T) {
 	tests := []struct {
 		name          string
-		pods          map[string]*PodInfo
+		pods          map[string]*MemgraphNode
 		expectedIndex int
 		shouldFail    bool
 		expectedError string
 	}{
 		{
 			name: "fresh_cluster_all_mains",
-			pods: map[string]*PodInfo{
+			pods: map[string]*MemgraphNode{
 				"memgraph-0": {MemgraphRole: "main"},
 				"memgraph-1": {MemgraphRole: "main"},
 				"memgraph-2": {MemgraphRole: "main"},
@@ -24,7 +24,7 @@ func TestDetermineMainIndex(t *testing.T) {
 		},
 		{
 			name: "healthy_cluster_pod0_main",
-			pods: map[string]*PodInfo{
+			pods: map[string]*MemgraphNode{
 				"memgraph-0": {MemgraphRole: "main"},
 				"memgraph-1": {MemgraphRole: "replica"},
 				"memgraph-2": {MemgraphRole: "replica"},
@@ -34,7 +34,7 @@ func TestDetermineMainIndex(t *testing.T) {
 		},
 		{
 			name: "failover_cluster_pod1_main",
-			pods: map[string]*PodInfo{
+			pods: map[string]*MemgraphNode{
 				"memgraph-0": {MemgraphRole: "replica"},
 				"memgraph-1": {MemgraphRole: "main"},
 				"memgraph-2": {MemgraphRole: "replica"},
@@ -44,7 +44,7 @@ func TestDetermineMainIndex(t *testing.T) {
 		},
 		{
 			name: "no_eligible_pods_available",
-			pods: map[string]*PodInfo{
+			pods: map[string]*MemgraphNode{
 				"memgraph-2": {MemgraphRole: "main"},
 				"memgraph-3": {MemgraphRole: "replica"},
 			},
@@ -54,7 +54,7 @@ func TestDetermineMainIndex(t *testing.T) {
 		},
 		{
 			name: "no_role_information",
-			pods: map[string]*PodInfo{
+			pods: map[string]*MemgraphNode{
 				"memgraph-0": {MemgraphRole: ""},
 				"memgraph-1": {MemgraphRole: ""},
 			},
@@ -63,7 +63,7 @@ func TestDetermineMainIndex(t *testing.T) {
 		},
 		{
 			name: "lower_index_precedence",
-			pods: map[string]*PodInfo{
+			pods: map[string]*MemgraphNode{
 				"memgraph-0": {MemgraphRole: "replica"},
 				"memgraph-1": {MemgraphRole: "replica"},
 				"memgraph-2": {MemgraphRole: "main"},
@@ -78,7 +78,7 @@ func TestDetermineMainIndex(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			clusterState := &ClusterState{
-				Pods: tt.pods,
+				MemgraphNodes: tt.pods,
 			}
 
 			index, err := clusterState.DetermineMainIndex(config)
@@ -116,7 +116,7 @@ func TestAnalyzeExistingCluster(t *testing.T) {
 		{
 			name: "pod0_is_main",
 			clusterState: &ClusterState{
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "main"},
 					"memgraph-1": {MemgraphRole: "replica"},
 				},
@@ -127,7 +127,7 @@ func TestAnalyzeExistingCluster(t *testing.T) {
 		{
 			name: "pod1_is_main",
 			clusterState: &ClusterState{
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "replica"},
 					"memgraph-1": {MemgraphRole: "main"},
 				},
@@ -138,7 +138,7 @@ func TestAnalyzeExistingCluster(t *testing.T) {
 		{
 			name: "non_eligible_main_prefer_pod0",
 			clusterState: &ClusterState{
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "replica"},
 					"memgraph-1": {MemgraphRole: "replica"},
 					"memgraph-2": {MemgraphRole: "main"},
@@ -150,7 +150,7 @@ func TestAnalyzeExistingCluster(t *testing.T) {
 		{
 			name: "no_eligible_pods",
 			clusterState: &ClusterState{
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-2": {MemgraphRole: "main"},
 					"memgraph-3": {MemgraphRole: "replica"},
 				},

@@ -23,7 +23,7 @@ func (c *MemgraphController) detectMainFailover(cluster *MemgraphCluster) bool {
 	log.Printf("Checking failover for last known main: %s", lastKnownMain)
 
 	// Check if last known main pod still exists
-	mainPod, exists := cluster.Pods[lastKnownMain]
+	mainPod, exists := cluster.MemgraphNodes[lastKnownMain]
 	if !exists {
 		log.Printf("🚨 MAIN FAILOVER DETECTED: Main pod %s no longer exists", lastKnownMain)
 		return true
@@ -55,8 +55,8 @@ func (c *MemgraphController) identifyFailedMainIndex(cluster *MemgraphCluster) i
 	pod1Name := c.config.StatefulSetName + "-1"
 
 	// Check which pod has the most recent restart (indicating it was the failed main)
-	pod0Info, pod0Exists := cluster.Pods[pod0Name]
-	pod1Info, pod1Exists := cluster.Pods[pod1Name]
+	pod0Info, pod0Exists := cluster.MemgraphNodes[pod0Name]
+	pod1Info, pod1Exists := cluster.MemgraphNodes[pod1Name]
 
 	if !pod0Exists && !pod1Exists {
 		log.Printf("Warning: Neither pod-0 nor pod-1 found, defaulting to pod-0 as failed main")

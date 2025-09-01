@@ -4,7 +4,7 @@ import (
 	"testing"
 )
 
-func TestPodInfo_ClassifyState(t *testing.T) {
+func TestMemgraphNode_ClassifyState(t *testing.T) {
 	tests := []struct {
 		name          string
 		memgraphRole  string
@@ -39,14 +39,14 @@ func TestPodInfo_ClassifyState(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			podInfo := &PodInfo{
+			node := &MemgraphNode{
 				Name:         "test-pod",
 				State:        INITIAL,
 				MemgraphRole: tt.memgraphRole,
 				Replicas:     make([]string, tt.replicaCount),
 			}
 
-			got := podInfo.ClassifyState()
+			got := node.ClassifyState()
 			if got != tt.expectedState {
 				t.Errorf("ClassifyState() = %s, want %s", got, tt.expectedState)
 			}
@@ -54,7 +54,7 @@ func TestPodInfo_ClassifyState(t *testing.T) {
 	}
 }
 
-func TestPodInfo_DetectStateInconsistency(t *testing.T) {
+func TestMemgraphNode_DetectStateInconsistency(t *testing.T) {
 	tests := []struct {
 		name                string
 		memgraphRole        string
@@ -115,14 +115,14 @@ func TestPodInfo_DetectStateInconsistency(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			podInfo := &PodInfo{
+			node := &MemgraphNode{
 				Name:         "test-pod",
 				State:        tt.currentState,
 				MemgraphRole: tt.memgraphRole,
 				Replicas:     make([]string, tt.replicaCount),
 			}
 
-			inconsistency := podInfo.DetectStateInconsistency()
+			inconsistency := node.DetectStateInconsistency()
 
 			if tt.expectInconsistency {
 				if inconsistency == nil {

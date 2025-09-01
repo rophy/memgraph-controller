@@ -37,6 +37,25 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 			return ctx.Err()
 
 		case <-ticker.C:
+			if !c.IsLeader() {
+				log.Println("Not leader, skipping reconciliation cycle")
+				continue
+			}
+
+			log.Println("Starting reconciliation cycle...")
+
+			// Check if ConfigMap is ready by trying to get the target main index
+			_, err := c.GetTargetMainIndex(ctx)
+			configMapReady := err == nil
+
+			if !configMapReady {
+				log.Println("ConfigMap not ready - performing discovery and creating ConfigMap...")
+				if err := c.discoverClusterAndCreateConfigMap(ctx); err != nil {
+					return fmt.Errorf("failed to discover cluster and create ConfigMap: %w", err)
+				}
+				log.Println("✅ Cluster discovered and ConfigMap created")
+			}
+
 			// Reconciliation logic per DESIGN.md:
 			// if leader:
 			//   if configmap not ready then discoverClusterAndCreateConfigMap()
@@ -98,7 +117,7 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 
 	// Update reconciliation metrics
 	c.updateReconciliationMetrics("reconcile-success", time.Since(time.Now()), nil)
-	
+
 	log.Println("DESIGN.md compliant reconciliation cycle completed successfully")
 	return nil
 }
@@ -107,15 +126,15 @@ func (c *MemgraphController) Reconcile(ctx context.Context) error {
 func (c *MemgraphController) SyncPodLabels(ctx context.Context, cluster *MemgraphCluster) error {
 	log.Println("Starting pod label synchronization...")
 
-	for podName, podInfo := range cluster.Pods {
+	for podName, node := range cluster.MemgraphNodes {
 		_, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 		if err != nil {
 			log.Printf("Failed to get pod %s for label sync: %v", podName, err)
 			continue
 		}
 
-		log.Printf("Pod %s final state: %s (MemgraphRole=%s)", podName, podInfo.State, podInfo.MemgraphRole)
-		
+		log.Printf("Pod %s final state: %s (MemgraphRole=%s)", podName, node.State, node.MemgraphRole)
+
 		// Note: Actual label updates would be implemented here if needed
 		// For now, we just log the intended state
 	}
@@ -124,27 +143,26 @@ func (c *MemgraphController) SyncPodLabels(ctx context.Context, cluster *Memgrap
 	return nil
 }
 
-
 // isNonRetryableError determines if an error should stop retries
 func (c *MemgraphController) isNonRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	
+
 	errMsg := err.Error()
-	
+
 	// Check for specific error patterns that require manual intervention
 	nonRetryablePatterns := []string{
 		"manual intervention required",
 		"ambiguous cluster state detected",
 	}
-	
+
 	for _, pattern := range nonRetryablePatterns {
 		if strings.Contains(errMsg, pattern) {
 			return true
 		}
 	}
-	
+
 	return false
 }
 
@@ -168,7 +186,7 @@ func (c *MemgraphController) updateReconciliationMetrics(reason string, duration
 
 	c.metrics.AverageReconciliationTime = duration
 
-	log.Printf("Reconciliation metrics updated: reason=%s, duration=%v, error=%v", 
+	log.Printf("Reconciliation metrics updated: reason=%s, duration=%v, error=%v",
 		reason, duration, err != nil)
 }
 
@@ -180,8 +198,8 @@ func (c *MemgraphController) GetReconciliationMetrics() ReconciliationMetrics {
 	return *c.metrics
 }
 
-// RefreshPodInfo updates pod information in the cluster state
-func (c *MemgraphController) RefreshPodInfo(ctx context.Context, podName string) (*PodInfo, error) {
+// RefreshMemgraphNode updates node information in the cluster state
+func (c *MemgraphController) RefreshMemgraphNode(ctx context.Context, podName string) (*MemgraphNode, error) {
 	// Get current pod state from Kubernetes
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
@@ -189,20 +207,20 @@ func (c *MemgraphController) RefreshPodInfo(ctx context.Context, podName string)
 	}
 
 	// Update pod info in cluster state
-	if c.cluster != nil && c.cluster.Pods != nil {
-		podInfo, exists := c.cluster.Pods[podName]
+	if c.cluster != nil && c.cluster.MemgraphNodes != nil {
+		node, exists := c.cluster.MemgraphNodes[podName]
 		if exists {
 			// Update existing pod info
-			podInfo.BoltAddress = fmt.Sprintf("%s:7687", pod.Status.PodIP)
-			podInfo.Timestamp = pod.CreationTimestamp.Time
-			podInfo.Pod = pod
-			
-			c.cluster.Pods[podName] = podInfo
-			log.Printf("Refreshed pod info for %s: BoltAddress=%s", 
-				podName, podInfo.BoltAddress)
-			
-			updatedPodInfo := c.cluster.Pods[podName]
-			return updatedPodInfo, nil
+			node.BoltAddress = fmt.Sprintf("%s:7687", pod.Status.PodIP)
+			node.Timestamp = pod.CreationTimestamp.Time
+			node.Pod = pod
+
+			c.cluster.MemgraphNodes[podName] = node
+			log.Printf("Refreshed pod info for %s: BoltAddress=%s",
+				podName, node.BoltAddress)
+
+			updatedNode := c.cluster.MemgraphNodes[podName]
+			return updatedNode, nil
 		}
 	}
 
@@ -220,12 +238,12 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	clusterState := ClusterStatus{
 		CurrentMain:        cachedState.CurrentMain,
 		CurrentSyncReplica: "", // Will be determined below
-		TotalPods:          len(cachedState.Pods),
+		TotalPods:          len(cachedState.MemgraphNodes),
 	}
 
 	// Count healthy vs unhealthy pods and find sync replica
 	healthyCount := 0
-	for podName, pod := range cachedState.Pods {
+	for podName, pod := range cachedState.MemgraphNodes {
 		if pod.Pod != nil && isPodReady(pod.Pod) {
 			healthyCount++
 		}
@@ -240,9 +258,9 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 
 	// Convert pods to API format
 	var pods []PodStatus
-	for _, podInfo := range cachedState.Pods {
-		healthy := podInfo.Pod != nil && isPodReady(podInfo.Pod)
-		podStatus := convertPodInfoToStatus(podInfo, healthy)
+	for _, node := range cachedState.MemgraphNodes {
+		healthy := node.Pod != nil && isPodReady(node.Pod)
+		podStatus := convertMemgraphNodeToStatus(node, healthy)
 		pods = append(pods, podStatus)
 	}
 
@@ -256,7 +274,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 		Pods:         pods,
 	}
 
-	log.Printf("Generated cluster status: %d pods, main=%s, healthy=%d/%d", 
+	log.Printf("Generated cluster status: %d pods, main=%s, healthy=%d/%d",
 		len(pods), clusterState.CurrentMain, healthyCount, clusterState.TotalPods)
 
 	return response, nil
@@ -323,7 +341,7 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 	// Get target pods based on DESIGN.md authority (TargetMainIndex determines main)
 	targetMainPod := c.getTargetMainPod(podList, targetMainIndex)
 	targetSyncReplica := c.getTargetSyncReplicaPod(podList, targetMainIndex)
-	
+
 	if targetMainPod == nil {
 		return fmt.Errorf("target main pod not found")
 	}
@@ -388,7 +406,7 @@ func (c *MemgraphController) getTargetSyncReplicaPod(podList []*v1.Pod, targetMa
 	} else {
 		targetSyncIndex = 0
 	}
-	
+
 	targetSyncName := c.config.GetPodName(targetSyncIndex)
 	for _, pod := range podList {
 		if pod.Name == targetSyncName {
@@ -401,36 +419,36 @@ func (c *MemgraphController) getTargetSyncReplicaPod(podList []*v1.Pod, targetMa
 // performFailover implements DESIGN.md "Failover Actions"
 func (c *MemgraphController) performFailover(ctx context.Context, currentMainIndex int, syncReplicaPod *v1.Pod) error {
 	log.Printf("🚨 Performing failover from main index %d", currentMainIndex)
-	
+
 	// Check if sync replica is ready
 	if syncReplicaPod == nil || !isPodReady(syncReplicaPod) {
 		return fmt.Errorf("sync replica not ready - cluster not recoverable")
 	}
-	
+
 	// Flip target: if main was 0, new main is 1; if main was 1, new main is 0
 	newMainIndex := 1 - currentMainIndex // Simple flip for 0<->1
-	
+
 	// Update ConfigMap with new target main
 	if err := c.SetTargetMainIndex(ctx, newMainIndex); err != nil {
 		return fmt.Errorf("failed to update target main index: %w", err)
 	}
-	
+
 	// Promote sync replica to main
 	newMainPodName := c.config.GetPodName(newMainIndex)
 	newMainIP := fmt.Sprintf("%s:7687", syncReplicaPod.Status.PodIP)
-	
+
 	// Promote to main via Memgraph client
 	if err := c.memgraphClient.SetReplicationRoleToMain(ctx, newMainIP); err != nil {
 		log.Printf("Warning: Failed to promote %s to main: %v", newMainPodName, err)
 		// Don't fail - gateway will handle routing
 	}
-	
+
 	// Update gateway if available
 	if c.gatewayServer != nil {
 		c.gatewayServer.SetCurrentMain(syncReplicaPod.Status.PodIP)
 		log.Printf("✅ Gateway updated to route to new main: %s", newMainPodName)
 	}
-	
+
 	log.Printf("✅ Failover completed: %s -> %s", c.config.GetPodName(currentMainIndex), newMainPodName)
 	return nil
 }
@@ -442,7 +460,7 @@ func (c *MemgraphController) configureReplication(ctx context.Context, targetMai
 	if err != nil {
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}
-	
+
 	// Configure replication using existing logic but with direct target main index
 	return c.ConfigureReplication(ctx, c.cluster)
 }

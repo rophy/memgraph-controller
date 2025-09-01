@@ -13,7 +13,7 @@ import (
 // MemgraphCluster handles all Memgraph cluster-specific operations and represents the cluster state
 type MemgraphCluster struct {
 	// Cluster data (formerly ClusterState)
-	Pods        map[string]*PodInfo
+	MemgraphNodes        map[string]*MemgraphNode
 	CurrentMain string
 
 	// Connection management
@@ -43,7 +43,7 @@ func NewMemgraphCluster(clientset kubernetes.Interface, config *Config, memgraph
 
 	cluster := &MemgraphCluster{
 		// Initialize cluster data
-		Pods:        make(map[string]*PodInfo),
+		MemgraphNodes:        make(map[string]*MemgraphNode),
 		CurrentMain: "",
 
 		// Connection management
@@ -60,12 +60,12 @@ func NewMemgraphCluster(clientset kubernetes.Interface, config *Config, memgraph
 		config:         config,
 		memgraphClient: memgraphClient,
 	}
-	
+
 	// Ensure MemgraphClient uses the shared connection pool
 	if cluster.memgraphClient != nil {
 		cluster.memgraphClient.SetConnectionPool(cluster.connectionPool)
 	}
-	
+
 	return cluster
 }
 
@@ -79,7 +79,7 @@ func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) error {
 	}
 
 	// Clear existing pods and repopulate
-	mc.Pods = make(map[string]*PodInfo)
+	mc.MemgraphNodes = make(map[string]*MemgraphNode)
 
 	for _, pod := range pods.Items {
 		// Only process running pods
@@ -94,18 +94,14 @@ func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) error {
 			continue
 		}
 
-		podInfo := NewPodInfo(&pod)
-		mc.Pods[pod.Name] = podInfo
+		node := NewMemgraphNode(&pod)
+		mc.MemgraphNodes[pod.Name] = node
 
 		log.Printf("Discovered pod: %s, IP: %s, Timestamp: %s",
-			podInfo.Name,
+			node.Name,
 			pod.Status.PodIP,
-			podInfo.Timestamp.Format(time.RFC3339))
+			node.Timestamp.Format(time.RFC3339))
 	}
-
-	// Main selection will be done AFTER querying actual Memgraph state
-	// This ensures we use real replication roles for decision making
-	log.Printf("Pod discovery complete. Main selection deferred until after Memgraph querying.")
 
 	return nil
 }
@@ -120,16 +116,15 @@ func (mc *MemgraphCluster) GetPodsByLabel(ctx context.Context, labelSelector str
 	}
 
 	// Clear existing pods and repopulate with filtered results
-	mc.Pods = make(map[string]*PodInfo)
+	mc.MemgraphNodes = make(map[string]*MemgraphNode)
 
 	for _, pod := range pods.Items {
-		podInfo := NewPodInfo(&pod)
-		mc.Pods[pod.Name] = podInfo
+		node := NewMemgraphNode(&pod)
+		mc.MemgraphNodes[pod.Name] = node
 	}
 
 	return nil
 }
-
 
 // GetTargetMainPod returns the pod name for the given target main index
 func (mc *MemgraphCluster) GetTargetMainPod(targetMainIndex int) string {
@@ -145,21 +140,20 @@ func (mc *MemgraphCluster) GetTargetSyncReplica(targetMainIndex int) string {
 	if targetMainIndex < 0 {
 		return ""
 	}
-	
+
 	// Two-pod authority: pod-0 and pod-1 form a pair
 	var syncReplicaIndex int
 	if targetMainIndex == 0 {
 		syncReplicaIndex = 1 // main=pod-0 → sync=pod-1
 	} else if targetMainIndex == 1 {
-		syncReplicaIndex = 0 // main=pod-1 → sync=pod-0  
+		syncReplicaIndex = 0 // main=pod-1 → sync=pod-0
 	} else {
 		// Invalid target main index (should only be 0 or 1)
 		return ""
 	}
-	
+
 	return mc.config.GetPodName(syncReplicaIndex)
 }
-
 
 // RefreshClusterInfo refreshes cluster state information in operational phase
 func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncReplicaInfoFunc func(*MemgraphCluster), detectMainFailoverFunc func(*MemgraphCluster) bool, handleMainFailoverFunc func(context.Context, *MemgraphCluster) error) error {
@@ -172,7 +166,7 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 
 	// Connection pool is already shared between MemgraphClient and ClusterState
 
-	if len(mc.Pods) == 0 {
+	if len(mc.MemgraphNodes) == 0 {
 		log.Println("No pods found in cluster")
 		return nil
 	}
@@ -184,50 +178,50 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 
 	mc.LastStateChange = time.Now()
 
-	log.Printf("Discovered %d pods, querying Memgraph state...", len(mc.Pods))
+	log.Printf("Discovered %d pods, querying Memgraph state...", len(mc.MemgraphNodes))
 
 	// Track errors for comprehensive reporting
 	var queryErrors []error
 	successCount := 0
 
 	// Query Memgraph role and replicas for each pod
-	for podName, podInfo := range mc.Pods {
-		if podInfo.BoltAddress == "" {
+	for podName, node := range mc.MemgraphNodes {
+		if node.BoltAddress == "" {
 			log.Printf("Skipping pod %s: no Bolt address", podName)
 			continue
 		}
 
-		log.Printf("Querying replication role for pod %s at %s", podName, podInfo.BoltAddress)
+		log.Printf("Querying replication role for pod %s at %s", podName, node.BoltAddress)
 
 		// Query replication role with retry
-		role, err := mc.memgraphClient.QueryReplicationRoleWithRetry(ctx, podInfo.BoltAddress)
+		role, err := mc.memgraphClient.QueryReplicationRoleWithRetry(ctx, node.BoltAddress)
 		if err != nil {
 			log.Printf("Failed to query replication role for pod %s: %v", podName, err)
 			queryErrors = append(queryErrors, fmt.Errorf("pod %s role query: %w", podName, err))
 			continue
 		}
 
-		podInfo.MemgraphRole = role.Role
+		node.MemgraphRole = role.Role
 		log.Printf("Pod %s has Memgraph role: %s", podName, role.Role)
 
 		// If this is a MAIN node, query its replicas
 		if role.Role == "main" {
 			log.Printf("Querying replicas for main pod %s", podName)
 
-			replicasResp, err := mc.memgraphClient.QueryReplicasWithRetry(ctx, podInfo.BoltAddress)
+			replicasResp, err := mc.memgraphClient.QueryReplicasWithRetry(ctx, node.BoltAddress)
 			if err != nil {
 				log.Printf("Failed to query replicas for pod %s: %v", podName, err)
 				queryErrors = append(queryErrors, fmt.Errorf("pod %s replicas query: %w", podName, err))
 			} else {
 				// Store detailed replica information including sync mode
-				podInfo.ReplicasInfo = replicasResp.Replicas
+				node.ReplicasInfo = replicasResp.Replicas
 
 				// Extract replica names for backward compatibility
 				var replicaNames []string
 				for _, replica := range replicasResp.Replicas {
 					replicaNames = append(replicaNames, replica.Name)
 				}
-				podInfo.Replicas = replicaNames
+				node.Replicas = replicaNames
 
 				// Log detailed replica information including sync modes
 				log.Printf("Pod %s has %d replicas:", podName, len(replicaNames))
@@ -238,14 +232,14 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 		}
 
 		// Classify the pod state based on collected information
-		newState := podInfo.ClassifyState()
-		if newState != podInfo.State {
-			log.Printf("Pod %s state changed from %s to %s", podName, podInfo.State, newState)
-			podInfo.State = newState
+		newState := node.ClassifyState()
+		if newState != node.State {
+			log.Printf("Pod %s state changed from %s to %s", podName, node.State, newState)
+			node.State = newState
 		}
 
 		// Check for state inconsistencies
-		if inconsistency := podInfo.DetectStateInconsistency(); inconsistency != nil {
+		if inconsistency := node.DetectStateInconsistency(); inconsistency != nil {
 			log.Printf("WARNING: State inconsistency detected for pod %s: %s",
 				podName, inconsistency.Description)
 		}
@@ -269,7 +263,7 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 			}
 		}
 	}
-	
+
 	// Set operational phase properties
 	mc.IsBootstrapPhase = false
 	mc.StateType = OPERATIONAL_STATE
@@ -286,7 +280,7 @@ func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncRep
 
 	// Log summary of query results
 	log.Printf("Cluster discovery complete: %d/%d pods successfully queried",
-		successCount, len(mc.Pods))
+		successCount, len(mc.MemgraphNodes))
 
 	if len(queryErrors) > 0 {
 		log.Printf("Encountered %d errors during cluster discovery:", len(queryErrors))
@@ -345,7 +339,7 @@ func (mc *MemgraphCluster) applyDeterministicRoles(targetMainIndex int) {
 
 	// Mark remaining pods as ASYNC replicas
 	asyncCount := 0
-	for podName := range mc.Pods {
+	for podName := range mc.MemgraphNodes {
 		if podName != targetMainName && podName != syncReplicaName {
 			asyncCount++
 		}
@@ -368,8 +362,8 @@ func (mc *MemgraphCluster) learnExistingTopology(targetMainIndex int) {
 		log.Printf("Discovered existing main index: %d", currentMainIndex)
 
 		// Log current SYNC replica
-		for podName, podInfo := range mc.Pods {
-			if podInfo.IsSyncReplica {
+		for podName, node := range mc.MemgraphNodes {
+			if node.IsSyncReplica {
 				log.Printf("Current SYNC replica: %s", podName)
 				break
 			}
@@ -389,21 +383,21 @@ func (mc *MemgraphCluster) learnExistingTopology(targetMainIndex int) {
 // GetClusterHealthSummary returns a comprehensive health summary of the cluster
 func (mc *MemgraphCluster) GetClusterHealthSummary(targetIndex int) map[string]interface{} {
 	healthyPods := 0
-	totalPods := len(mc.Pods)
+	totalPods := len(mc.MemgraphNodes)
 	syncReplicaCount := 0
 	mainPods := 0
 	replicaPods := 0
 
-	for _, podInfo := range mc.Pods {
-		if podInfo.BoltAddress != "" && podInfo.MemgraphRole != "" {
+	for _, node := range mc.MemgraphNodes {
+		if node.BoltAddress != "" && node.MemgraphRole != "" {
 			healthyPods++
 		}
 
-		if podInfo.IsSyncReplica {
+		if node.IsSyncReplica {
 			syncReplicaCount++
 		}
 
-		switch podInfo.MemgraphRole {
+		switch node.MemgraphRole {
 		case "main":
 			mainPods++
 		case "replica":
@@ -414,17 +408,17 @@ func (mc *MemgraphCluster) GetClusterHealthSummary(targetIndex int) map[string]i
 	// Target index provided as parameter
 
 	return map[string]interface{}{
-		"total_pods":       totalPods,
-		"healthy_pods":     healthyPods,
-		"unhealthy_pods":   totalPods - healthyPods,
-		"main_pods":        mainPods,
-		"replica_pods":     replicaPods,
-		"sync_replicas":    syncReplicaCount,
-		"state_type":       mc.StateType.String(),
-		"bootstrap_phase":  mc.IsBootstrapPhase,
-		"current_main":     mc.CurrentMain,
-		"target_index":     targetIndex,
-		"last_change":      mc.LastStateChange,
+		"total_pods":      totalPods,
+		"healthy_pods":    healthyPods,
+		"unhealthy_pods":  totalPods - healthyPods,
+		"main_pods":       mainPods,
+		"replica_pods":    replicaPods,
+		"sync_replicas":   syncReplicaCount,
+		"state_type":      mc.StateType.String(),
+		"bootstrap_phase": mc.IsBootstrapPhase,
+		"current_main":    mc.CurrentMain,
+		"target_index":    targetIndex,
+		"last_change":     mc.LastStateChange,
 	}
 }
 
@@ -434,7 +428,7 @@ func (mc *MemgraphCluster) ValidateControllerState(config *Config) []string {
 
 	// Validate current main exists in pods
 	if mc.CurrentMain != "" {
-		if _, exists := mc.Pods[mc.CurrentMain]; !exists {
+		if _, exists := mc.MemgraphNodes[mc.CurrentMain]; !exists {
 			warnings = append(warnings, fmt.Sprintf("Current main '%s' not found in discovered pods", mc.CurrentMain))
 		}
 	}
@@ -445,8 +439,8 @@ func (mc *MemgraphCluster) ValidateControllerState(config *Config) []string {
 // GetMainPods returns a list of pod names that have the MAIN role
 func (mc *MemgraphCluster) GetMainPods() []string {
 	var mainPods []string
-	for podName, podInfo := range mc.Pods {
-		if podInfo.MemgraphRole == "main" {
+	for podName, node := range mc.MemgraphNodes {
+		if node.MemgraphRole == "main" {
 			mainPods = append(mainPods, podName)
 		}
 	}
@@ -456,8 +450,8 @@ func (mc *MemgraphCluster) GetMainPods() []string {
 // GetReplicaPods returns a list of pod names that have the REPLICA role
 func (mc *MemgraphCluster) GetReplicaPods() []string {
 	var replicaPods []string
-	for podName, podInfo := range mc.Pods {
-		if podInfo.MemgraphRole == "replica" {
+	for podName, node := range mc.MemgraphNodes {
+		if node.MemgraphRole == "replica" {
 			replicaPods = append(replicaPods, podName)
 		}
 	}
@@ -482,10 +476,10 @@ func (mc *MemgraphCluster) InvalidatePodConnection(podName string) {
 	if mc.connectionPool == nil {
 		return
 	}
-	
-	if podInfo, exists := mc.Pods[podName]; exists && podInfo.BoltAddress != "" {
-		mc.connectionPool.InvalidateConnection(podInfo.BoltAddress)
-		log.Printf("Invalidated connection for pod %s (%s)", podName, podInfo.BoltAddress)
+
+	if node, exists := mc.MemgraphNodes[podName]; exists && node.BoltAddress != "" {
+		mc.connectionPool.InvalidateConnection(node.BoltAddress)
+		log.Printf("Invalidated connection for pod %s (%s)", podName, node.BoltAddress)
 	}
 }
 
@@ -494,20 +488,20 @@ func (mc *MemgraphCluster) HandlePodIPChange(podName, oldIP, newIP string) {
 	if mc.connectionPool == nil {
 		return
 	}
-	
+
 	if oldIP != "" && oldIP != newIP {
 		oldBoltAddress := oldIP + ":7687"
 		mc.connectionPool.InvalidateConnection(oldBoltAddress)
 		log.Printf("Invalidated connection for pod %s: IP changed from %s to %s", podName, oldIP, newIP)
 	}
-	
+
 	// Update the pod info with new IP
-	if podInfo, exists := mc.Pods[podName]; exists {
+	if node, exists := mc.MemgraphNodes[podName]; exists {
 		newBoltAddress := ""
 		if newIP != "" {
 			newBoltAddress = newIP + ":7687"
 		}
-		podInfo.BoltAddress = newBoltAddress
+		node.BoltAddress = newBoltAddress
 	}
 }
 
@@ -526,8 +520,8 @@ func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) error {
 	pod0Name := mc.config.GetPodName(0)
 	pod1Name := mc.config.GetPodName(1)
 
-	pod0Info, pod0Exists := mc.Pods[pod0Name]
-	pod1Info, pod1Exists := mc.Pods[pod1Name]
+	pod0Info, pod0Exists := mc.MemgraphNodes[pod0Name]
+	pod1Info, pod1Exists := mc.MemgraphNodes[pod1Name]
 
 	if !pod0Exists || !pod1Exists || !isPodReady(pod0Info.Pod) || !isPodReady(pod1Info.Pod) {
 		return fmt.Errorf("DESIGN.md step 1: pod-0 or pod-1 not ready - cannot proceed with discovery")
@@ -568,8 +562,8 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 	pod0Name := mc.config.GetPodName(0)
 	pod1Name := mc.config.GetPodName(1)
 
-	pod0Info := mc.Pods[pod0Name]
-	pod1Info := mc.Pods[pod1Name]
+	pod0Info := mc.MemgraphNodes[pod0Name]
+	pod1Info := mc.MemgraphNodes[pod1Name]
 
 	if pod0Info == nil || pod1Info == nil {
 		return fmt.Errorf("pod-0 or pod-1 not found for initialization")
@@ -609,23 +603,23 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 
 // queryMemgraphRoles queries replication roles from both pods
 func (mc *MemgraphCluster) queryMemgraphRoles(ctx context.Context) error {
-	for podName, podInfo := range mc.Pods {
+	for podName, node := range mc.MemgraphNodes {
 		if !mc.config.IsMemgraphPod(podName) {
 			continue
 		}
 
-		if podInfo.BoltAddress == "" {
+		if node.BoltAddress == "" {
 			log.Printf("Skipping role query for %s: no bolt address", podName)
 			continue
 		}
 
-		roleResp, err := mc.memgraphClient.QueryReplicationRoleWithRetry(ctx, podInfo.BoltAddress)
+		roleResp, err := mc.memgraphClient.QueryReplicationRoleWithRetry(ctx, node.BoltAddress)
 		if err != nil {
 			log.Printf("Failed to query role for %s: %v", podName, err)
 			continue
 		}
 
-		podInfo.MemgraphRole = roleResp.Role
+		node.MemgraphRole = roleResp.Role
 		log.Printf("Pod %s has Memgraph role: %s", podName, roleResp.Role)
 	}
 
@@ -637,8 +631,8 @@ func (mc *MemgraphCluster) isBothMainWithEmptyStorage(ctx context.Context) bool 
 	pod0Name := mc.config.GetPodName(0)
 	pod1Name := mc.config.GetPodName(1)
 
-	pod0Info := mc.Pods[pod0Name]
-	pod1Info := mc.Pods[pod1Name]
+	pod0Info := mc.MemgraphNodes[pod0Name]
+	pod1Info := mc.MemgraphNodes[pod1Name]
 
 	// Both must have MAIN role
 	if pod0Info.MemgraphRole != "main" || pod1Info.MemgraphRole != "main" {
@@ -654,8 +648,8 @@ func (mc *MemgraphCluster) getSingleMainPod() string {
 	pod0Name := mc.config.GetPodName(0)
 	pod1Name := mc.config.GetPodName(1)
 
-	pod0Info := mc.Pods[pod0Name]
-	pod1Info := mc.Pods[pod1Name]
+	pod0Info := mc.MemgraphNodes[pod0Name]
+	pod1Info := mc.MemgraphNodes[pod1Name]
 
 	if pod0Info == nil || pod1Info == nil {
 		return ""
@@ -673,27 +667,27 @@ func (mc *MemgraphCluster) getSingleMainPod() string {
 }
 
 // hasEmptyStorage checks if pod has empty storage (0 edges, 0 vertices)
-func (mc *MemgraphCluster) hasEmptyStorage(ctx context.Context, podInfo *PodInfo) bool {
-	if podInfo.BoltAddress == "" {
-		log.Printf("Cannot check storage for pod %s: no bolt address", podInfo.Name)
+func (mc *MemgraphCluster) hasEmptyStorage(ctx context.Context, node *MemgraphNode) bool {
+	if node.BoltAddress == "" {
+		log.Printf("Cannot check storage for pod %s: no bolt address", node.Name)
 		return false
 	}
 
-	storageInfo, err := mc.memgraphClient.QueryStorageInfoWithRetry(ctx, podInfo.BoltAddress)
+	storageInfo, err := mc.memgraphClient.QueryStorageInfoWithRetry(ctx, node.BoltAddress)
 	if err != nil {
-		log.Printf("Failed to query storage info for %s: %v", podInfo.Name, err)
+		log.Printf("Failed to query storage info for %s: %v", node.Name, err)
 		return false
 	}
 
 	isEmpty := storageInfo.EdgeCount == 0 && storageInfo.VertexCount == 0
-	log.Printf("Pod %s storage: %d vertices, %d edges (empty: %v)", 
-		podInfo.Name, storageInfo.VertexCount, storageInfo.EdgeCount, isEmpty)
-	
+	log.Printf("Pod %s storage: %d vertices, %d edges (empty: %v)",
+		node.Name, storageInfo.VertexCount, storageInfo.EdgeCount, isEmpty)
+
 	return isEmpty
 }
 
 // verifyReplicationWithRetry verifies replication status with exponential retry
-func (mc *MemgraphCluster) verifyReplicationWithRetry(ctx context.Context, mainPod *PodInfo, replicaName string) error {
+func (mc *MemgraphCluster) verifyReplicationWithRetry(ctx context.Context, mainPod *MemgraphNode, replicaName string) error {
 	maxRetries := 5
 	baseDelay := 2 * time.Second
 
@@ -745,7 +739,6 @@ func (mc *MemgraphCluster) isReplicaReady(replica ReplicaInfo) bool {
 		return false
 	}
 
-	// Check if status is "ready" 
+	// Check if status is "ready"
 	return parsed.Status == "ready"
 }
-

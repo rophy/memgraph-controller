@@ -37,11 +37,11 @@ func TestNewClusterState(t *testing.T) {
 	if cs == nil {
 		t.Fatal("NewClusterState() returned nil")
 	}
-	if cs.Pods == nil {
+	if cs.MemgraphNodes == nil {
 		t.Error("NewClusterState() Pods map is nil")
 	}
-	if len(cs.Pods) != 0 {
-		t.Errorf("NewClusterState() Pods map length = %d, want 0", len(cs.Pods))
+	if len(cs.MemgraphNodes) != 0 {
+		t.Errorf("NewClusterState() Pods map length = %d, want 0", len(cs.MemgraphNodes))
 	}
 	if cs.CurrentMain != "" {
 		t.Errorf("NewClusterState() CurrentMain = %s, want empty", cs.CurrentMain)
@@ -51,7 +51,7 @@ func TestNewClusterState(t *testing.T) {
 	}
 }
 
-func TestNewPodInfo(t *testing.T) {
+func TestNewMemgraphNode(t *testing.T) {
 	now := time.Now()
 	startTime := metav1.NewTime(now.Add(-5 * time.Minute))
 	creationTime := metav1.NewTime(now.Add(-10 * time.Minute))
@@ -72,44 +72,44 @@ func TestNewPodInfo(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod)
+	node := NewMemgraphNode(pod)
 
-	if podInfo.Name != "memgraph-1" {
-		t.Errorf("Name = %s, want memgraph-1", podInfo.Name)
+	if node.Name != "memgraph-1" {
+		t.Errorf("Name = %s, want memgraph-1", node.Name)
 	}
 
-	if podInfo.State != INITIAL {
-		t.Errorf("State = %s, want INITIAL", podInfo.State)
+	if node.State != INITIAL {
+		t.Errorf("State = %s, want INITIAL", node.State)
 	}
 
 	// Should use StartTime over CreationTimestamp
 	expectedTime := startTime.Time
-	if !podInfo.Timestamp.Equal(expectedTime) {
-		t.Errorf("Timestamp = %s, want %s", podInfo.Timestamp, expectedTime)
+	if !node.Timestamp.Equal(expectedTime) {
+		t.Errorf("Timestamp = %s, want %s", node.Timestamp, expectedTime)
 	}
 
-	if podInfo.BoltAddress != "10.0.0.1:7687" {
-		t.Errorf("BoltAddress = %s, want 10.0.0.1:7687", podInfo.BoltAddress)
+	if node.BoltAddress != "10.0.0.1:7687" {
+		t.Errorf("BoltAddress = %s, want 10.0.0.1:7687", node.BoltAddress)
 	}
 
-	if podInfo.GetReplicationAddress() != "10.0.0.1:10000" {
-		t.Errorf("GetReplicationAddress = %s, want 10.0.0.1:10000", podInfo.GetReplicationAddress())
+	if node.GetReplicationAddress() != "10.0.0.1:10000" {
+		t.Errorf("GetReplicationAddress = %s, want 10.0.0.1:10000", node.GetReplicationAddress())
 	}
 
-	if podInfo.ReplicaName != "memgraph_1" {
-		t.Errorf("ReplicaName = %s, want memgraph_1", podInfo.ReplicaName)
+	if node.ReplicaName != "memgraph_1" {
+		t.Errorf("ReplicaName = %s, want memgraph_1", node.ReplicaName)
 	}
 
-	if podInfo.MemgraphRole != "" {
-		t.Errorf("MemgraphRole = %s, want empty", podInfo.MemgraphRole)
+	if node.MemgraphRole != "" {
+		t.Errorf("MemgraphRole = %s, want empty", node.MemgraphRole)
 	}
 
-	if len(podInfo.Replicas) != 0 {
-		t.Errorf("Replicas length = %d, want 0", len(podInfo.Replicas))
+	if len(node.Replicas) != 0 {
+		t.Errorf("Replicas length = %d, want 0", len(node.Replicas))
 	}
 }
 
-func TestNewPodInfo_NoStartTime(t *testing.T) {
+func TestNewMemgraphNode_NoStartTime(t *testing.T) {
 	now := time.Now()
 	creationTime := metav1.NewTime(now.Add(-10 * time.Minute))
 
@@ -125,17 +125,17 @@ func TestNewPodInfo_NoStartTime(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod)
+	node := NewMemgraphNode(pod)
 
 	// Should fall back to CreationTimestamp
 	expectedTime := creationTime.Time
-	if !podInfo.Timestamp.Equal(expectedTime) {
-		t.Errorf("Timestamp = %s, want %s", podInfo.Timestamp, expectedTime)
+	if !node.Timestamp.Equal(expectedTime) {
+		t.Errorf("Timestamp = %s, want %s", node.Timestamp, expectedTime)
 	}
 
 }
 
-func TestNewPodInfo_NoPodIP(t *testing.T) {
+func TestNewMemgraphNode_NoPodIP(t *testing.T) {
 	pod := &v1.Pod{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: "memgraph-3",
@@ -146,10 +146,10 @@ func TestNewPodInfo_NoPodIP(t *testing.T) {
 		},
 	}
 
-	podInfo := NewPodInfo(pod)
+	node := NewMemgraphNode(pod)
 
-	if podInfo.BoltAddress != "" {
-		t.Errorf("BoltAddress = %s, want empty", podInfo.BoltAddress)
+	if node.BoltAddress != "" {
+		t.Errorf("BoltAddress = %s, want empty", node.BoltAddress)
 	}
 }
 

@@ -17,7 +17,7 @@ func TestClassifyClusterState(t *testing.T) {
 			name: "initial_state_both_main",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {MemgraphRole: "main"},
 					"memgraph-ha-1": {MemgraphRole: "main"},
 				},
@@ -28,7 +28,7 @@ func TestClassifyClusterState(t *testing.T) {
 			name: "operational_state_pod0_main_pod1_replica",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {MemgraphRole: "main"},
 					"memgraph-ha-1": {MemgraphRole: "replica"},
 				},
@@ -39,7 +39,7 @@ func TestClassifyClusterState(t *testing.T) {
 			name: "operational_state_pod0_replica_pod1_main",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {MemgraphRole: "replica"},
 					"memgraph-ha-1": {MemgraphRole: "main"},
 				},
@@ -50,7 +50,7 @@ func TestClassifyClusterState(t *testing.T) {
 			name: "unknown_state_both_replica",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {MemgraphRole: "replica"},
 					"memgraph-ha-1": {MemgraphRole: "replica"},
 				},
@@ -61,7 +61,7 @@ func TestClassifyClusterState(t *testing.T) {
 			name: "unknown_state_no_roles",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {MemgraphRole: ""},
 					"memgraph-ha-1": {MemgraphRole: ""},
 				},
@@ -72,7 +72,7 @@ func TestClassifyClusterState(t *testing.T) {
 			name: "unknown_state_missing_pod0",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-1": {MemgraphRole: "main"},
 				},
 			},
@@ -82,7 +82,7 @@ func TestClassifyClusterState(t *testing.T) {
 			name: "unknown_state_missing_pod1",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {MemgraphRole: "main"},
 				},
 			},
@@ -112,7 +112,7 @@ func TestIsBootstrapSafe(t *testing.T) {
 			name: "initial_state_safe",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {MemgraphRole: "main"},
 					"memgraph-ha-1": {MemgraphRole: "main"},
 				},
@@ -123,7 +123,7 @@ func TestIsBootstrapSafe(t *testing.T) {
 			name: "operational_state_safe",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {MemgraphRole: "main"},
 					"memgraph-ha-1": {MemgraphRole: "replica"},
 				},
@@ -134,7 +134,7 @@ func TestIsBootstrapSafe(t *testing.T) {
 			name: "unknown_state_unsafe",
 			clusterState: &ClusterState{
 				IsBootstrapPhase: true,
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {MemgraphRole: "replica"},
 					"memgraph-ha-1": {MemgraphRole: "replica"},
 				},
@@ -155,7 +155,7 @@ func TestIsBootstrapSafe(t *testing.T) {
 
 func TestGetMainPods(t *testing.T) {
 	clusterState := &ClusterState{
-		Pods: map[string]*PodInfo{
+		MemgraphNodes: map[string]*MemgraphNode{
 			"memgraph-0": {MemgraphRole: "main"},
 			"memgraph-1": {MemgraphRole: "replica"},
 			"memgraph-2": {MemgraphRole: "main"},
@@ -192,7 +192,7 @@ func TestGetMainPods(t *testing.T) {
 
 func TestGetReplicaPods(t *testing.T) {
 	clusterState := &ClusterState{
-		Pods: map[string]*PodInfo{
+		MemgraphNodes: map[string]*MemgraphNode{
 			"memgraph-0": {MemgraphRole: "main"},
 			"memgraph-1": {MemgraphRole: "replica"},
 			"memgraph-2": {MemgraphRole: "replica"},
@@ -250,7 +250,7 @@ func TestClusterStateString(t *testing.T) {
 func TestClusterStateSummary(t *testing.T) {
 	now := time.Now()
 	clusterState := &ClusterState{
-		Pods: map[string]*PodInfo{
+		MemgraphNodes: map[string]*MemgraphNode{
 			"memgraph-0": {
 				MemgraphRole:  "main",
 				BoltAddress:   "memgraph-0:7687",

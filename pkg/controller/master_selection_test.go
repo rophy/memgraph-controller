@@ -16,7 +16,7 @@ func TestMainFailoverDetection(t *testing.T) {
 			name: "healthy_main_no_failover",
 			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "main", BoltAddress: "memgraph-0:7687"},
 					"memgraph-1": {MemgraphRole: "replica", BoltAddress: "memgraph-1:7687"},
 				},
@@ -27,7 +27,7 @@ func TestMainFailoverDetection(t *testing.T) {
 			name: "main_pod_missing_should_failover",
 			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-1": {MemgraphRole: "replica", BoltAddress: "memgraph-1:7687"},
 				},
 			},
@@ -37,7 +37,7 @@ func TestMainFailoverDetection(t *testing.T) {
 			name: "main_not_main_role_should_failover",
 			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "replica", BoltAddress: "memgraph-0:7687"},
 					"memgraph-1": {MemgraphRole: "main", BoltAddress: "memgraph-1:7687"},
 				},
@@ -48,7 +48,7 @@ func TestMainFailoverDetection(t *testing.T) {
 			name: "main_no_bolt_address_should_failover",
 			clusterState: &MemgraphCluster{
 				CurrentMain:     "memgraph-0",
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "main", BoltAddress: ""},
 					"memgraph-1": {MemgraphRole: "replica", BoltAddress: "memgraph-1:7687"},
 				},
@@ -90,7 +90,7 @@ func TestValidateControllerState(t *testing.T) {
 			clusterState: &MemgraphCluster{
 				StateType:       OPERATIONAL_STATE,
 				CurrentMain:     "memgraph-ha-0",
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-ha-0": {
 						Name:         "memgraph-ha-0",
 						BoltAddress:  "10.0.0.1:7687",
@@ -151,7 +151,7 @@ func TestSelectSyncReplica(t *testing.T) {
 		{
 			name: "pod0_main_select_pod1_sync",
 			clusterState: &MemgraphCluster{
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "main"},
 					"memgraph-1": {MemgraphRole: "replica"},
 					"memgraph-2": {MemgraphRole: "replica"},
@@ -163,7 +163,7 @@ func TestSelectSyncReplica(t *testing.T) {
 		{
 			name: "pod1_main_select_pod0_sync",
 			clusterState: &MemgraphCluster{
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "replica"},
 					"memgraph-1": {MemgraphRole: "main"},
 					"memgraph-2": {MemgraphRole: "replica"},
@@ -175,7 +175,7 @@ func TestSelectSyncReplica(t *testing.T) {
 		{
 			name: "only_main_no_sync_replica",
 			clusterState: &MemgraphCluster{
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "main"},
 				},
 			},
@@ -185,7 +185,7 @@ func TestSelectSyncReplica(t *testing.T) {
 		{
 			name: "main_not_eligible_fallback_to_pod0",
 			clusterState: &MemgraphCluster{
-				Pods: map[string]*PodInfo{
+				MemgraphNodes: map[string]*MemgraphNode{
 					"memgraph-0": {MemgraphRole: "replica"},
 					"memgraph-1": {MemgraphRole: "replica"},
 					"memgraph-2": {MemgraphRole: "main"},
@@ -211,12 +211,12 @@ func TestIsPodHealthyForMain(t *testing.T) {
 
 	tests := []struct {
 		name          string
-		podInfo       *PodInfo
+		node       *MemgraphNode
 		expectHealthy bool
 	}{
 		{
 			name: "healthy_pod_with_bolt_address",
-			podInfo: &PodInfo{
+			node: &MemgraphNode{
 				BoltAddress:  "memgraph-0:7687",
 				MemgraphRole: "main",
 				Timestamp:    time.Now(),
@@ -225,7 +225,7 @@ func TestIsPodHealthyForMain(t *testing.T) {
 		},
 		{
 			name: "unhealthy_pod_no_bolt_address",
-			podInfo: &PodInfo{
+			node: &MemgraphNode{
 				BoltAddress:  "",
 				MemgraphRole: "main",
 				Timestamp:    time.Now(),
@@ -234,7 +234,7 @@ func TestIsPodHealthyForMain(t *testing.T) {
 		},
 		{
 			name: "unhealthy_pod_no_role",
-			podInfo: &PodInfo{
+			node: &MemgraphNode{
 				BoltAddress:  "memgraph-0:7687",
 				MemgraphRole: "",
 				Timestamp:    time.Now(),
@@ -243,14 +243,14 @@ func TestIsPodHealthyForMain(t *testing.T) {
 		},
 		{
 			name:          "nil_pod_not_healthy",
-			podInfo:       nil,
+			node:       nil,
 			expectHealthy: false,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := controller.isPodHealthyForMain(tt.podInfo)
+			result := controller.isPodHealthyForMain(tt.node)
 			if result != tt.expectHealthy {
 				t.Errorf("isPodHealthyForMain() = %v, want %v", result, tt.expectHealthy)
 			}

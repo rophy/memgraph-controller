@@ -54,7 +54,7 @@ func (cst ClusterStateType) String() string {
 }
 
 type ClusterState struct {
-	Pods        map[string]*PodInfo
+	MemgraphNodes        map[string]*MemgraphNode
 	CurrentMain string
 
 	// Connection management - integrated with cluster state
@@ -68,7 +68,7 @@ type ClusterState struct {
 	LastStateChange  time.Time
 }
 
-type PodInfo struct {
+type MemgraphNode struct {
 	Name               string
 	State              PodState      // Derived from Memgraph queries only
 	Timestamp          time.Time     // Pod creation/restart time
@@ -90,12 +90,12 @@ func NewClusterStateWithConnectionPool(config *Config, connectionPool *Connectio
 		connectionPool = NewConnectionPool(config)
 	}
 	return &ClusterState{
-		Pods:           make(map[string]*PodInfo),
+		MemgraphNodes:           make(map[string]*MemgraphNode),
 		connectionPool: connectionPool,
 	}
 }
 
-func NewPodInfo(pod *v1.Pod) *PodInfo {
+func NewMemgraphNode(pod *v1.Pod) *MemgraphNode {
 	podName := pod.Name
 
 	// Extract timestamp (prefer status start time, fallback to creation time)
@@ -113,7 +113,7 @@ func NewPodInfo(pod *v1.Pod) *PodInfo {
 	// Convert pod name for replica registration (dashes to underscores)
 	replicaName := convertPodNameForReplica(podName)
 
-	return &PodInfo{
+	return &MemgraphNode{
 		Name:               podName,
 		State:              INITIAL, // Will be determined later
 		Timestamp:          timestamp,
@@ -142,7 +142,7 @@ func convertPodNameForReplica(podName string) string {
 }
 
 // ClassifyPodState determines the actual pod state based on Memgraph role and replica configuration
-func (pi *PodInfo) ClassifyState() PodState {
+func (pi *MemgraphNode) ClassifyState() PodState {
 	// If we don't have Memgraph role information yet, return current state
 	if pi.MemgraphRole == "" {
 		return pi.State
@@ -169,7 +169,7 @@ func (pi *PodInfo) ClassifyState() PodState {
 }
 
 // DetectStateInconsistency checks if pod state is inconsistent with Memgraph role
-func (pi *PodInfo) DetectStateInconsistency() *StateInconsistency {
+func (pi *MemgraphNode) DetectStateInconsistency() *StateInconsistency {
 	if pi.MemgraphRole == "" {
 		// Can't detect inconsistency without Memgraph role info
 		return nil
@@ -201,19 +201,19 @@ type StateInconsistency struct {
 	Description   string
 }
 
-func buildInconsistencyDescription(pi *PodInfo) string {
+func buildInconsistencyDescription(pi *MemgraphNode) string {
 	expectedState := pi.ClassifyState()
 	return fmt.Sprintf("Pod state %s does not match expected state %s (Memgraph role: %s, replicas: %d)",
 		pi.State.String(), expectedState.String(), pi.MemgraphRole, len(pi.Replicas))
 }
 
 // GetReplicaName converts pod name to replica name (dashes to underscores)
-func (pi *PodInfo) GetReplicaName() string {
+func (pi *MemgraphNode) GetReplicaName() string {
 	return strings.ReplaceAll(pi.Name, "-", "_")
 }
 
 // GetReplicationAddress returns the replication address using pod IP for reliable connectivity
-func (pi *PodInfo) GetReplicationAddress() string {
+func (pi *MemgraphNode) GetReplicationAddress() string {
 	if pi.Pod != nil && pi.Pod.Status.PodIP != "" {
 		return fmt.Sprintf("%s:10000", pi.Pod.Status.PodIP)
 	}
@@ -221,7 +221,7 @@ func (pi *PodInfo) GetReplicationAddress() string {
 }
 
 // IsReadyForReplication checks if pod is ready for replication (has IP and passes readiness checks)
-func (pi *PodInfo) IsReadyForReplication() bool {
+func (pi *MemgraphNode) IsReadyForReplication() bool {
 	if pi.Pod == nil || pi.Pod.Status.PodIP == "" {
 		return false
 	}
@@ -237,7 +237,7 @@ func (pi *PodInfo) IsReadyForReplication() bool {
 }
 
 // ShouldBecomeMain determines if this pod should be promoted to main
-func (pi *PodInfo) ShouldBecomeMain(currentMainName string) bool {
+func (pi *MemgraphNode) ShouldBecomeMain(currentMainName string) bool {
 	// Pod should become main if:
 	// 1. It's currently selected as the main pod (by timestamp)
 	// 2. AND it's not already in MAIN state
@@ -245,7 +245,7 @@ func (pi *PodInfo) ShouldBecomeMain(currentMainName string) bool {
 }
 
 // ShouldBecomeReplica determines if this pod should be demoted to replica
-func (pi *PodInfo) ShouldBecomeReplica(currentMainName string) bool {
+func (pi *MemgraphNode) ShouldBecomeReplica(currentMainName string) bool {
 	// Pod should become replica if:
 	// 1. It's NOT the selected main pod
 	// 2. AND it's not already in REPLICA state
@@ -253,7 +253,7 @@ func (pi *PodInfo) ShouldBecomeReplica(currentMainName string) bool {
 }
 
 // NeedsReplicationConfiguration determines if this pod needs replication changes
-func (pi *PodInfo) NeedsReplicationConfiguration(currentMainName string) bool {
+func (pi *MemgraphNode) NeedsReplicationConfiguration(currentMainName string) bool {
 	return pi.ShouldBecomeMain(currentMainName) || pi.ShouldBecomeReplica(currentMainName)
 }
 
@@ -269,8 +269,8 @@ func (cs *ClusterState) ClassifyClusterState(config *Config) ClusterStateType {
 	pod0Name := fmt.Sprintf("%s-0", config.StatefulSetName)
 	pod1Name := fmt.Sprintf("%s-1", config.StatefulSetName)
 	
-	pod0, pod0Exists := cs.Pods[pod0Name]
-	pod1, pod1Exists := cs.Pods[pod1Name]
+	pod0, pod0Exists := cs.MemgraphNodes[pod0Name]
+	pod1, pod1Exists := cs.MemgraphNodes[pod1Name]
 	
 	// If either pod-0 or pod-1 is not available, return UNKNOWN_STATE
 	if !pod0Exists || !pod1Exists {
@@ -316,8 +316,8 @@ func (cs *ClusterState) IsBootstrapSafe(config *Config) bool {
 // GetMainPods returns list of pods with "main" role
 func (cs *ClusterState) GetMainPods() []string {
 	var mainPods []string
-	for podName, podInfo := range cs.Pods {
-		if podInfo.MemgraphRole == "main" {
+	for podName, node := range cs.MemgraphNodes {
+		if node.MemgraphRole == "main" {
 			mainPods = append(mainPods, podName)
 		}
 	}
@@ -327,8 +327,8 @@ func (cs *ClusterState) GetMainPods() []string {
 // GetReplicaPods returns list of pods with "replica" role
 func (cs *ClusterState) GetReplicaPods() []string {
 	var replicaPods []string
-	for podName, podInfo := range cs.Pods {
-		if podInfo.MemgraphRole == "replica" {
+	for podName, node := range cs.MemgraphNodes {
+		if node.MemgraphRole == "replica" {
 			replicaPods = append(replicaPods, podName)
 		}
 	}
@@ -341,7 +341,7 @@ func (cs *ClusterState) DetermineMainIndex(config *Config) (int, error) {
 	replicaPods := cs.GetReplicaPods()
 
 	// Rule 1: If ALL pods are mains (fresh cluster scenario)
-	if len(replicaPods) == 0 && len(mainPods) == len(cs.Pods) {
+	if len(replicaPods) == 0 && len(mainPods) == len(cs.MemgraphNodes) {
 		// Fresh cluster - always choose index 0 as main
 		log.Printf("Fresh cluster detected - selecting pod-0 as main")
 		return 0, nil
@@ -392,13 +392,13 @@ func (cs *ClusterState) analyzeExistingCluster(mainPods, replicaPods []string, c
 	log.Printf("Applying lower-index precedence rule")
 
 	// Check if pod-0 exists and is available
-	if _, exists := cs.Pods[pod0Name]; exists {
+	if _, exists := cs.MemgraphNodes[pod0Name]; exists {
 		log.Printf("Selecting pod-0 as main (lower index precedence)")
 		return 0, nil
 	}
 
 	// Check if pod-1 exists and is available
-	if _, exists := cs.Pods[pod1Name]; exists {
+	if _, exists := cs.MemgraphNodes[pod1Name]; exists {
 		log.Printf("Selecting pod-1 as main (pod-0 not available)")
 		return 1, nil
 	}
@@ -415,7 +415,7 @@ func (cs *ClusterState) ValidateControllerState(config *Config) []string {
 
 	// Validate current main exists in pods
 	if cs.CurrentMain != "" {
-		if _, exists := cs.Pods[cs.CurrentMain]; !exists {
+		if _, exists := cs.MemgraphNodes[cs.CurrentMain]; !exists {
 			warnings = append(warnings, fmt.Sprintf("Current main '%s' not found in discovered pods", cs.CurrentMain))
 		}
 	}
@@ -475,21 +475,21 @@ func (cs *ClusterState) LogMainSelectionDecision(metrics *MainSelectionMetrics) 
 // GetClusterHealthSummary returns a summary of cluster health
 func (cs *ClusterState) GetClusterHealthSummary(targetIndex int) map[string]interface{} {
 	healthyPods := 0
-	totalPods := len(cs.Pods)
+	totalPods := len(cs.MemgraphNodes)
 	syncReplicaCount := 0
 	mainPods := 0
 	replicaPods := 0
 
-	for _, podInfo := range cs.Pods {
-		if podInfo.BoltAddress != "" && podInfo.MemgraphRole != "" {
+	for _, node := range cs.MemgraphNodes {
+		if node.BoltAddress != "" && node.MemgraphRole != "" {
 			healthyPods++
 		}
 
-		if podInfo.IsSyncReplica {
+		if node.IsSyncReplica {
 			syncReplicaCount++
 		}
 
-		switch podInfo.MemgraphRole {
+		switch node.MemgraphRole {
 		case "main":
 			mainPods++
 		case "replica":
@@ -528,16 +528,16 @@ type ReconciliationMetrics struct {
 
 // GetDriver gets a Neo4j driver for the specified pod
 func (cs *ClusterState) GetDriver(ctx context.Context, podName string) (neo4j.DriverWithContext, error) {
-	podInfo, exists := cs.Pods[podName]
+	node, exists := cs.MemgraphNodes[podName]
 	if !exists {
 		return nil, fmt.Errorf("pod %s not found in cluster state", podName)
 	}
 	
-	if podInfo.BoltAddress == "" {
+	if node.BoltAddress == "" {
 		return nil, fmt.Errorf("pod %s has no bolt address", podName)
 	}
 	
-	return cs.connectionPool.GetDriver(ctx, podInfo.BoltAddress)
+	return cs.connectionPool.GetDriver(ctx, node.BoltAddress)
 }
 
 // GetDriverByAddress gets a Neo4j driver for the specified bolt address
@@ -554,9 +554,9 @@ func (cs *ClusterState) InvalidatePodConnection(podName string) {
 		return
 	}
 	
-	if podInfo, exists := cs.Pods[podName]; exists && podInfo.BoltAddress != "" {
-		cs.connectionPool.InvalidateConnection(podInfo.BoltAddress)
-		log.Printf("Invalidated connection for pod %s (%s)", podName, podInfo.BoltAddress)
+	if node, exists := cs.MemgraphNodes[podName]; exists && node.BoltAddress != "" {
+		cs.connectionPool.InvalidateConnection(node.BoltAddress)
+		log.Printf("Invalidated connection for pod %s (%s)", podName, node.BoltAddress)
 	}
 }
 
@@ -573,12 +573,12 @@ func (cs *ClusterState) HandlePodIPChange(podName, oldIP, newIP string) {
 	}
 	
 	// Update the pod info with new IP
-	if podInfo, exists := cs.Pods[podName]; exists {
+	if node, exists := cs.MemgraphNodes[podName]; exists {
 		newBoltAddress := ""
 		if newIP != "" {
 			newBoltAddress = newIP + ":7687"
 		}
-		podInfo.BoltAddress = newBoltAddress
+		node.BoltAddress = newBoltAddress
 	}
 }
 

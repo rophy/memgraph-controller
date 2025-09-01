@@ -271,7 +271,7 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 	if err != nil {
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}
-	pods := c.cluster.Pods
+	pods := c.cluster.MemgraphNodes
 
 	if len(pods) == 0 {
 		return fmt.Errorf("no pods found with label app.kubernetes.io/name=%s", c.config.AppName)

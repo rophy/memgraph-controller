@@ -43,12 +43,12 @@ type StatusInconsistency struct {
 	MemgraphRole string `json:"memgraph_role"`
 }
 
-// convertPodInfoToStatus converts internal PodInfo to API PodStatus
-func convertPodInfoToStatus(podInfo *PodInfo, healthy bool) PodStatus {
+// convertMemgraphNodeToStatus converts internal MemgraphNode to API PodStatus
+func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool) PodStatus {
 	var inconsistency *StatusInconsistency
 
 	// Check for state inconsistencies
-	if stateInc := podInfo.DetectStateInconsistency(); stateInc != nil {
+	if stateInc := node.DetectStateInconsistency(); stateInc != nil {
 		inconsistency = &StatusInconsistency{
 			Description:  stateInc.Description,
 			MemgraphRole: stateInc.MemgraphRole,
@@ -56,8 +56,8 @@ func convertPodInfoToStatus(podInfo *PodInfo, healthy bool) PodStatus {
 	} else if !healthy {
 		// If pod is unhealthy and no inconsistency detected, create one for unreachable pod
 		memgraphRole := "unknown"
-		if podInfo.MemgraphRole != "" {
-			memgraphRole = podInfo.MemgraphRole
+		if node.MemgraphRole != "" {
+			memgraphRole = node.MemgraphRole
 		}
 
 		inconsistency = &StatusInconsistency{
@@ -67,18 +67,18 @@ func convertPodInfoToStatus(podInfo *PodInfo, healthy bool) PodStatus {
 	}
 
 	// Convert replica names to readable format (underscore back to dash)
-	replicasRegistered := make([]string, len(podInfo.Replicas))
-	copy(replicasRegistered, podInfo.Replicas)
+	replicasRegistered := make([]string, len(node.Replicas))
+	copy(replicasRegistered, node.Replicas)
 
 	return PodStatus{
-		Name:               podInfo.Name,
-		State:              podInfo.State.String(),
-		MemgraphRole:       podInfo.MemgraphRole,
-		BoltAddress:        podInfo.BoltAddress,
-		ReplicationAddress: podInfo.GetReplicationAddress(),
-		Timestamp:          podInfo.Timestamp,
+		Name:               node.Name,
+		State:              node.State.String(),
+		MemgraphRole:       node.MemgraphRole,
+		BoltAddress:        node.BoltAddress,
+		ReplicationAddress: node.GetReplicationAddress(),
+		Timestamp:          node.Timestamp,
 		Healthy:            healthy,
-		IsSyncReplica:      podInfo.IsSyncReplica,
+		IsSyncReplica:      node.IsSyncReplica,
 		ReplicasRegistered: replicasRegistered,
 		Inconsistency:      inconsistency,
 	}

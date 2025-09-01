@@ -288,7 +288,52 @@ func (c *MemgraphController) StartHTTPServer() error {
 // StopHTTPServer stops the HTTP server gracefully
 func (c *MemgraphController) StopHTTPServer(ctx context.Context) error {
 	log.Println("Stopping HTTP server...")
-	return c.httpServer.Stop(ctx)
+	if c.httpServer != nil {
+		return c.httpServer.Stop(ctx)
+	}
+	return nil
+}
+
+// StartInformers starts the Kubernetes informers and waits for cache sync
+func (c *MemgraphController) StartInformers() error {
+	c.informerFactory.Start(c.stopCh)
+	
+	// Wait for informer caches to sync
+	if !cache.WaitForCacheSync(c.stopCh, c.podInformer.HasSynced, c.configMapInformer.HasSynced) {
+		return fmt.Errorf("failed to sync informer caches")
+	}
+	return nil
+}
+
+// StopInformers stops the Kubernetes informers
+func (c *MemgraphController) StopInformers() {
+	if c.stopCh != nil {
+		close(c.stopCh)
+	}
+}
+
+// StartGatewayServer starts the gateway server
+func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
+	if c.gatewayServer != nil {
+		return c.gatewayServer.Start(ctx)
+	}
+	return nil
+}
+
+// StopGatewayServer stops the gateway server
+func (c *MemgraphController) StopGatewayServer(ctx context.Context) error {
+	if c.gatewayServer != nil {
+		return c.gatewayServer.Stop(ctx)
+	}
+	return nil
+}
+
+// RunLeaderElection runs the leader election process
+func (c *MemgraphController) RunLeaderElection(ctx context.Context) error {
+	if c.leaderElection != nil {
+		return c.leaderElection.Run(ctx)
+	}
+	return nil
 }
 
 // stop performs cleanup when the controller stops

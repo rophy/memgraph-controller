@@ -8,74 +8,24 @@ import (
 	"time"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/tools/cache"
 )
 
-// Run starts the main controller loop with reconciliation logic
+// Run starts the controller reconciliation loop
+// This assumes all components (informers, servers, leader election) have been started
 func (c *MemgraphController) Run(ctx context.Context) error {
-	log.Println("Starting Memgraph Controller main loop...")
-
 	c.mu.Lock()
 	if c.isRunning {
 		c.mu.Unlock()
-		return fmt.Errorf("controller is already running")
+		return fmt.Errorf("controller reconciliation loop is already running")
 	}
 	c.isRunning = true
 	c.mu.Unlock()
-
-	// STEP 1: Setup informers, HTTP server, gateway, leader election
-	log.Println("Setting up controller components...")
-
-	// Start informers
-	log.Println("Starting Kubernetes informers...")
-	c.informerFactory.Start(c.stopCh)
-
-	// Wait for informer caches to sync
-	log.Println("Waiting for informer caches to sync...")
-	if !cache.WaitForCacheSync(c.stopCh, c.podInformer.HasSynced, c.configMapInformer.HasSynced) {
-		return fmt.Errorf("failed to sync informer caches")
-	}
-	log.Println("Informer caches synced successfully")
-
-	// Start HTTP server for status API
-	if c.httpServer != nil {
-		log.Println("Starting HTTP server...")
-		if err := c.httpServer.Start(); err != nil {
-			log.Printf("Failed to start HTTP server: %v", err)
-			c.stop()
-			return fmt.Errorf("failed to start HTTP server: %w", err)
-		}
-		log.Println("HTTP server started successfully")
-	}
-
-	// Start gateway server
-	if c.gatewayServer != nil {
-		log.Println("Starting gateway server...")
-		if err := c.gatewayServer.Start(ctx); err != nil {
-			log.Printf("Failed to start gateway server: %v", err)
-			c.stop()
-			return fmt.Errorf("failed to start gateway server: %w", err)
-		}
-		log.Println("Gateway server started successfully")
-	}
-
-	// Start leader election in goroutine
-	log.Println("Starting leader election...")
-	go func() {
-		if err := c.leaderElection.Run(ctx); err != nil {
-			log.Printf("Leader election failed: %v", err)
-		}
-	}()
-	log.Println("Leader election started successfully")
-
-	// STEP 2: Start reconciliation loop
-	log.Println("Starting reconciliation loop...")
 
 	// Start periodic reconciliation timer
 	ticker := time.NewTicker(c.config.ReconcileInterval)
 	defer ticker.Stop()
 
-	log.Printf("Controller setup complete, starting reconciliation loop with interval: %s", c.config.ReconcileInterval)
+	log.Printf("Starting reconciliation loop with interval: %s", c.config.ReconcileInterval)
 
 	// Main reconciliation loop - implements DESIGN.md simplified flow
 	for {

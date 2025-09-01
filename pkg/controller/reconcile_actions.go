@@ -74,6 +74,11 @@ func (r *ReconcileActions) ExecuteReconcileActions(ctx context.Context) error {
 		}
 	}
 
+	// Step 2.5: Ensure target main pod is actually in MAIN role
+	if err := r.step2_5_EnsureTargetMainIsMain(ctx, targetMainPod); err != nil {
+		return fmt.Errorf("step 2.5 failed: %w", err)
+	}
+
 	// Step 3: Run SHOW REPLICAS to TargetMainPod to get registered replications
 	replicatList, err := r.step3_ShowReplicas(ctx, targetMainPod)
 	if err != nil {
@@ -142,15 +147,51 @@ func (r *ReconcileActions) step1_ListMemgraphPods(ctx context.Context) ([]v1.Pod
 	return pods.Items, nil
 }
 
+// step2_5_EnsureTargetMainIsMain ensures the target main pod is actually in MAIN role
+func (r *ReconcileActions) step2_5_EnsureTargetMainIsMain(ctx context.Context, targetMainPod *v1.Pod) error {
+	log.Printf("Step 2.5: Ensuring target main pod %s is in MAIN role...", targetMainPod.Name)
+	
+	// Check current replication role
+	endpoint := targetMainPod.Status.PodIP + ":7687"
+	roleResponse, err := r.controller.memgraphClient.QueryReplicationRoleWithRetry(ctx, endpoint)
+	if err != nil {
+		return fmt.Errorf("failed to query replication role of target main pod %s: %w", targetMainPod.Name, err)
+	}
+	currentRole := strings.TrimSpace(roleResponse.Role)
+	
+	if strings.ToLower(strings.TrimSpace(currentRole)) == "main" {
+		log.Printf("Step 2.5: Target main pod %s is already in MAIN role", targetMainPod.Name)
+		return nil
+	}
+	
+	log.Printf("Step 2.5: Target main pod %s is currently %s, promoting to MAIN...", targetMainPod.Name, currentRole)
+	
+	// Promote to MAIN role using IP address
+	if err := r.controller.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, endpoint); err != nil {
+		return fmt.Errorf("failed to promote target main pod %s to MAIN: %w", targetMainPod.Name, err)
+	}
+	
+	// Verify the promotion worked
+	newRoleResponse, err := r.controller.memgraphClient.QueryReplicationRoleWithRetry(ctx, endpoint)
+	if err != nil {
+		return fmt.Errorf("failed to verify promotion of target main pod %s: %w", targetMainPod.Name, err)
+	}
+	newRole := strings.TrimSpace(newRoleResponse.Role)
+	
+	if strings.ToLower(newRole) != "main" {
+		return fmt.Errorf("target main pod %s promotion failed - role is still %s", targetMainPod.Name, newRole)
+	}
+	
+	log.Printf("✅ Step 2.5: Successfully promoted target main pod %s to MAIN role", targetMainPod.Name)
+	return nil
+}
+
 // step3_ShowReplicas implements Step 3: Run SHOW REPLICAS to TargetMainPod
 func (r *ReconcileActions) step3_ShowReplicas(ctx context.Context, targetMainPod *v1.Pod) (map[string]ReplicaInfo, error) {
 	log.Printf("Step 3: Running SHOW REPLICAS on target main pod %s...", targetMainPod.Name)
 
-	// Get pod address for Memgraph connection
-	podAddress := fmt.Sprintf("%s.%s.%s.svc.cluster.local:7687",
-		targetMainPod.Name,
-		r.controller.config.StatefulSetName,
-		r.controller.config.Namespace)
+	// Get pod address for Memgraph connection using IP to avoid DNS refresh timing issues
+	podAddress := targetMainPod.Status.PodIP + ":7687"
 
 	replicasResponse, err := r.controller.memgraphClient.QueryReplicasWithRetry(ctx, podAddress)
 	if err != nil {
@@ -463,19 +504,15 @@ func (r *ReconcileActions) isDataInfoReady(dataInfo string) bool {
 }
 
 func (r *ReconcileActions) dropReplica(ctx context.Context, mainPod *v1.Pod, replicaName string) error {
-	mainBoltAddress := fmt.Sprintf("%s.%s.%s.svc.cluster.local:7687",
-		mainPod.Name,
-		r.controller.config.StatefulSetName,
-		r.controller.config.Namespace)
+	// Use IP address to avoid DNS refresh timing issues
+	mainBoltAddress := mainPod.Status.PodIP + ":7687"
 
 	return r.controller.memgraphClient.DropReplicaWithRetry(ctx, mainBoltAddress, replicaName)
 }
 
 func (r *ReconcileActions) ensurePodIsReplica(ctx context.Context, pod *v1.Pod) error {
-	podAddress := fmt.Sprintf("%s.%s.%s.svc.cluster.local:7687",
-		pod.Name,
-		r.controller.config.StatefulSetName,
-		r.controller.config.Namespace)
+	// Use IP address to avoid DNS refresh timing issues
+	podAddress := pod.Status.PodIP + ":7687"
 
 	// Check current replication role
 	roleResponse, err := r.controller.memgraphClient.QueryReplicationRoleWithRetry(ctx, podAddress)
@@ -496,10 +533,8 @@ func (r *ReconcileActions) ensurePodIsReplica(ctx context.Context, pod *v1.Pod) 
 }
 
 func (r *ReconcileActions) registerAsyncReplica(ctx context.Context, mainPod *v1.Pod, replicaPod *v1.Pod) error {
-	mainBoltAddress := fmt.Sprintf("%s.%s.%s.svc.cluster.local:7687",
-		mainPod.Name,
-		r.controller.config.StatefulSetName,
-		r.controller.config.Namespace)
+	// Use IP address to avoid DNS refresh timing issues
+	mainBoltAddress := mainPod.Status.PodIP + ":7687"
 
 	replicaName := r.getReplicaNameFromPod(replicaPod)
 	replicaAddress := fmt.Sprintf("%s:10000", replicaPod.Status.PodIP)
@@ -508,10 +543,8 @@ func (r *ReconcileActions) registerAsyncReplica(ctx context.Context, mainPod *v1
 }
 
 func (r *ReconcileActions) registerSyncReplica(ctx context.Context, mainPod *v1.Pod, replicaPod *v1.Pod) error {
-	mainBoltAddress := fmt.Sprintf("%s.%s.%s.svc.cluster.local:7687",
-		mainPod.Name,
-		r.controller.config.StatefulSetName,
-		r.controller.config.Namespace)
+	// Use IP address to avoid DNS refresh timing issues
+	mainBoltAddress := mainPod.Status.PodIP + ":7687"
 
 	replicaName := r.getReplicaNameFromPod(replicaPod)
 	replicaAddress := fmt.Sprintf("%s:10000", replicaPod.Status.PodIP)
@@ -561,10 +594,8 @@ func (r *ReconcileActions) performFailoverActions(ctx context.Context, podList [
 	
 	// DESIGN.md Failover Step 3: Promote TargetSyncReplica to MAIN
 	log.Printf("Failover Step 3: Promoting %s to MAIN...", targetSyncName)
-	syncReplicaAddress := fmt.Sprintf("%s.%s.%s.svc.cluster.local:7687",
-		targetSyncReplica.Name,
-		r.controller.config.StatefulSetName,
-		r.controller.config.Namespace)
+	// Use IP address to avoid DNS refresh timing issues
+	syncReplicaAddress := targetSyncReplica.Status.PodIP + ":7687"
 	
 	if err := r.controller.memgraphClient.SetReplicationRoleToMainWithRetry(ctx, syncReplicaAddress); err != nil {
 		return fmt.Errorf("failed to promote %s to MAIN: %w", targetSyncName, err)

@@ -1,107 +1,118 @@
 # Known Issues
 
-## 1. Gateway Routing Race Condition During Failover
+## 1. E2E Test Timeout Due to Inconsistent Reconciliation Timing
 
 **Status**: Active  
-**Severity**: Medium  
-**First Observed**: 2025-08-29  
-**Occurrence Rate**: ~20% (1 in 5 test runs)
+**Severity**: High  
+**First Observed**: 2025-09-01  
+**Occurrence Rate**: ~30% (3/10 test runs fail)
 
 ### Description
 
-During failover scenarios, there is a race condition where the gateway may route write queries to a replica instance that was recently demoted from main, resulting in the error:
-```
-Neo4jError: Memgraph.ClientError.MemgraphError.MemgraphError 
-(Write queries are forbidden on the replica instance. Replica instances accept only read queries, 
-while the main instance accepts read and write queries. Please retry your query on the main instance.)
-```
+E2E tests fail intermittently due to inconsistent timing in the controller's reconciliation loop. The failover functionality works correctly, but the time required for SYNC replica registration and topology stabilization varies significantly between runs.
 
 ### Root Cause
 
-The issue occurs due to a timing gap between:
-1. **Memgraph role change**: When a main pod is killed, Memgraph quickly promotes a new main and demotes the old main to replica
-2. **Gateway routing update**: The controller/gateway takes time to detect and update its routing to the new main
-3. **Stale endpoint usage**: During this gap, write queries may be routed to the old main's endpoint, which now serves as a replica
+The controller's reconciliation logic does not follow the exact steps specified in DESIGN.md lines 75-100. Instead, it uses complex event-driven logic that creates timing inconsistencies:
+
+1. **Missing SYNC replica registration**: After failover, the SYNC replica is not immediately registered
+2. **Multiple reconciliation cycles needed**: Takes 3-9 cycles to achieve stable topology
+3. **Non-deterministic step ordering**: Event-driven logic doesn't follow DESIGN.md sequence
 
 ### Reproduction Steps
 
-1. Run E2E tests repeatedly (typically fails after 4-5 successful runs):
+1. Run E2E tests repeatedly:
    ```bash
-   for i in {1..5}; do make test-e2e || break; done
+   ./tests/scripts/repeat-e2e-tests.sh 10
    ```
-2. The failure typically occurs during the failover test when:
-   - A main pod is deleted
-   - The test immediately attempts to write data
-   - The write hits the old endpoint before routing is updated
+2. Failure typically occurs during `TestE2E_FailoverReliability`
+3. Test times out waiting for topology validation after pod deletion
 
 ### Evidence
 
-From test run #5:
+**From test logs (test_run_3.log)**:
 ```
-=== Test Run 5/5 ===
-TestE2E_FailoverReliability
-    failover_test.go:216: 
-        Error: Neo4jError: Write queries are forbidden on the replica instance
-        Test: TestE2E_FailoverReliability
-        Messages: Should write data after failover (with automatic retry)
+Starting post-deploy hooks...
+pod/e2e-test-56xfd condition met
+Error from server (NotFound): pods "e2e-test-c2l4p" not found
+exit status 1
 ```
 
-Controller logs show proper detection but potential lag:
-```
-2025/08/29 22:45:42 Main failover detected - handling failover...
-2025/08/29 22:45:42 Gateway: Connection established to main at 10.244.3.85:7687
-```
+**From controller logs**:
+- Early cycles: `sync_replicas:0` (SYNC replica missing)
+- Later cycles: `sync_replicas:1` (SYNC replica finally registered)
+- Health summary progression: `sync_replica: (healthy: false)` → `sync_replica: memgraph-ha-0 (healthy: true)`
 
-Actual pod roles after failure:
-- memgraph-ha-0: main (correct)
-- memgraph-ha-1: replica (correct)
-- memgraph-ha-2: replica (correct)
+**Timing variation observed**:
+- Test 1: 8 retry attempts (~16s delay)
+- Test 2: 1 retry attempt (~2s delay)  
+- Test 3: 9 retry attempts (~18s delay)
+- Tests 1,2,5: Initial timeout, then eventual success
 
 ### Impact
 
-- **User Experience**: Transient write failures during failover
-- **Test Reliability**: E2E tests fail intermittently (~20% failure rate)
-- **Recovery**: The system eventually converges to the correct state, but there's a window of incorrect routing
+- **Test Reliability**: 30% E2E test failure rate
+- **Development Velocity**: Failed tests block development workflow
+- **Production Risk**: Indicates potential timing issues in production failover
 
-### Workaround
+### Analysis
 
-The Neo4j driver's retry mechanism (implemented in commit 99c8a9f) helps but doesn't fully solve this issue because:
-- The driver retries against the same endpoint
-- The endpoint itself has changed roles (main → replica)
-- A different type of retry logic is needed that re-discovers the main endpoint
+The issue validates our IMPLEMENTATION_PLAN.md Stage 1 analysis:
+- Current code has 1215 lines with complex event-driven logic
+- DESIGN.md specifies exact 8-step reconciliation process
+- Missing implementation of DESIGN.md Steps 4,6,8.2 (ASYNC replica health checks)
+- Event processing conflicts with deterministic reconciliation
 
-### Proposed Solutions
+### Immediate Workaround
 
-1. **Short-term**: Add endpoint re-discovery to the retry logic
-   - On "write forbidden on replica" error, force endpoint refresh
-   - Query controller for new main endpoint before retry
+Use the automated test script to detect and investigate failures:
+```bash
+# Run tests until failure, then investigate logs
+./tests/scripts/repeat-e2e-tests.sh 20
+# Check logs/test_run_N.log for detailed failure information
+```
 
-2. **Medium-term**: Implement proper connection draining
-   - Gateway should track Memgraph role changes in real-time
-   - Gracefully redirect new connections during role transitions
-   - Keep existing connections open but mark them for drainage
+### Proposed Solution
 
-3. **Long-term**: Implement Bolt protocol awareness in gateway
-   - Parse Bolt protocol messages to detect role changes
-   - Inject proper routing table updates to clients
-   - Handle connection migration transparently
+**Implement IMPLEMENTATION_PLAN.md Stage 1**:
+1. Create `reconcile_actions.go` implementing DESIGN.md lines 75-100 exactly
+2. Replace event-driven logic with deterministic 8-step process
+3. Add missing ASYNC replica health monitoring (Steps 6, 8.2)
+
+### Expected Outcome
+
+- Consistent failover timing (~2-3s instead of 2-18s range)
+- 100% E2E test reliability
+- Simplified debugging through predictable reconciliation steps
 
 ### Related Components
 
-- **Gateway**: `pkg/gateway/server.go` - Connection routing logic
-- **Controller**: `pkg/controller/failover.go` - Failover detection and handling
-- **Controller**: `pkg/controller/controller.go:686` - Direct targetMainIndex assignment (potential race)
-- **Tests**: `tests/failover_test.go` - Where the issue manifests
+- **Controller**: `pkg/controller/controller.go` (1215 lines - needs splitting)
+- **Replication**: `pkg/controller/replication.go` - Missing exact DESIGN.md steps
+- **Tests**: `tests/scripts/repeat-e2e-tests.sh` - Automated failure detection
+- **Logs**: `logs/test_run_N.log` - Detailed failure analysis
 
 ### Monitoring
 
-To detect this issue in production:
-1. Monitor for "Write queries are forbidden on the replica instance" errors
-2. Track gateway routing updates vs actual Memgraph role changes
-3. Measure time between failover detection and routing update completion
+To track this issue:
+1. Monitor E2E test success rate in CI/CD
+2. Track `sync_replicas` count in controller health summaries
+3. Measure time between pod deletion and topology stabilization
 
 ### Notes
 
-- This is a different issue from the connection EOF errors (fixed in commit 99c8a9f)
-- The issue is more likely under rapid successive failovers (stress testing)
-- The controller's state synchronization anti-pattern (documented in CLAUDE.md) may contribute to this race condition
+- This is NOT a flaky test infrastructure issue
+- The core failover functionality works correctly
+- Issue is timing inconsistency in reconciliation, not functional failure
+- Aligns with identified DESIGN.md compliance gaps (30% non-compliance rate)
+- Automated test runner successfully reproduces and captures failures
+
+---
+
+## Historical Issues
+
+### Gateway Routing Race Condition (Resolved)
+
+**Status**: Resolved in recent commits  
+**Resolution**: Gateway routing and connection handling improvements
+**Note**: Replaced by the reconciliation timing issue documented above

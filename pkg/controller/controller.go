@@ -272,53 +272,23 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 
 // Reconcile performs a full reconciliation cycle (simplified operational phase only)
 func (c *MemgraphController) Reconcile(ctx context.Context) error {
-	log.Println("Starting operational reconciliation cycle...")
+	log.Println("Starting DESIGN.md compliant reconciliation cycle...")
 
-	// Discover current cluster state (operational mode only)
-	err := c.cluster.RefreshClusterInfo(ctx, c.updateSyncReplicaInfo, c.detectMainFailover, c.handleMainFailover)
-	if err != nil {
-		return fmt.Errorf("failed to discover cluster state: %w", err)
+	// Use the new deterministic 8-step reconcile actions instead of complex event-driven logic
+	reconcileActions := NewReconcileActions(c, c.cluster)
+	if err := reconcileActions.ExecuteReconcileActions(ctx); err != nil {
+		return fmt.Errorf("DESIGN.md reconcile actions failed: %w", err)
 	}
 
-	// Update cached state for immediate event processing
+	// Update cached state after reconciliation
 	c.updateCachedState(c.cluster)
-
-	if len(c.cluster.Pods) == 0 {
-		log.Println("No Memgraph pods found in cluster")
-		return nil
-	}
-
-	log.Printf("Current cluster state discovered:")
-	log.Printf("  - Total pods: %d", len(c.cluster.Pods))
-	log.Printf("  - Current main: %s", c.cluster.CurrentMain)
-	log.Printf("  - Target main index: %d", c.cluster.getTargetMainIndex())
-
-	// Log pod states
-	for podName, podInfo := range c.cluster.Pods {
-		log.Printf("  - Pod %s: State=%s, MemgraphRole=%s, Replicas=%d",
-			podName, podInfo.State, podInfo.MemgraphRole, len(podInfo.Replicas))
-	}
-
-	// Check for main failover first
-	if c.detectMainFailover(c.cluster) {
-		log.Printf("Main failover detected - initiating failover procedure...")
-		if err := c.handleMainFailover(ctx, c.cluster); err != nil {
-			log.Printf("❌ Main failover failed: %v", err)
-			// Continue with topology enforcement to handle partial failures
-		}
-	}
-
-	// Configure replication if needed
-	if err := c.ConfigureReplication(ctx, c.cluster); err != nil {
-		return fmt.Errorf("failed to configure replication: %w", err)
-	}
 
 	// Sync pod labels with replication state
 	if err := c.SyncPodLabels(ctx, c.cluster); err != nil {
 		return fmt.Errorf("failed to sync pod labels: %w", err)
 	}
 
-	log.Println("Reconciliation cycle completed successfully")
+	log.Println("DESIGN.md compliant reconciliation cycle completed successfully")
 	return nil
 }
 

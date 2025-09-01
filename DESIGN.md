@@ -77,7 +77,7 @@ Ground Rules:
 
 1. Call kubernetes api to list all memgraph pods, along with their kubernetes status (ready or not). Define this list as `podList`
 
-2. If `TargetMainPod` is not ready, attempt to perform actions in section "Failover Actions".
+2. If `TargetMainPod` is not ready, attempt to perform actions in section "Failover Actions". Only continue if "Failover Actions" succeeded.
 
 3. Run `SHOW REPLICAS` to `TargetMainPod` to get registered replications. Define this list as `replicatList`.
 
@@ -97,6 +97,19 @@ Ground Rules:
 
    - If `data_info` of SYNC replica is not `ready`, log big error.
    - If `data_info` of ASYNC replica is not `ready`, log warning.
+
+### Failover Actions
+
+- Presumption: pod stauts of `TargetMainPod` is not ready.
+
+1. If pod status of `TargetSyncReplica` is also not ready, log error that this cluster is not recoverable and complete the failover as "failed".
+
+2. Gateway disconnects all existing connections.
+
+3. Promote `TargetSyncReplica` to MAIN.
+
+4. Flip `TargetMainPod` with `TargetSyncReplica`, so that original `TargetSyncReplica` is now the `TargetMainPod`
+
 
 
 ### Discover Cluster State

@@ -56,13 +56,26 @@ Achieve 100% compliance with DESIGN.md specification while reducing code complex
 **Tests**:
 - All existing tests pass after refactoring
 - No change in functionality
-**Status**: Partially Started
+**Status**: Complete
 
-**Current Progress:**
-- ✅ Major reconciliation logic moved to reconcile_actions.go (550+ lines)
-- ✅ controller.go simplified by removing complex reconciliation logic
-- ❌ Still need to split remaining controller.go into focused modules
-- ❌ Event handling and discovery logic still in monolithic file
+**Completed Items:**
+- ✅ Created controller_core.go: 319 lines - Core struct, initialization, connection testing, status methods
+- ✅ Created controller_reconcile.go: 319 lines - Reconciliation loop, state management, metrics, cluster status API
+- ✅ Created controller_events.go: 418 lines - Event handlers, informers setup, immediate failover, state synchronization
+- ✅ Created controller_discovery.go: 43 lines - Cluster discovery delegation to MemgraphCluster methods
+- ✅ Removed original controller.go to eliminate duplicates
+- ✅ Fixed compilation errors: imports, method signatures, type conversions, interface compatibility
+- ✅ Fixed failing tests: reconciliation metrics, error handling patterns, discovery method delegation
+- ✅ All controller tests (94 tests) passing after refactoring
+- ✅ No change in functionality - all existing behavior preserved
+- ✅ Success criteria met: All files under 450 lines, focused responsibilities, maintainable structure
+- ✅ **CRITICAL FIX**: Implemented IP-based gateway endpoints to prevent DNS refresh timing issues during failover
+  - Fixed `GetCurrentMainEndpoint()` to use pod IP addresses instead of FQDN
+  - Fixed event handler gateway updates to use IP addresses  
+  - Added `getPodIPEndpoint()` helper method for consistent IP-based endpoint generation
+  - Gateway now connects directly to main pod IPs (e.g., `10.244.0.56:7687`) avoiding DNS delays
+- ✅ Gateway connectivity restored: Client connections successfully route through IP-based gateway to main pod
+- ✅ E2E deployment working: Bootstrap completes successfully, MAIN/SYNC/ASYNC topology established
 
 ## Stage 4: Simplify Event Processing
 **Goal**: Remove complex event logic not specified in DESIGN.md

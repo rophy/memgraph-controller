@@ -211,21 +211,46 @@ func (r *ReconcileActions) step5_CheckSyncReplicaPodStatus(targetSyncReplica *v1
 func (r *ReconcileActions) step6_CheckAsyncReplicasDataInfo(ctx context.Context, targetMainPod *v1.Pod, replicatList map[string]ReplicaInfo) error {
 	log.Println("Step 6: Checking data_info for all ASYNC replicas...")
 
+	asyncReplicaCount := 0
+	healthyAsyncReplicas := 0
 	droppedCount := 0
+	
 	for replicaName, replica := range replicatList {
-		if replica.SyncMode == "async" && !r.isDataInfoReady(replica.DataInfo) {
-			log.Printf("Step 6: ASYNC replica %s data_info is not ready (%s), dropping replication...", 
-				replicaName, replica.DataInfo)
+		if replica.SyncMode == "async" {
+			asyncReplicaCount++
 			
-			if err := r.dropReplica(ctx, targetMainPod, replicaName); err != nil {
-				return fmt.Errorf("failed to drop ASYNC replica %s: %w", replicaName, err)
+			if r.isDataInfoReady(replica.DataInfo) {
+				healthyAsyncReplicas++
+				log.Printf("Step 6: ✅ ASYNC replica %s is healthy (data_info: %s)", 
+					replicaName, replica.DataInfo)
+			} else {
+				log.Printf("Step 6: ❌ ASYNC replica %s data_info is not ready (%s), dropping replication...", 
+					replicaName, replica.DataInfo)
+				
+				// Attempt to drop the unhealthy replica
+				if err := r.dropReplica(ctx, targetMainPod, replicaName); err != nil {
+					log.Printf("⚠️  WARNING: Failed to drop unhealthy ASYNC replica %s: %v", replicaName, err)
+					// Continue with other replicas rather than failing entire reconciliation
+				} else {
+					droppedCount++
+					log.Printf("Step 6: Successfully dropped unhealthy ASYNC replica %s", replicaName)
+				}
 			}
-			droppedCount++
-			log.Printf("Step 6: Successfully dropped ASYNC replica %s", replicaName)
 		}
 	}
-
-	log.Printf("Step 6 completed: Dropped %d unhealthy ASYNC replicas", droppedCount)
+	
+	log.Printf("Step 6 completed: ASYNC replicas status - %d total, %d healthy, %d dropped", 
+		asyncReplicaCount, healthyAsyncReplicas, droppedCount)
+		
+	// Log summary for monitoring
+	if asyncReplicaCount > 0 {
+		healthPercent := (healthyAsyncReplicas * 100) / asyncReplicaCount
+		if healthPercent < 100 {
+			log.Printf("⚠️  ASYNC replica health: %d%% (%d/%d healthy)", 
+				healthPercent, healthyAsyncReplicas, asyncReplicaCount)
+		}
+	}
+	
 	return nil
 }
 
@@ -310,26 +335,56 @@ func (r *ReconcileActions) step8_ValidateFinalResult(ctx context.Context, target
 		return fmt.Errorf("failed to get final replication state: %w", err)
 	}
 
-	// Check SYNC replica data_info
+	// Step 8.1: Check SYNC replica data_info (BIG ERROR if not ready)
 	syncCount := 0
+	healthySyncCount := 0
+	
+	// Step 8.2: Check ASYNC replica data_info (WARNING if not ready)
 	asyncCount := 0
-	for _, replica := range finalReplicas {
+	healthyAsyncCount := 0
+	unhealthyAsyncReplicas := []string{}
+	
+	for replicaName, replica := range finalReplicas {
 		if replica.SyncMode == "sync" {
 			syncCount++
 			if !r.isDataInfoReady(replica.DataInfo) {
-				log.Printf("🔴 BIG ERROR: SYNC replica data_info is not ready: %s", replica.DataInfo)
+				log.Printf("🔴 BIG ERROR: SYNC replica %s data_info is not ready: %s", 
+					replicaName, replica.DataInfo)
 			} else {
-				log.Printf("Step 8: SYNC replica data_info is ready")
+				healthySyncCount++
+				log.Printf("Step 8: ✅ SYNC replica %s data_info is ready", replicaName)
 			}
 		} else if replica.SyncMode == "async" {
 			asyncCount++
 			if !r.isDataInfoReady(replica.DataInfo) {
-				log.Printf("⚠️  WARNING: ASYNC replica data_info is not ready: %s", replica.DataInfo)
+				unhealthyAsyncReplicas = append(unhealthyAsyncReplicas, replicaName)
+				log.Printf("⚠️  WARNING: ASYNC replica %s data_info is not ready: %s", 
+					replicaName, replica.DataInfo)
+			} else {
+				healthyAsyncCount++
+				log.Printf("Step 8: ✅ ASYNC replica %s data_info is ready", replicaName)
 			}
 		}
 	}
+	
+	// Step 8.2: Enhanced ASYNC replica health reporting per DESIGN.md
+	if len(unhealthyAsyncReplicas) > 0 {
+		log.Printf("⚠️  Step 8.2 ASYNC Health Summary: %d unhealthy ASYNC replicas detected: %v", 
+			len(unhealthyAsyncReplicas), unhealthyAsyncReplicas)
+		log.Printf("⚠️  ASYNC replica health status: %d healthy, %d unhealthy out of %d total", 
+			healthyAsyncCount, len(unhealthyAsyncReplicas), asyncCount)
+			
+		// Log specific remediation advice
+		for _, replicaName := range unhealthyAsyncReplicas {
+			log.Printf("⚠️  Action needed: ASYNC replica %s requires investigation or will be re-registered next cycle", 
+				replicaName)
+		}
+	} else if asyncCount > 0 {
+		log.Printf("✅ Step 8.2: All %d ASYNC replicas are healthy", asyncCount)
+	}
 
-	log.Printf("Step 8 completed: Final state has %d SYNC replicas and %d ASYNC replicas", syncCount, asyncCount)
+	log.Printf("Step 8 completed: Final state has %d SYNC replicas (%d healthy) and %d ASYNC replicas (%d healthy)", 
+		syncCount, healthySyncCount, asyncCount, healthyAsyncCount)
 	return nil
 }
 
@@ -389,8 +444,22 @@ func (r *ReconcileActions) getReplicaNameFromPod(pod *v1.Pod) string {
 }
 
 func (r *ReconcileActions) isDataInfoReady(dataInfo string) bool {
-	// Check if data_info indicates ready state
-	return strings.Contains(dataInfo, `"ready"`) || strings.Contains(dataInfo, "ready")
+	// Handle empty or null data_info (not ready)
+	if dataInfo == "" || dataInfo == "{}" || dataInfo == "null" || dataInfo == "Null" {
+		return false
+	}
+	
+	// Check if data_info contains ready status
+	// Examples: {"memgraph":{"behind":0,"status":"ready","ts":123}}
+	hasReadyStatus := strings.Contains(dataInfo, `"ready"`) || strings.Contains(dataInfo, "'ready'")
+	
+	// Also check for error conditions that indicate not ready
+	hasErrorConditions := strings.Contains(dataInfo, `"error"`) || 
+		strings.Contains(dataInfo, `"failed"`) || 
+		strings.Contains(dataInfo, `"disconnected"`) ||
+		strings.Contains(dataInfo, `"timeout"`)
+	
+	return hasReadyStatus && !hasErrorConditions
 }
 
 func (r *ReconcileActions) dropReplica(ctx context.Context, mainPod *v1.Pod, replicaName string) error {

@@ -85,9 +85,9 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 		t.Fatal("DiscoverPods() returned nil cluster state")
 	}
 
-	// Should find 2 running pods, skip the pending one
-	if len(controller.cluster.MemgraphNodes) != 2 {
-		t.Errorf("Found %d pods, want 2", len(controller.cluster.MemgraphNodes))
+	// Should find all 3 pods (including pending one - filtering removed in refactoring)
+	if len(controller.cluster.MemgraphNodes) != 3 {
+		t.Errorf("Found %d pods, want 3", len(controller.cluster.MemgraphNodes))
 	}
 
 	// Check pod1

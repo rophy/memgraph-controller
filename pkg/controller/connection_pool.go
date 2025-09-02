@@ -84,15 +84,19 @@ func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) 
 	return driver, nil
 }
 
-func (cp *ConnectionPool) removeDriver(boltAddress string) {
+func (cp *ConnectionPool) removeDriver(boltAddress string) error {
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 
 	if driver, exists := cp.drivers[boltAddress]; exists {
-		driver.Close(context.Background())
+		err := driver.Close(context.Background())
+		if err != nil {
+			return fmt.Errorf("failed to close driver for %s: %w", boltAddress, err)
+		}
 		delete(cp.drivers, boltAddress)
 		log.Printf("Removed driver for %s", boltAddress)
 	}
+	return nil
 }
 
 // UpdatePodIP tracks pod IP changes and invalidates connections when IP changes
@@ -129,8 +133,8 @@ func (cp *ConnectionPool) InvalidatePodConnection(podName string) {
 }
 
 // InvalidateConnection invalidates a connection by bolt address
-func (cp *ConnectionPool) InvalidateConnection(boltAddress string) {
-	cp.removeDriver(boltAddress)
+func (cp *ConnectionPool) InvalidateConnection(boltAddress string) error {
+	return cp.removeDriver(boltAddress)
 }
 
 func (cp *ConnectionPool) Close(ctx context.Context) {

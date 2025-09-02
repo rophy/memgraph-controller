@@ -20,15 +20,11 @@ type BootstrapPhaseProvider func() bool
 
 // Server represents the gateway server that proxies Bolt protocol connections
 type Server struct {
-	config           *Config
-	listener         net.Listener
-	connections      *ConnectionTracker
-	mainProvider     MainEndpointProvider
+	config            *Config
+	listener          net.Listener
+	connections       *ConnectionTracker
+	mainProvider      MainEndpointProvider
 	bootstrapProvider BootstrapPhaseProvider
-
-	// Current main endpoint
-	currentMain string
-	mainMu      sync.RWMutex
 
 	// Server state
 	isRunning  int32 // atomic boolean
@@ -67,73 +63,29 @@ func NewServer(config *Config, mainProvider MainEndpointProvider, bootstrapProvi
 	logger := NewLogger(config.LogLevel, config.TraceEnabled)
 
 	return &Server{
-		config:           config,
-		connections:      NewConnectionTracker(config.MaxConnections),
-		mainProvider:     mainProvider,
+		config:            config,
+		connections:       NewConnectionTracker(config.MaxConnections),
+		mainProvider:      mainProvider,
 		bootstrapProvider: bootstrapProvider,
-		shutdownCh:       make(chan struct{}),
-		healthStatus:     "unknown",
-		rateLimiter:      rateLimiter,
-		logger:           logger,
+		shutdownCh:        make(chan struct{}),
+		healthStatus:      "unknown",
+		rateLimiter:       rateLimiter,
+		logger:            logger,
 	}
 }
 
-// SetCurrentMain updates the current main endpoint that connections should be proxied to
-func (s *Server) SetCurrentMain(endpoint string) {
-	s.mainMu.Lock()
-	defer s.mainMu.Unlock()
+// terminateAllConnections removed - unused method
 
-	if s.currentMain != endpoint {
-		oldMain := s.currentMain
-		s.currentMain = endpoint
-
-		if oldMain != "" {
-			// This is a failover event, terminate all existing connections
-			log.Printf("Gateway: Main failover detected %s -> %s, terminating all connections", oldMain, endpoint)
-			atomic.AddInt64(&s.failovers, 1)
-
-			// Terminate all existing connections to force clients to reconnect to new main
-			s.terminateAllConnections()
-		} else {
-			log.Printf("Gateway: Initial main endpoint set to %s", endpoint)
-		}
-	}
-}
-
-// terminateAllConnections terminates all active connections to force client reconnection
-func (s *Server) terminateAllConnections() {
-	activeConnections := s.connections.GetCount()
-	if activeConnections == 0 {
-		log.Println("Gateway: No active connections to terminate")
-		return
-	}
-
-	log.Printf("Gateway: Terminating %d active connections due to main failover", activeConnections)
-
-	// Get all active sessions and close them
-	sessions := s.connections.GetAllSessions()
-	terminatedCount := 0
-	for _, session := range sessions {
-		go func(s *ProxySession) {
-			s.Close()
-		}(session) // Close asynchronously to avoid blocking
-		terminatedCount++
-	}
-
-	log.Printf("Gateway: Initiated termination of %d connections", terminatedCount)
-
-	// Update health status to reflect failover state
-	s.healthMu.Lock()
-	s.healthStatus = "failover-in-progress"
-	s.lastHealthCheck = time.Now()
-	s.healthMu.Unlock()
-}
-
-// GetCurrentMain returns the current main endpoint
+// GetCurrentMain returns the current main endpoint (dynamically retrieved)
 func (s *Server) GetCurrentMain() string {
-	s.mainMu.RLock()
-	defer s.mainMu.RUnlock()
-	return s.currentMain
+	ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeout)
+	defer cancel()
+	
+	endpoint, err := s.mainProvider(ctx)
+	if err != nil {
+		return ""
+	}
+	return endpoint
 }
 
 // Start starts the gateway server and begins accepting connections
@@ -593,6 +545,29 @@ func (s *Server) periodicHealthCheck() {
 	}
 }
 
+// DisconnectAll disconnects all active connections
+func (s *Server) DisconnectAll() {
+	activeConnections := s.connections.GetCount()
+	if activeConnections == 0 {
+		log.Println("Gateway: No active connections to disconnect")
+		return
+	}
+
+	log.Printf("Gateway: Disconnecting all %d active connections...", activeConnections)
+
+	// Get all active sessions and close them
+	sessions := s.connections.GetAllSessions()
+	disconnectedCount := 0
+	for _, session := range sessions {
+		go func(s *ProxySession) {
+			s.Close()
+		}(session) // Close asynchronously to avoid blocking
+		disconnectedCount++
+	}
+
+	log.Printf("Gateway: Initiated disconnection of %d connections", disconnectedCount)
+}
+
 // GetStats returns current gateway statistics
 func (s *Server) GetStats() GatewayStats {
 	s.healthMu.RLock()
@@ -615,7 +590,6 @@ func (s *Server) GetStats() GatewayStats {
 		RateLimitRejections: atomic.LoadInt64(&s.rateLimitRejections),
 		Errors:              atomic.LoadInt64(&s.errors),
 		Failovers:           atomic.LoadInt64(&s.failovers),
-		CurrentMain:         s.GetCurrentMain(),
 		HealthStatus:        healthStatus,
 		LastHealthCheck:     lastHealthCheck,
 		TotalBytesSent:      totalBytesSent,
@@ -635,7 +609,6 @@ type GatewayStats struct {
 	RateLimitRejections int64            `json:"rateLimitRejections"`
 	Errors              int64            `json:"errors"`
 	Failovers           int64            `json:"failovers"`
-	CurrentMain         string           `json:"currentMain"`
 	HealthStatus        string           `json:"healthStatus"`
 	LastHealthCheck     string           `json:"lastHealthCheck"`
 	TotalBytesSent      int64            `json:"totalBytesSent"`

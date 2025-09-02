@@ -4,40 +4,6 @@ import (
 	"time"
 )
 
-type PodState int
-
-const (
-	INITIAL PodState = iota // Memgraph is MAIN with no replicas
-	MAIN                    // Memgraph role is MAIN with replicas
-	REPLICA                 // Memgraph role is REPLICA
-)
-
-
-func (ps PodState) String() string {
-	switch ps {
-	case INITIAL:
-		return "INITIAL"
-	case MAIN:
-		return "MAIN"
-	case REPLICA:
-		return "REPLICA"
-	default:
-		return "UNKNOWN"
-	}
-}
-
-
-
-type StateInconsistency struct {
-	PodName       string
-	MemgraphRole  string
-	CurrentState  PodState
-	ExpectedState PodState
-	ReplicaCount  int
-	Description   string
-}
-
-
 // MainSelectionMetrics tracks main selection decision making
 type MainSelectionMetrics struct {
 	Timestamp time.Time
@@ -50,7 +16,6 @@ type MainSelectionMetrics struct {
 	DecisionFactors      []string
 }
 
-
 // ReconciliationMetrics tracks reconciliation performance and behavior
 type ReconciliationMetrics struct {
 	TotalReconciliations      int64         `json:"total_reconciliations"`
@@ -61,4 +26,3 @@ type ReconciliationMetrics struct {
 	LastReconciliationReason  string        `json:"last_reconciliation_reason"`
 	LastReconciliationError   string        `json:"last_reconciliation_error,omitempty"`
 }
-

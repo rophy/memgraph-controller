@@ -62,12 +62,9 @@ func (g *GatewayAdapter) Stop(ctx context.Context) error {
 	return g.server.Stop(ctx)
 }
 
-// SetCurrentMain updates the current main endpoint
+// SetCurrentMain updates the current main endpoint (no-op with dynamic provider)
 func (g *GatewayAdapter) SetCurrentMain(endpoint string) {
-	if g.server == nil {
-		return // Gateway is disabled
-	}
-	g.server.SetCurrentMain(endpoint)
+	// No-op: Gateway now uses dynamic main provider
 }
 
 // GetCurrentMain returns the current main endpoint

@@ -37,7 +37,7 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 	node := NewMemgraphNode(pod, testClient)
 	node.MemgraphRole = "main"
 	node.Replicas = []string{"memgraph_1", "memgraph_2"}
-	node.State = MAIN
+	// // node.State = MAIN // State removed // State removed
 
 	// Test healthy pod conversion
 	status := convertMemgraphNodeToStatus(node, true)
@@ -46,8 +46,8 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 		t.Errorf("Expected name 'memgraph-0', got '%s'", status.Name)
 	}
 
-	if status.State != "MAIN" {
-		t.Errorf("Expected state 'MAIN', got '%s'", status.State)
+	if status.State != "unknown" { // State is now "unknown" since State field removed
+		t.Errorf("Expected state 'unknown', got '%s'", status.State)
 	}
 
 	if !status.Healthy {
@@ -106,7 +106,7 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 	
 	node := NewMemgraphNode(pod, testClient)
 	node.MemgraphRole = "replica"
-	node.State = REPLICA
+	// node.State = REPLICA // State removed
 	node.IsSyncReplica = true
 
 	// Test SYNC replica conversion
@@ -116,8 +116,8 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 		t.Errorf("Expected name 'memgraph-1', got '%s'", status.Name)
 	}
 
-	if status.State != "REPLICA" {
-		t.Errorf("Expected state 'REPLICA', got '%s'", status.State)
+	if status.State != "unknown" { // State is now "unknown" since State field removed
+		t.Errorf("Expected state 'unknown', got '%s'", status.State)
 	}
 
 	if !status.Healthy {
@@ -173,11 +173,11 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 
 	node1 := NewMemgraphNode(pod1, testClient)
 	node1.MemgraphRole = "main"
-	node1.State = MAIN
+	// node1.State = MAIN // State removed
 
 	node2 := NewMemgraphNode(pod2, testClient)
 	node2.MemgraphRole = "replica"
-	node2.State = REPLICA
+	// node2.State = REPLICA // State removed
 	node2.IsSyncReplica = true
 
 	clusterState.MemgraphNodes["memgraph-0"] = node1

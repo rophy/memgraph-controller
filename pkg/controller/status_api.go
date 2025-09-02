@@ -47,13 +47,14 @@ type StatusInconsistency struct {
 func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool) PodStatus {
 	var inconsistency *StatusInconsistency
 
-	// Check for state inconsistencies
-	if stateInc := node.DetectStateInconsistency(); stateInc != nil {
-		inconsistency = &StatusInconsistency{
-			Description:  stateInc.Description,
-			MemgraphRole: stateInc.MemgraphRole,
-		}
-	} else if !healthy {
+	// Check for state inconsistencies (TODO: implement state inconsistency detection)
+	// if stateInc := node.DetectStateInconsistency(); stateInc != nil {
+	//	inconsistency = &StatusInconsistency{
+	//		Description:  stateInc.Description,
+	//		MemgraphRole: stateInc.MemgraphRole,
+	//	}
+	// } else 
+	if !healthy {
 		// If pod is unhealthy and no inconsistency detected, create one for unreachable pod
 		memgraphRole := "unknown"
 		if node.MemgraphRole != "" {
@@ -72,7 +73,7 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool) PodStatus {
 
 	return PodStatus{
 		Name:               node.Name,
-		State:              node.State.String(),
+		State:              "unknown", // TODO: implement proper state
 		MemgraphRole:       node.MemgraphRole,
 		BoltAddress:        node.BoltAddress,
 		ReplicationAddress: node.GetReplicationAddress(),

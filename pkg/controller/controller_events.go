@@ -91,17 +91,18 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 		return
 	}
 
-	// Check for IP changes and update connection pool through cached cluster state
+	// Check for IP changes and update connection pool
 	if oldPod.Status.PodIP != newPod.Status.PodIP {
-		cachedState, _ := c.getCachedState()
-		if cachedState != nil {
-			cachedState.HandlePodIPChange(newPod.Name, oldPod.Status.PodIP, newPod.Status.PodIP)
+		if c.memgraphClient != nil && newPod.Status.PodIP != "" {
+			c.memgraphClient.connectionPool.UpdatePodIP(newPod.Name, newPod.Status.PodIP)
 		}
 	}
 
 	// IMMEDIATE ANALYSIS: Check for critical main pod health changes
 	if c.IsLeader() {
-		lastState, stateAge := c.getCachedState()
+		// Use current cluster state directly
+		lastState := c.cluster
+		stateAge := time.Duration(0) // Immediate state, not cached
 		// Get current main from target index to check if this is the main pod
 		targetMainIndex, err := c.GetTargetMainIndex(context.Background())
 		if err == nil {
@@ -120,10 +121,10 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 			}
 		}
 
-		// Log cached state age for debugging
+		// Log cluster state age for debugging
 		if lastState != nil {
-			log.Printf("🔍 Event analysis: cached state age=%v, currentMain from target index=%s, eventPod=%s",
-				time.Since(stateAge), c.config.GetPodName(targetMainIndex), newPod.Name)
+			log.Printf("🔍 Event analysis: cluster state age=%v, currentMain from target index=%s, eventPod=%s",
+				stateAge, c.config.GetPodName(targetMainIndex), newPod.Name)
 		}
 	}
 
@@ -139,10 +140,9 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 func (c *MemgraphController) onPodDelete(obj interface{}) {
 	pod := obj.(*v1.Pod)
 
-	// Invalidate connection for deleted pod through cached cluster state
-	cachedState, _ := c.getCachedState()
-	if cachedState != nil {
-		cachedState.InvalidatePodConnection(pod.Name)
+	// Invalidate connection for deleted pod through memgraph client connection pool
+	if c.memgraphClient != nil {
+		c.memgraphClient.connectionPool.InvalidatePodConnection(pod.Name)
 	}
 
 	// Check if the deleted pod is the current main - trigger IMMEDIATE failover
@@ -248,9 +248,8 @@ func (c *MemgraphController) onConfigMapDelete(obj interface{}) {
 func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 	log.Printf("🔄 Handling target main change to index %d", newTargetMainIndex)
 
-	// Immediately update cached state to reflect the change
-	cachedState, _ := c.getCachedState()
-	if cachedState != nil {
+	// Immediately update cluster state to reflect the change
+	if c.cluster != nil {
 		// Update gateway to point to new main using IP address
 		newMainName := c.config.GetPodName(newTargetMainIndex)
 
@@ -268,8 +267,7 @@ func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 			}
 		}
 
-		// Update cached state - no need to track CurrentMain anymore since we use GetTargetMainIndex
-		c.updateCachedState(cachedState)
+		// Update cluster state - no need to track CurrentMain anymore since we use GetTargetMainIndex
 	}
 
 	// Enqueue reconciliation to fully process the change
@@ -282,7 +280,7 @@ func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 			defer cancel()
 
-			if err := c.performLeaderReconciliation(ctx); err != nil {
+			if err := c.executeReconcileActions(ctx); err != nil {
 				log.Printf("❌ Failed immediate reconciliation after main change: %v", err)
 			} else {
 				log.Println("✅ Immediate reconciliation completed after main change")

@@ -46,9 +46,7 @@ type MemgraphController struct {
 	// Cluster operations
 	cluster *MemgraphCluster
 
-	// In-memory cluster state for immediate event processing
-	stateMutex       sync.RWMutex
-	stateLastUpdated time.Time
+	// Removed: In-memory cluster state for immediate event processing (obsolete)
 
 	// Controller loop state
 	isRunning   bool
@@ -87,7 +85,15 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 
 	// Initialize gateway server
 	gatewayAdapter := NewGatewayAdapter(config)
-	if err := gatewayAdapter.InitializeWithMainProvider(controller.GetCurrentMainEndpoint); err != nil {
+	// Create main endpoint provider that adapts from GetCurrentMainNode
+	mainEndpointProvider := func(ctx context.Context) (string, error) {
+		node, err := controller.GetCurrentMainNode(ctx)
+		if err != nil {
+			return "", err
+		}
+		return node.BoltAddress, nil
+	}
+	if err := gatewayAdapter.InitializeWithMainProvider(mainEndpointProvider); err != nil {
 		log.Printf("Failed to initialize gateway adapter: %v", err)
 	}
 	controller.gatewayServer = gatewayAdapter
@@ -182,22 +188,41 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 	return nil
 }
 
-// updateCachedState updates the in-memory cluster state
-func (c *MemgraphController) updateCachedState(cluster *MemgraphCluster) {
-	c.stateMutex.Lock()
-	defer c.stateMutex.Unlock()
-
-	// Deep copy the cluster state for thread safety
-	c.cluster = cluster
-	c.stateLastUpdated = time.Now()
+// getTargetMainNode returns the node that should be main based on TargetMainIndex
+func (c *MemgraphController) getTargetMainNode(ctx context.Context) (*MemgraphNode, error) {
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get target main index: %w", err)
+	}
+	podName := c.config.GetPodName(targetMainIndex)
+	node, exists := c.cluster.MemgraphNodes[podName]
+	if !exists {
+		return nil, fmt.Errorf("target main pod %s not found in cluster state", podName)
+	}
+	return node, nil
 }
 
-// getCachedState returns the current cached cluster state
-func (c *MemgraphController) getCachedState() (*MemgraphCluster, time.Time) {
-	c.stateMutex.RLock()
-	defer c.stateMutex.RUnlock()
-	return c.cluster, c.stateLastUpdated
+// getTargetSyncReplicaNode returns the node that should be sync replica (complement of main)
+func (c *MemgraphController) getTargetSyncReplicaNode(ctx context.Context) (*MemgraphNode, error) {
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get target main index: %w", err)
+	}
+	var targetSyncIndex int
+	if targetMainIndex == 0 {
+		targetSyncIndex = 1
+	} else {
+		targetSyncIndex = 0
+	}
+	podName := c.config.GetPodName(targetSyncIndex)
+	node, exists := c.cluster.MemgraphNodes[podName]
+	if !exists {
+		return nil, fmt.Errorf("target sync replica pod %s not found in cluster state", podName)
+	}
+	return node, nil
 }
+
+// updateCachedState removed - obsolete with new architecture
 
 // isPodBecomeUnhealthy checks if a pod transitioned from healthy to unhealthy
 func (c *MemgraphController) isPodBecomeUnhealthy(oldPod, newPod *v1.Pod) bool {
@@ -300,11 +325,11 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 	return nil
 }
 
-// GetCurrentMainEndpoint returns the current main endpoint for the gateway
-func (c *MemgraphController) GetCurrentMainEndpoint(ctx context.Context) (string, error) {
+// GetCurrentMainNode returns the current main MemgraphNode for the gateway
+func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphNode, error) {
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {
-		return "", fmt.Errorf("failed to get target main index: %w", err)
+		return nil, fmt.Errorf("failed to get target main index: %w", err)
 	}
 
 	podName := c.config.GetPodName(targetMainIndex)
@@ -312,16 +337,17 @@ func (c *MemgraphController) GetCurrentMainEndpoint(ctx context.Context) (string
 	// Get the actual pod IP instead of using FQDN to avoid DNS refresh timing issues
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
-		return "", fmt.Errorf("failed to get pod %s: %w", podName, err)
+		return nil, fmt.Errorf("failed to get pod %s: %w", podName, err)
 	}
 
 	if pod.Status.PodIP == "" {
-		return "", fmt.Errorf("pod %s has no IP address assigned", podName)
+		return nil, fmt.Errorf("pod %s has no IP address assigned", podName)
 	}
 
-	endpoint := fmt.Sprintf("%s:7687", pod.Status.PodIP)
-
-	return endpoint, nil
+	// Create a MemgraphNode instance with the required information for the gateway
+	mainNode := NewMemgraphNode(pod, c.memgraphClient)
+	
+	return mainNode, nil
 }
 
 // StartHTTPServer starts the HTTP server

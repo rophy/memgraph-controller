@@ -5,12 +5,30 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"sync"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 )
+
+// ReconcileEvent represents an event that triggers reconciliation
+type ReconcileEvent struct {
+	Type      string
+	Reason    string
+	PodName   string
+	Timestamp time.Time
+}
+
+// ReconcileQueue manages immediate reconciliation events
+type ReconcileQueue struct {
+	events    chan ReconcileEvent
+	dedup     map[string]time.Time // Deduplication map
+	dedupMu   sync.Mutex
+	ctx       context.Context
+	cancel    context.CancelFunc
+}
 
 // setupInformers sets up Kubernetes informers for event-driven reconciliation
 func (c *MemgraphController) setupInformers() {
@@ -78,7 +96,7 @@ func (c *MemgraphController) onPodAdd(obj interface{}) {
 	if !c.config.IsMemgraphPod(pod.Name) {
 		return // Ignore unrelated pods
 	}
-	c.enqueuePodEvent("pod-added")
+	c.enqueueReconcileEvent("pod-add", "pod-added", pod.Name)
 }
 
 // onPodUpdate handles pod update events with immediate processing for critical changes
@@ -133,7 +151,7 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 		return // Skip unnecessary reconciliation
 	}
 
-	c.enqueuePodEvent("pod-state-changed")
+	c.enqueueReconcileEvent("pod-update", "pod-state-changed", newPod.Name)
 }
 
 // onPodDelete handles pod deletion events
@@ -167,7 +185,7 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 	}
 
 	// Still enqueue for reconciliation cleanup
-	c.enqueuePodEvent("pod-deleted")
+	c.enqueueReconcileEvent("pod-delete", "pod-deleted", pod.Name)
 }
 
 // onConfigMapAdd handles ConfigMap creation events
@@ -256,7 +274,8 @@ func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 	}
 
 	// Enqueue reconciliation to fully process the change
-	c.enqueuePodEvent("target-main-changed")
+	newMainName := c.config.GetPodName(newTargetMainIndex)
+	c.enqueueReconcileEvent("target-main-change", "target-main-changed", newMainName)
 
 	// CRITICAL: Trigger immediate reconciliation for main changes
 	if c.IsLeader() {
@@ -274,9 +293,22 @@ func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 	}
 }
 
-// enqueuePodEvent signals the controller that reconciliation should occur
-func (c *MemgraphController) enqueuePodEvent(reason string) {
-	log.Printf("Pod event detected: %s (reconciliation will occur on next timer cycle)", reason)
+// enqueueReconcileEvent adds an event to the reconciliation queue for immediate processing
+func (c *MemgraphController) enqueueReconcileEvent(eventType, reason, podName string) {
+	event := ReconcileEvent{
+		Type:      eventType,
+		Reason:    reason,
+		PodName:   podName,
+		Timestamp: time.Now(),
+	}
+	
+	// Non-blocking enqueue with overflow protection
+	select {
+	case c.reconcileQueue.events <- event:
+		log.Printf("🚀 Enqueued immediate reconcile event: %s (%s)", reason, eventType)
+	default:
+		log.Printf("⚠️  Reconcile queue full - dropping event: %s", reason)
+	}
 }
 
 // shouldReconcile determines if a pod update should trigger reconciliation

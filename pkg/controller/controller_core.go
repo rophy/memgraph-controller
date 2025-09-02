@@ -28,6 +28,7 @@ func generateStateConfigMapName() string {
 	return fmt.Sprintf("%s-controller-state", releaseName)
 }
 
+
 type MemgraphController struct {
 	clientset      kubernetes.Interface
 	config         *Config
@@ -44,6 +45,9 @@ type MemgraphController struct {
 	targetMainIndex int
 	configMapName   string
 	targetMutex     sync.RWMutex
+
+	// Event-driven reconciliation
+	reconcileQueue *ReconcileQueue
 
 	// Cluster operations
 	cluster *MemgraphCluster
@@ -65,7 +69,6 @@ type MemgraphController struct {
 	metrics *ReconciliationMetrics
 }
 
-
 func NewMemgraphController(clientset kubernetes.Interface, config *Config) *MemgraphController {
 	controller := &MemgraphController{
 		clientset:      clientset,
@@ -80,12 +83,12 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	gatewayConfig := gateway.LoadGatewayConfig()
 	gatewayConfig.Enabled = true
 	gatewayConfig.BindAddress = config.GatewayBindAddress
-	
+
 	// Create bootstrap phase provider
 	bootstrapProvider := func() bool {
 		return !controller.isLeader || controller.targetMainIndex == -1
 	}
-	
+
 	// Create main node provider that converts controller.MemgraphNode to gateway.MemgraphNode
 	mainNodeProvider := func(ctx context.Context) (*gateway.MemgraphNode, error) {
 		controllerNode, err := controller.GetCurrentMainNode(ctx)
@@ -101,7 +104,7 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 			Pod:         controllerNode.Pod,
 		}, nil
 	}
-	
+
 	controller.gatewayServer = gateway.NewServer(gatewayConfig, mainNodeProvider, bootstrapProvider)
 
 	// Initialize leader election
@@ -115,6 +118,9 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	// Initialize cluster operations
 	controller.cluster = NewMemgraphCluster(clientset, config, controller.memgraphClient)
 
+	// Initialize event-driven reconciliation queue
+	controller.reconcileQueue = controller.newReconcileQueue()
+
 	// Initialize controller state
 	controller.maxFailures = 5
 	controller.stopCh = make(chan struct{})
@@ -126,6 +132,79 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	controller.setupInformers()
 
 	return controller
+}
+
+// newReconcileQueue creates and starts a new reconcile event queue
+func (c *MemgraphController) newReconcileQueue() *ReconcileQueue {
+	ctx, cancel := context.WithCancel(context.Background())
+	
+	rq := &ReconcileQueue{
+		events: make(chan ReconcileEvent, 100), // Buffered channel for burst events
+		dedup:  make(map[string]time.Time),
+		ctx:    ctx,
+		cancel: cancel,
+	}
+	
+	// Start the queue processor goroutine
+	go c.processReconcileQueue(rq)
+	
+	return rq
+}
+
+
+// processReconcileQueue processes events from the reconciliation queue
+func (c *MemgraphController) processReconcileQueue(rq *ReconcileQueue) {
+	for {
+		select {
+		case event := <-rq.events:
+			c.handleReconcileEvent(event)
+		case <-rq.ctx.Done():
+			log.Println("Reconcile queue processor stopped")
+			return
+		}
+	}
+}
+
+// handleReconcileEvent processes a single reconciliation event with deduplication
+func (c *MemgraphController) handleReconcileEvent(event ReconcileEvent) {
+	// Only leaders process reconciliation events
+	if !c.IsLeader() {
+		log.Printf("Non-leader ignoring reconcile event: %s", event.Reason)
+		return
+	}
+	
+	// Deduplication: ignore events for same pod within 2 seconds
+	dedupKey := fmt.Sprintf("%s:%s", event.Type, event.PodName)
+	
+	rq := c.reconcileQueue
+	rq.dedupMu.Lock()
+	lastEventTime, exists := rq.dedup[dedupKey]
+	if exists && time.Since(lastEventTime) < 2*time.Second {
+		rq.dedupMu.Unlock()
+		log.Printf("Deduplicating reconcile event: %s (within 2s)", event.Reason)
+		return
+	}
+	rq.dedup[dedupKey] = event.Timestamp
+	rq.dedupMu.Unlock()
+	
+	// Process the event immediately
+	log.Printf("🔄 Processing immediate reconcile event: %s", event.Reason)
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	
+	if err := c.executeReconcileActions(ctx); err != nil {
+		log.Printf("❌ Failed immediate reconciliation for event %s: %v", event.Reason, err)
+	} else {
+		log.Printf("✅ Completed immediate reconciliation for event: %s", event.Reason)
+	}
+}
+
+// stopReconcileQueue stops the reconcile queue processor
+func (c *MemgraphController) stopReconcileQueue() {
+	if c.reconcileQueue != nil {
+		c.reconcileQueue.cancel()
+	}
 }
 
 // GetTargetMainIndex returns the target main index from ConfigMap or error if not available
@@ -141,17 +220,17 @@ func (c *MemgraphController) GetTargetMainIndex(ctx context.Context) (int, error
 	// Load state from ConfigMap
 	configMap, err := c.clientset.CoreV1().ConfigMaps(c.config.Namespace).Get(ctx, c.configMapName, metav1.GetOptions{})
 	if err != nil {
-		return 0, fmt.Errorf("ConfigMap not available: %w", err)
+		return -1, fmt.Errorf("ConfigMap not available: %w", err)
 	}
 
 	targetMainIndexStr, exists := configMap.Data["targetMainIndex"]
 	if !exists {
-		return 0, fmt.Errorf("targetMainIndex not found in ConfigMap")
+		return -1, fmt.Errorf("targetMainIndex not found in ConfigMap")
 	}
 
 	var targetMainIndex int
 	if _, err := fmt.Sscanf(targetMainIndexStr, "%d", &targetMainIndex); err != nil {
-		return 0, fmt.Errorf("invalid targetMainIndex format: %w", err)
+		return -1, fmt.Errorf("invalid targetMainIndex format: %w", err)
 	}
 
 	c.targetMainIndex = targetMainIndex
@@ -352,7 +431,7 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 
 	// Create a MemgraphNode instance with the required information for the gateway
 	mainNode := NewMemgraphNode(pod, c.memgraphClient)
-	
+
 	return mainNode, nil
 }
 
@@ -425,12 +504,14 @@ func (c *MemgraphController) stop() {
 		close(c.stopCh)
 	}
 
+	// Stop reconcile queue
+	c.stopReconcileQueue()
+
 	// Gateway cleanup handled by process termination
 	log.Println("Gateway: Cleanup will be handled by process termination")
 
 	log.Println("Memgraph Controller stopped")
 }
-
 
 // GetControllerStatus returns the current status of the controller
 func (c *MemgraphController) GetControllerStatus() map[string]interface{} {

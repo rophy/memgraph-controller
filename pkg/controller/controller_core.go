@@ -76,35 +76,33 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	// Initialize HTTP server
 	controller.httpServer = NewHTTPServer(controller, config)
 
-	// Initialize gateway server directly
-	if config.GatewayEnabled {
-		gatewayConfig := gateway.LoadGatewayConfig()
-		gatewayConfig.Enabled = config.GatewayEnabled
-		gatewayConfig.BindAddress = config.GatewayBindAddress
-		
-		// Create bootstrap phase provider
-		bootstrapProvider := func() bool {
-			return !controller.isLeader || controller.targetMainIndex == -1
-		}
-		
-		// Create main node provider that converts controller.MemgraphNode to gateway.MemgraphNode
-		mainNodeProvider := func(ctx context.Context) (*gateway.MemgraphNode, error) {
-			controllerNode, err := controller.GetCurrentMainNode(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if controllerNode == nil {
-				return nil, fmt.Errorf("no main node available")
-			}
-			return &gateway.MemgraphNode{
-				Name:        controllerNode.Name,
-				BoltAddress: controllerNode.BoltAddress,
-				Pod:         controllerNode.Pod,
-			}, nil
-		}
-		
-		controller.gatewayServer = gateway.NewServer(gatewayConfig, mainNodeProvider, bootstrapProvider)
+	// Initialize gateway server (always enabled)
+	gatewayConfig := gateway.LoadGatewayConfig()
+	gatewayConfig.Enabled = true
+	gatewayConfig.BindAddress = config.GatewayBindAddress
+	
+	// Create bootstrap phase provider
+	bootstrapProvider := func() bool {
+		return !controller.isLeader || controller.targetMainIndex == -1
 	}
+	
+	// Create main node provider that converts controller.MemgraphNode to gateway.MemgraphNode
+	mainNodeProvider := func(ctx context.Context) (*gateway.MemgraphNode, error) {
+		controllerNode, err := controller.GetCurrentMainNode(ctx)
+		if err != nil {
+			return nil, err
+		}
+		if controllerNode == nil {
+			return nil, fmt.Errorf("no main node available")
+		}
+		return &gateway.MemgraphNode{
+			Name:        controllerNode.Name,
+			BoltAddress: controllerNode.BoltAddress,
+			Pod:         controllerNode.Pod,
+		}, nil
+	}
+	
+	controller.gatewayServer = gateway.NewServer(gatewayConfig, mainNodeProvider, bootstrapProvider)
 
 	// Initialize leader election
 	controller.leaderElection = NewLeaderElection(clientset, config)
@@ -393,17 +391,12 @@ func (c *MemgraphController) StopInformers() {
 
 // StartGatewayServer starts the gateway server
 func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
-	if c.gatewayServer != nil {
-		return c.gatewayServer.Start(ctx)
-	}
-	return nil
+	return c.gatewayServer.Start(ctx)
 }
 
-// StopGatewayServer stops the gateway server
+// StopGatewayServer stops the gateway server (no-op - process termination handles cleanup)
 func (c *MemgraphController) StopGatewayServer(ctx context.Context) error {
-	if c.gatewayServer != nil {
-		return c.gatewayServer.Stop(ctx)
-	}
+	log.Println("Gateway: No explicit shutdown needed - process termination handles cleanup")
 	return nil
 }
 
@@ -432,14 +425,8 @@ func (c *MemgraphController) stop() {
 		close(c.stopCh)
 	}
 
-	// Stop gateway server
-	if c.gatewayServer != nil {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		if err := c.gatewayServer.Stop(ctx); err != nil {
-			log.Printf("Error stopping gateway server: %v", err)
-		}
-	}
+	// Gateway cleanup handled by process termination
+	log.Println("Gateway: Cleanup will be handled by process termination")
 
 	log.Println("Memgraph Controller stopped")
 }

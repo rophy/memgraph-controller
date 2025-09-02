@@ -248,11 +248,9 @@ func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 		// Update gateway to point to new main using IP address
 		newMainName := c.config.GetPodName(newTargetMainIndex)
 
-		if c.gatewayServer != nil {
-			// Gateway will automatically route to new main via MainNodeProvider
-			// No manual endpoint update needed with dynamic providers
-			log.Printf("🔄 Gateway will route to new main pod: %s", newMainName)
-		}
+		// Gateway will automatically route to new main via MainNodeProvider
+		// No manual endpoint update needed with dynamic providers
+		log.Printf("🔄 Gateway will route to new main pod: %s", newMainName)
 
 		// Update cluster state - no need to track CurrentMain anymore since we use GetTargetMainIndex
 	}
@@ -355,11 +353,9 @@ func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
 	// Update gateway immediately to point to new main using IP address
 	newMainName := c.config.GetPodName(newMainIndex)
 
-	if c.gatewayServer != nil {
-		// Gateway will automatically route to new main via MainNodeProvider
-		// No manual endpoint update needed with dynamic providers
-		log.Printf("✅ Gateway will route to new main pod: %s", newMainName)
-	}
+	// Gateway will automatically route to new main via MainNodeProvider
+	// No manual endpoint update needed with dynamic providers
+	log.Printf("✅ Gateway will route to new main pod: %s", newMainName)
 
 	log.Printf("✅ Immediate failover completed: %s -> %s", deletedPodName, newMainName)
 }

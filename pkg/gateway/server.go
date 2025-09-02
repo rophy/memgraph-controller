@@ -11,11 +11,34 @@ import (
 	"sync/atomic"
 	"time"
 
-	"memgraph-controller/pkg/controller"
+	v1 "k8s.io/api/core/v1"
 )
 
+// MemgraphNode represents a Memgraph node with pod information
+type MemgraphNode struct {
+	Name        string
+	BoltAddress string
+	Pod         *v1.Pod
+}
+
+// IsReady checks if the pod is ready
+func (node *MemgraphNode) IsReady() bool {
+	if node.Pod == nil {
+		return false
+	}
+	if node.Pod.Status.Phase != v1.PodRunning {
+		return false
+	}
+	for _, condition := range node.Pod.Status.Conditions {
+		if condition.Type == v1.PodReady {
+			return condition.Status == v1.ConditionTrue
+		}
+	}
+	return false
+}
+
 // MainNodeProvider is a function that returns the current main node
-type MainNodeProvider func(ctx context.Context) (*controller.MemgraphNode, error)
+type MainNodeProvider func(ctx context.Context) (*MemgraphNode, error)
 
 // BootstrapPhaseProvider is a function that returns true if gateway should reject connections (bootstrap phase)
 type BootstrapPhaseProvider func() bool
@@ -87,7 +110,7 @@ func (s *Server) GetCurrentMain() string {
 	if err != nil || mainNode == nil {
 		return ""
 	}
-	return mainNode.GetBoltAddress()
+	return mainNode.BoltAddress
 }
 
 // Start starts the gateway server and begins accepting connections
@@ -155,51 +178,6 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-// Stop gracefully shuts down the gateway server
-func (s *Server) Stop(ctx context.Context) error {
-	if !s.config.Enabled {
-		return nil // Nothing to stop if disabled
-	}
-
-	if !atomic.CompareAndSwapInt32(&s.isRunning, 1, 0) {
-		return nil // Already stopped
-	}
-
-	log.Println("Gateway: Shutting down server...")
-
-	// Signal shutdown
-	close(s.shutdownCh)
-
-	// Close listener to stop accepting new connections
-	if s.listener != nil {
-		if err := s.listener.Close(); err != nil {
-			log.Printf("Gateway: Error closing listener: %v", err)
-		}
-	}
-
-	// Close all active connections
-	s.connections.CloseAll()
-
-	// Wait for accept goroutine to finish
-	done := make(chan struct{})
-	go func() {
-		s.wg.Wait()
-		close(done)
-	}()
-
-	// Clean up rate limiter
-	s.rateLimiter.Close()
-
-	// Wait for graceful shutdown or timeout
-	select {
-	case <-done:
-		s.logger.Info("Gateway server shutdown complete")
-		return nil
-	case <-ctx.Done():
-		s.logger.Warn("Gateway shutdown timeout, forcing termination")
-		return ctx.Err()
-	}
-}
 
 // acceptConnections runs the main accept loop for incoming connections
 func (s *Server) acceptConnections() {
@@ -319,7 +297,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	if !mainNode.IsReady() {
 		s.logger.LogConnectionEvent("rejected-main-not-ready", clientAddr, map[string]interface{}{
 			"client_ip": clientIP,
-			"main_pod":  mainNode.GetName(),
+			"main_pod":  mainNode.Name,
 			"reason":    "main-pod-not-ready",
 		})
 		atomic.AddInt64(&s.rejectedConnections, 1)
@@ -327,7 +305,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	}
 
 	// Connect to main with timeout
-	mainEndpoint := mainNode.GetBoltAddress()
+	mainEndpoint := mainNode.BoltAddress
 	backendConn, err := net.DialTimeout("tcp", mainEndpoint, s.config.ConnectionTimeout)
 	if err != nil {
 		s.logger.Error("Failed to connect to main", map[string]interface{}{
@@ -458,12 +436,12 @@ func (s *Server) CheckHealth(ctx context.Context) string {
 
 	// Check if main pod is ready
 	if !mainNode.IsReady() {
-		s.healthStatus = fmt.Sprintf("main-pod-not-ready: %s", mainNode.GetName())
+		s.healthStatus = fmt.Sprintf("main-pod-not-ready: %s", mainNode.Name)
 		return s.healthStatus
 	}
 
 	// Quick connectivity test to main
-	endpoint := mainNode.GetBoltAddress()
+	endpoint := mainNode.BoltAddress
 	conn, err := net.DialTimeout("tcp", endpoint, s.config.ConnectionTimeout)
 	if err != nil {
 		s.healthStatus = fmt.Sprintf("main-unreachable: %s (%v)", endpoint, err)
@@ -484,7 +462,7 @@ func (s *Server) CheckHealth(ctx context.Context) string {
 }
 
 // getMainNodeWithRetry attempts to get main node with retries for edge cases
-func (s *Server) getMainNodeWithRetry(maxRetries int) (MainNode, error) {
+func (s *Server) getMainNodeWithRetry(maxRetries int) (*MemgraphNode, error) {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeout)
 

@@ -18,7 +18,6 @@ type Config struct {
 	StatefulSetName   string
 
 	// Gateway configuration
-	GatewayEnabled     bool
 	GatewayBindAddress string
 }
 
@@ -37,8 +36,7 @@ func LoadConfig() *Config {
 		HTTPPort:          getEnvOrDefault("HTTP_PORT", "8080"),
 		StatefulSetName:   os.Getenv("STATEFULSET_NAME"),
 
-		// Gateway configuration
-		GatewayEnabled:     getEnvOrDefaultBool("GATEWAY_ENABLED", false),
+		// Gateway configuration (always enabled)
 		GatewayBindAddress: getEnvOrDefault("GATEWAY_BIND_ADDRESS", "0.0.0.0:7687"),
 	}
 }
@@ -50,14 +48,6 @@ func getEnvOrDefault(key, defaultValue string) string {
 	return defaultValue
 }
 
-func getEnvOrDefaultBool(key string, defaultValue bool) bool {
-	if value := os.Getenv(key); value != "" {
-		if parsed, err := strconv.ParseBool(value); err == nil {
-			return parsed
-		}
-	}
-	return defaultValue
-}
 
 // IsMemgraphPod checks if a given pod name belongs to the Memgraph StatefulSet
 func (c *Config) IsMemgraphPod(podName string) bool {

@@ -338,10 +338,8 @@ func (c *MemgraphController) performFailover(ctx context.Context) error {
 	}
 
 	// Gateway disconnects all existing connections - TODO: add to interface
-	if c.gatewayServer != nil {
-		// c.gatewayServer.DisconnectAll()
-		log.Println("✅ Gateway connection handling delegated")
-	}
+	// c.gatewayServer.DisconnectAll()
+	log.Println("✅ Gateway connection handling delegated")
 
 	// Promote sync replica to main
 	if err := syncReplicaNode.SetToMainRole(ctx); err != nil {

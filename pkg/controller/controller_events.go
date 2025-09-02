@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"log"
 	"strconv"
 	"time"
@@ -110,13 +109,12 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 			if currentMain == newPod.Name {
 				// This is the current main pod - check for immediate health issues
 				if c.isPodBecomeUnhealthy(oldPod, newPod) {
-					log.Printf("🚨 IMMEDIATE EVENT: Main pod %s became unhealthy, triggering immediate failover", newPod.Name)
+					log.Printf("🚨 IMMEDIATE EVENT: Main pod %s became unhealthy, triggering failover check", newPod.Name)
 
-					// Trigger immediate failover in background
-					go c.handleImmediateFailover(newPod.Name)
+					// Queue failover check event
+					c.enqueueFailoverCheckEvent("pod-update", "main-pod-unhealthy", newPod.Name)
 
-					// Don't queue regular reconciliation - immediate action taken
-					return
+					// Still queue regular reconciliation for other updates
 				}
 			}
 		}
@@ -156,14 +154,10 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 	}
 
 	if currentMain != "" && pod.Name == currentMain {
-		log.Printf("🚨 MAIN POD DELETED: %s - triggering IMMEDIATE failover", pod.Name)
+		log.Printf("🚨 MAIN POD DELETED: %s - triggering failover check", pod.Name)
 
-		// Only leader should handle failover
-		if c.IsLeader() {
-			go c.handleImmediateFailover(pod.Name)
-		} else {
-			log.Printf("Non-leader detected main deletion - leader will handle failover")
-		}
+		// Queue failover check event - only processed by leader
+		c.enqueueFailoverCheckEvent("pod-delete", "main-pod-deleted", pod.Name)
 	}
 
 	// Still enqueue for reconciliation cleanup
@@ -316,43 +310,3 @@ func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, newTarge
 	return c.SetTargetMainIndex(ctx, newTargetIndex)
 }
 
-// handleImmediateFailover performs immediate failover when main pod fails
-func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
-	log.Printf("🚨 Starting immediate failover for deleted main pod: %s", deletedPodName)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
-	defer cancel()
-
-	// Parse pod index to determine next main
-	podIndex := c.config.ExtractPodIndex(deletedPodName)
-	if podIndex < 0 {
-		log.Printf("❌ Could not parse pod index from %s", deletedPodName)
-		return
-	}
-
-	// Select next available pod as main (pod-1 if pod-0 failed, pod-0 if pod-1 failed)
-	var newMainIndex int
-	if podIndex == 0 {
-		newMainIndex = 1 // Failover to pod-1
-	} else {
-		newMainIndex = 0 // Failover to pod-0
-	}
-
-	log.Printf("🔄 Failing over from pod-%d to pod-%d", podIndex, newMainIndex)
-
-	// Update state to reflect the new main
-	err := c.updateTargetMainIndex(ctx, newMainIndex, fmt.Sprintf("immediate-failover-from-%s", deletedPodName))
-	if err != nil {
-		log.Printf("❌ Failed to update target main index during immediate failover: %v", err)
-		return
-	}
-
-	// Update gateway immediately to point to new main using IP address
-	newMainName := c.config.GetPodName(newMainIndex)
-
-	// Gateway will automatically route to new main via MainNodeProvider
-	// No manual endpoint update needed with dynamic providers
-	log.Printf("✅ Gateway will route to new main pod: %s", newMainName)
-
-	log.Printf("✅ Immediate failover completed: %s -> %s", deletedPodName, newMainName)
-}

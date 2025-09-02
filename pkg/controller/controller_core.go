@@ -47,7 +47,8 @@ type MemgraphController struct {
 	targetMutex     sync.RWMutex
 
 	// Event-driven reconciliation
-	reconcileQueue *ReconcileQueue
+	reconcileQueue     *ReconcileQueue
+	failoverCheckQueue *FailoverCheckQueue
 
 	// Cluster operations
 	cluster *MemgraphCluster
@@ -120,6 +121,7 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 
 	// Initialize event-driven reconciliation queue
 	controller.reconcileQueue = controller.newReconcileQueue()
+	controller.failoverCheckQueue = controller.newFailoverCheckQueue()
 
 	// Initialize controller state
 	controller.maxFailures = 5
@@ -433,6 +435,9 @@ func (c *MemgraphController) stop() {
 
 	// Stop reconcile queue
 	c.stopReconcileQueue()
+	
+	// Stop failover check queue
+	c.stopFailoverCheckQueue()
 
 	// Gateway cleanup handled by process termination
 	log.Println("Gateway: Cleanup will be handled by process termination")

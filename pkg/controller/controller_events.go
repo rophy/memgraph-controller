@@ -181,13 +181,8 @@ func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
 
 	log.Printf("🔄 ConfigMap added: %s", configMap.Name)
 
-	// Update gateway server phase based on ConfigMap presence
-	// If ConfigMap exists, bootstrap should be complete
-	if c.gatewayServer != nil && c.gatewayServer.IsBootstrapPhase() {
-		log.Println("✅ Gateway transitioned to operational phase (ConfigMap created, bootstrap complete)")
-		c.gatewayServer.SetBootstrapPhase(false)
-		log.Println("=== GATEWAY OPERATIONAL PHASE: ACCEPTING client connections ===")
-	}
+	// Gateway will automatically detect bootstrap phase via bootstrap provider
+	// No manual phase transitions needed with dynamic providers
 
 	// Update our cached state if we're not the leader (leaders maintain state directly)
 	// State loading now handled via GetTargetMainIndex() calls
@@ -254,17 +249,9 @@ func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 		newMainName := c.config.GetPodName(newTargetMainIndex)
 
 		if c.gatewayServer != nil {
-			// Get IP-based endpoint to avoid DNS refresh timing issues
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			newMainIP, err := c.getPodIPEndpoint(ctx, newTargetMainIndex)
-			if err != nil {
-				log.Printf("❌ Failed to get IP for new main pod %s: %v", newMainName, err)
-			} else {
-				c.gatewayServer.SetCurrentMain(newMainIP)
-				log.Printf("🔄 Gateway updated to route to new main IP: %s:7687", newMainIP)
-			}
+			// Gateway will automatically route to new main via MainNodeProvider
+			// No manual endpoint update needed with dynamic providers
+			log.Printf("🔄 Gateway will route to new main pod: %s", newMainName)
 		}
 
 		// Update cluster state - no need to track CurrentMain anymore since we use GetTargetMainIndex
@@ -369,14 +356,9 @@ func (c *MemgraphController) handleImmediateFailover(deletedPodName string) {
 	newMainName := c.config.GetPodName(newMainIndex)
 
 	if c.gatewayServer != nil {
-		// Get IP-based endpoint to avoid DNS refresh timing issues
-		newMainIP, err := c.getPodIPEndpoint(ctx, newMainIndex)
-		if err != nil {
-			log.Printf("❌ Failed to get IP for new main pod %s during failover: %v", newMainName, err)
-		} else {
-			c.gatewayServer.SetCurrentMain(newMainIP)
-			log.Printf("✅ Gateway updated to route to new main IP: %s:7687", newMainIP)
-		}
+		// Gateway will automatically route to new main via MainNodeProvider
+		// No manual endpoint update needed with dynamic providers
+		log.Printf("✅ Gateway will route to new main pod: %s", newMainName)
 	}
 
 	log.Printf("✅ Immediate failover completed: %s -> %s", deletedPodName, newMainName)

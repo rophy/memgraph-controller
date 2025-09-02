@@ -14,6 +14,8 @@ import (
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
+
+	"memgraph-controller/pkg/gateway"
 )
 
 // generateStateConfigMapName creates a ConfigMap name based on the release name
@@ -31,7 +33,7 @@ type MemgraphController struct {
 	config         *Config
 	memgraphClient *MemgraphClient
 	httpServer     *HTTPServer
-	gatewayServer  GatewayServerInterface
+	gatewayServer  *gateway.Server
 
 	// Leader election
 	leaderElection *LeaderElection
@@ -63,15 +65,6 @@ type MemgraphController struct {
 	metrics *ReconciliationMetrics
 }
 
-// GatewayServerInterface defines the interface for the gateway server
-type GatewayServerInterface interface {
-	Start(ctx context.Context) error
-	Stop(ctx context.Context) error
-	SetCurrentMain(endpoint string)
-	GetCurrentMain() string
-	SetBootstrapPhase(isBootstrap bool)
-	IsBootstrapPhase() bool
-}
 
 func NewMemgraphController(clientset kubernetes.Interface, config *Config) *MemgraphController {
 	controller := &MemgraphController{
@@ -83,14 +76,35 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	// Initialize HTTP server
 	controller.httpServer = NewHTTPServer(controller, config)
 
-	// Initialize gateway server
-	gatewayAdapter := NewGatewayAdapter(config)
-	// Create MainNodeProvider that returns MemgraphNode (implements gateway.MainNode interface)
-	mainNodeProvider := controller.GetCurrentMainNode
-	if err := gatewayAdapter.InitializeWithMainProvider(mainNodeProvider); err != nil {
-		log.Printf("Failed to initialize gateway adapter: %v", err)
+	// Initialize gateway server directly
+	if config.GatewayEnabled {
+		gatewayConfig := gateway.LoadGatewayConfig()
+		gatewayConfig.Enabled = config.GatewayEnabled
+		gatewayConfig.BindAddress = config.GatewayBindAddress
+		
+		// Create bootstrap phase provider
+		bootstrapProvider := func() bool {
+			return !controller.isLeader || controller.targetMainIndex == -1
+		}
+		
+		// Create main node provider that converts controller.MemgraphNode to gateway.MemgraphNode
+		mainNodeProvider := func(ctx context.Context) (*gateway.MemgraphNode, error) {
+			controllerNode, err := controller.GetCurrentMainNode(ctx)
+			if err != nil {
+				return nil, err
+			}
+			if controllerNode == nil {
+				return nil, fmt.Errorf("no main node available")
+			}
+			return &gateway.MemgraphNode{
+				Name:        controllerNode.Name,
+				BoltAddress: controllerNode.BoltAddress,
+				Pod:         controllerNode.Pod,
+			}, nil
+		}
+		
+		controller.gatewayServer = gateway.NewServer(gatewayConfig, mainNodeProvider, bootstrapProvider)
 	}
-	controller.gatewayServer = gatewayAdapter
 
 	// Initialize leader election
 	controller.leaderElection = NewLeaderElection(clientset, config)
@@ -430,21 +444,6 @@ func (c *MemgraphController) stop() {
 	log.Println("Memgraph Controller stopped")
 }
 
-// getPodIPEndpoint gets the IP-based endpoint for a pod by index
-func (c *MemgraphController) getPodIPEndpoint(ctx context.Context, podIndex int) (string, error) {
-	podName := c.config.GetPodName(podIndex)
-
-	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
-	if err != nil {
-		return "", fmt.Errorf("failed to get pod %s: %w", podName, err)
-	}
-
-	if pod.Status.PodIP == "" {
-		return "", fmt.Errorf("pod %s has no IP address assigned", podName)
-	}
-
-	return pod.Status.PodIP, nil
-}
 
 // GetControllerStatus returns the current status of the controller
 func (c *MemgraphController) GetControllerStatus() map[string]interface{} {

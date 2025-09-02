@@ -10,17 +10,12 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"memgraph-controller/pkg/controller"
 )
 
-// MainNode represents a Memgraph node for the gateway (interface to avoid circular deps)
-type MainNode interface {
-	GetBoltAddress() string
-	GetName() string
-	IsReady() bool
-}
-
 // MainNodeProvider is a function that returns the current main node
-type MainNodeProvider func(ctx context.Context) (MainNode, error)
+type MainNodeProvider func(ctx context.Context) (*controller.MemgraphNode, error)
 
 // BootstrapPhaseProvider is a function that returns true if gateway should reject connections (bootstrap phase)
 type BootstrapPhaseProvider func() bool
@@ -87,7 +82,7 @@ func NewServer(config *Config, mainProvider MainNodeProvider, bootstrapProvider 
 func (s *Server) GetCurrentMain() string {
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeout)
 	defer cancel()
-	
+
 	mainNode, err := s.mainProvider(ctx)
 	if err != nil || mainNode == nil {
 		return ""
@@ -319,7 +314,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 		atomic.AddInt64(&s.rejectedConnections, 1)
 		return
 	}
-	
+
 	// Check if main pod is ready per DESIGN.md requirement
 	if !mainNode.IsReady() {
 		s.logger.LogConnectionEvent("rejected-main-not-ready", clientAddr, map[string]interface{}{

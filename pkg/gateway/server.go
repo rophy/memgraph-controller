@@ -12,8 +12,15 @@ import (
 	"time"
 )
 
-// MainEndpointProvider is a function that returns the current main endpoint
-type MainEndpointProvider func(ctx context.Context) (string, error)
+// MainNode represents a Memgraph node for the gateway (interface to avoid circular deps)
+type MainNode interface {
+	GetBoltAddress() string
+	GetName() string
+	IsReady() bool
+}
+
+// MainNodeProvider is a function that returns the current main node
+type MainNodeProvider func(ctx context.Context) (MainNode, error)
 
 // BootstrapPhaseProvider is a function that returns true if gateway should reject connections (bootstrap phase)
 type BootstrapPhaseProvider func() bool
@@ -23,7 +30,7 @@ type Server struct {
 	config            *Config
 	listener          net.Listener
 	connections       *ConnectionTracker
-	mainProvider      MainEndpointProvider
+	mainProvider      MainNodeProvider
 	bootstrapProvider BootstrapPhaseProvider
 
 	// Server state
@@ -50,7 +57,7 @@ type Server struct {
 }
 
 // NewServer creates a new gateway server with the given configuration
-func NewServer(config *Config, mainProvider MainEndpointProvider, bootstrapProvider BootstrapPhaseProvider) *Server {
+func NewServer(config *Config, mainProvider MainNodeProvider, bootstrapProvider BootstrapPhaseProvider) *Server {
 	// Create rate limiter
 	rateLimiter := NewRateLimiter(
 		config.RateLimitEnabled,
@@ -81,11 +88,11 @@ func (s *Server) GetCurrentMain() string {
 	ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeout)
 	defer cancel()
 	
-	endpoint, err := s.mainProvider(ctx)
-	if err != nil {
+	mainNode, err := s.mainProvider(ctx)
+	if err != nil || mainNode == nil {
 		return ""
 	}
-	return endpoint
+	return mainNode.GetBoltAddress()
 }
 
 // Start starts the gateway server and begins accepting connections
@@ -301,19 +308,31 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	session.SetMaxBytesLimit(s.config.MaxBytesPerConnection)
 	defer s.connections.Untrack(session.ID)
 
-	// Get current main endpoint with retries for edge cases
-	mainEndpoint, err := s.getMainEndpointWithRetry(3)
+	// Get current main node with retries for edge cases
+	mainNode, err := s.getMainNodeWithRetry(3)
 	if err != nil {
-		s.logger.Error("Failed to get main endpoint", map[string]interface{}{
+		s.logger.Error("Failed to get main node", map[string]interface{}{
 			"client_addr": clientAddr,
 			"error":       err.Error(),
 			"retries":     3,
 		})
-		atomic.AddInt64(&s.errors, 1)
+		atomic.AddInt64(&s.rejectedConnections, 1)
+		return
+	}
+	
+	// Check if main pod is ready per DESIGN.md requirement
+	if !mainNode.IsReady() {
+		s.logger.LogConnectionEvent("rejected-main-not-ready", clientAddr, map[string]interface{}{
+			"client_ip": clientIP,
+			"main_pod":  mainNode.GetName(),
+			"reason":    "main-pod-not-ready",
+		})
+		atomic.AddInt64(&s.rejectedConnections, 1)
 		return
 	}
 
 	// Connect to main with timeout
+	mainEndpoint := mainNode.GetBoltAddress()
 	backendConn, err := net.DialTimeout("tcp", mainEndpoint, s.config.ConnectionTimeout)
 	if err != nil {
 		s.logger.Error("Failed to connect to main", map[string]interface{}{
@@ -430,14 +449,26 @@ func (s *Server) CheckHealth(ctx context.Context) string {
 		return s.healthStatus
 	}
 
-	// Try to get current main endpoint
-	endpoint, err := s.mainProvider(ctx)
+	// Try to get current main node
+	mainNode, err := s.mainProvider(ctx)
 	if err != nil {
 		s.healthStatus = fmt.Sprintf("main-unavailable: %v", err)
 		return s.healthStatus
 	}
 
+	if mainNode == nil {
+		s.healthStatus = "main-node-null"
+		return s.healthStatus
+	}
+
+	// Check if main pod is ready
+	if !mainNode.IsReady() {
+		s.healthStatus = fmt.Sprintf("main-pod-not-ready: %s", mainNode.GetName())
+		return s.healthStatus
+	}
+
 	// Quick connectivity test to main
+	endpoint := mainNode.GetBoltAddress()
 	conn, err := net.DialTimeout("tcp", endpoint, s.config.ConnectionTimeout)
 	if err != nil {
 		s.healthStatus = fmt.Sprintf("main-unreachable: %s (%v)", endpoint, err)
@@ -457,28 +488,28 @@ func (s *Server) CheckHealth(ctx context.Context) string {
 	return s.healthStatus
 }
 
-// getMainEndpointWithRetry attempts to get main endpoint with retries for edge cases
-func (s *Server) getMainEndpointWithRetry(maxRetries int) (string, error) {
+// getMainNodeWithRetry attempts to get main node with retries for edge cases
+func (s *Server) getMainNodeWithRetry(maxRetries int) (MainNode, error) {
 	for attempt := 1; attempt <= maxRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeout)
 
-		endpoint, err := s.mainProvider(ctx)
+		mainNode, err := s.mainProvider(ctx)
 		cancel()
 
-		if err == nil {
-			return endpoint, nil
+		if err == nil && mainNode != nil {
+			return mainNode, nil
 		}
 
 		// Log the error and retry if not the last attempt
 		if attempt < maxRetries {
-			log.Printf("Gateway: Main endpoint lookup failed (attempt %d/%d): %v, retrying...", attempt, maxRetries, err)
+			log.Printf("Gateway: Main node lookup failed (attempt %d/%d): %v, retrying...", attempt, maxRetries, err)
 			time.Sleep(time.Duration(attempt) * time.Second) // Exponential backoff
 		} else {
-			log.Printf("Gateway: Main endpoint lookup failed (final attempt %d/%d): %v", attempt, maxRetries, err)
+			log.Printf("Gateway: Main node lookup failed (final attempt %d/%d): %v", attempt, maxRetries, err)
 		}
 	}
 
-	return "", fmt.Errorf("failed to get main endpoint after %d attempts", maxRetries)
+	return nil, fmt.Errorf("failed to get main node after %d attempts", maxRetries)
 }
 
 // periodicCleanup runs periodic cleanup tasks for connections

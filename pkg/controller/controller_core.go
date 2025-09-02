@@ -85,15 +85,9 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 
 	// Initialize gateway server
 	gatewayAdapter := NewGatewayAdapter(config)
-	// Create main endpoint provider that adapts from GetCurrentMainNode
-	mainEndpointProvider := func(ctx context.Context) (string, error) {
-		node, err := controller.GetCurrentMainNode(ctx)
-		if err != nil {
-			return "", err
-		}
-		return node.BoltAddress, nil
-	}
-	if err := gatewayAdapter.InitializeWithMainProvider(mainEndpointProvider); err != nil {
+	// Create MainNodeProvider that returns MemgraphNode (implements gateway.MainNode interface)
+	mainNodeProvider := controller.GetCurrentMainNode
+	if err := gatewayAdapter.InitializeWithMainProvider(mainNodeProvider); err != nil {
 		log.Printf("Failed to initialize gateway adapter: %v", err)
 	}
 	controller.gatewayServer = gatewayAdapter

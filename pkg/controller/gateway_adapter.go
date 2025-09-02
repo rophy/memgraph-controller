@@ -25,8 +25,11 @@ func NewGatewayAdapter(config *Config) *GatewayAdapter {
 	}
 }
 
-// InitializeWithMainProvider initializes the gateway server with main endpoint provider
-func (g *GatewayAdapter) InitializeWithMainProvider(mainProvider gateway.MainEndpointProvider) error {
+// ControllerMainNodeProvider is a function that returns MemgraphNode from controller
+type ControllerMainNodeProvider func(ctx context.Context) (*MemgraphNode, error)
+
+// InitializeWithMainProvider initializes the gateway server with main node provider
+func (g *GatewayAdapter) InitializeWithMainProvider(controllerMainProvider ControllerMainNodeProvider) error {
 	if !g.config.GatewayEnabled {
 		return nil // Gateway is disabled
 	}
@@ -42,7 +45,16 @@ func (g *GatewayAdapter) InitializeWithMainProvider(mainProvider gateway.MainEnd
 		return g.IsBootstrapPhase()
 	}
 
-	g.server = gateway.NewServer(gatewayConfig, mainProvider, bootstrapProvider)
+	// Convert ControllerMainNodeProvider to gateway.MainNodeProvider
+	gatewayMainProvider := func(ctx context.Context) (gateway.MainNode, error) {
+		node, err := controllerMainProvider(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return node, nil  // MemgraphNode implements gateway.MainNode interface
+	}
+
+	g.server = gateway.NewServer(gatewayConfig, gatewayMainProvider, bootstrapProvider)
 	return nil
 }
 

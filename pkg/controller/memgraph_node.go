@@ -253,3 +253,35 @@ func (node *MemgraphNode) RegisterReplicaWithMode(ctx context.Context, replicaNa
 	return node.client.RegisterReplicaWithModeAndRetry(ctx, node.BoltAddress, replicaName, replicationAddress, syncMode)
 }
 
+// Gateway interface methods to satisfy gateway requirements
+// GetBoltAddress returns the Bolt connection address for the gateway
+func (node *MemgraphNode) GetBoltAddress() string {
+	return node.BoltAddress
+}
+
+// GetName returns the pod name for the gateway  
+func (node *MemgraphNode) GetName() string {
+	return node.Name
+}
+
+// IsReady returns true if the Kubernetes pod is ready for connections
+func (node *MemgraphNode) IsReady() bool {
+	if node.Pod == nil {
+		return false
+	}
+	
+	// Check pod phase
+	if node.Pod.Status.Phase != v1.PodRunning {
+		return false
+	}
+	
+	// Check readiness conditions
+	for _, condition := range node.Pod.Status.Conditions {
+		if condition.Type == v1.PodReady {
+			return condition.Status == v1.ConditionTrue
+		}
+	}
+	
+	return false
+}
+

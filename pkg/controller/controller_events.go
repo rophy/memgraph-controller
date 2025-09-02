@@ -5,30 +5,12 @@ import (
 	"fmt"
 	"log"
 	"strconv"
-	"sync"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 )
-
-// ReconcileEvent represents an event that triggers reconciliation
-type ReconcileEvent struct {
-	Type      string
-	Reason    string
-	PodName   string
-	Timestamp time.Time
-}
-
-// ReconcileQueue manages immediate reconciliation events
-type ReconcileQueue struct {
-	events    chan ReconcileEvent
-	dedup     map[string]time.Time // Deduplication map
-	dedupMu   sync.Mutex
-	ctx       context.Context
-	cancel    context.CancelFunc
-}
 
 // setupInformers sets up Kubernetes informers for event-driven reconciliation
 func (c *MemgraphController) setupInformers() {
@@ -293,23 +275,6 @@ func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
 	}
 }
 
-// enqueueReconcileEvent adds an event to the reconciliation queue for immediate processing
-func (c *MemgraphController) enqueueReconcileEvent(eventType, reason, podName string) {
-	event := ReconcileEvent{
-		Type:      eventType,
-		Reason:    reason,
-		PodName:   podName,
-		Timestamp: time.Now(),
-	}
-	
-	// Non-blocking enqueue with overflow protection
-	select {
-	case c.reconcileQueue.events <- event:
-		log.Printf("🚀 Enqueued immediate reconcile event: %s (%s)", reason, eventType)
-	default:
-		log.Printf("⚠️  Reconcile queue full - dropping event: %s", reason)
-	}
-}
 
 // shouldReconcile determines if a pod update should trigger reconciliation
 func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {

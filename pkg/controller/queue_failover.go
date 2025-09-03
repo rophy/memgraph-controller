@@ -12,10 +12,11 @@ import (
 
 // FailoverCheckEvent represents an event that triggers failover checking
 type FailoverCheckEvent struct {
-	Type      string
-	Reason    string
-	PodName   string
-	Timestamp time.Time
+	Type           string
+	Reason         string
+	PodName        string
+	Timestamp      time.Time
+	CompletionChan chan error // Optional: for synchronous waiting
 }
 
 // FailoverCheckQueue manages failover check events
@@ -85,10 +86,22 @@ func (c *MemgraphController) handleFailoverCheckEvent(event FailoverCheckEvent) 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 	
-	if err := c.executeFailoverCheck(ctx, event.PodName); err != nil {
+	err := c.executeFailoverCheck(ctx, event.PodName)
+	if err != nil {
 		log.Printf("❌ Failed failover check for event %s: %v", event.Reason, err)
 	} else {
 		log.Printf("✅ Completed failover check for event: %s", event.Reason)
+	}
+	
+	// Notify completion if there's a completion channel
+	if event.CompletionChan != nil {
+		select {
+		case event.CompletionChan <- err:
+			// Successfully sent completion
+		default:
+			// Channel might be closed or full, log and continue
+			log.Printf("Warning: Could not send completion for failover event: %s", event.Reason)
+		}
 	}
 }
 
@@ -176,6 +189,28 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 	return nil
 }
 
+// waitForFailoverCompletion queues a failover check and waits for it to complete
+func (c *MemgraphController) waitForFailoverCompletion(ctx context.Context, podName string, timeout time.Duration) error {
+	completionChan := make(chan error, 1)
+	
+	// Queue the failover check with completion channel
+	c.enqueueFailoverCheckEventWithCompletion("reconcile-triggered", "target-main-unavailable", podName, completionChan)
+	
+	// Wait for completion, context cancellation, or timeout
+	select {
+	case err := <-completionChan:
+		if err != nil {
+			return fmt.Errorf("failover check failed: %w", err)
+		}
+		log.Printf("✅ Failover completed successfully for pod %s", podName)
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled while waiting for failover: %w", ctx.Err())
+	case <-time.After(timeout):
+		return fmt.Errorf("failover timeout after %v for pod %s", timeout, podName)
+	}
+}
+
 // stopFailoverCheckQueue stops the failover check queue processor
 func (c *MemgraphController) stopFailoverCheckQueue() {
 	if c.failoverCheckQueue != nil {
@@ -185,11 +220,17 @@ func (c *MemgraphController) stopFailoverCheckQueue() {
 
 // enqueueFailoverCheckEvent adds a failover check event to the queue
 func (c *MemgraphController) enqueueFailoverCheckEvent(eventType, reason, podName string) {
+	c.enqueueFailoverCheckEventWithCompletion(eventType, reason, podName, nil)
+}
+
+// enqueueFailoverCheckEventWithCompletion adds a failover check event with optional completion notification
+func (c *MemgraphController) enqueueFailoverCheckEventWithCompletion(eventType, reason, podName string, completionChan chan error) {
 	event := FailoverCheckEvent{
-		Type:      eventType,
-		Reason:    reason,
-		PodName:   podName,
-		Timestamp: time.Now(),
+		Type:           eventType,
+		Reason:         reason,
+		PodName:        podName,
+		Timestamp:      time.Now(),
+		CompletionChan: completionChan,
 	}
 	
 	// Non-blocking send with overflow protection
@@ -198,5 +239,12 @@ func (c *MemgraphController) enqueueFailoverCheckEvent(eventType, reason, podNam
 		log.Printf("🚨 Enqueued failover check event: %s (pod: %s)", reason, podName)
 	default:
 		log.Printf("⚠️ Failover check queue full, dropping event: %s", reason)
+		// If we have a completion channel, notify of the failure
+		if completionChan != nil {
+			select {
+			case completionChan <- fmt.Errorf("failover queue full"):
+			default:
+			}
+		}
 	}
 }

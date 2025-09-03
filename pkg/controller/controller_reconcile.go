@@ -84,12 +84,21 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		return fmt.Errorf("failed to get target main node: %w", err)
 	}
 
-	// Step 2: If TargetMainPod is not ready, perform failover
+	// Step 2: If TargetMainPod is not ready, queue failover and wait
 	if !isPodReady(targetMainNode.Pod) {
-		log.Printf("TargetMainPod not ready, performing failover...")
-		if err := c.performFailover(ctx); err != nil {
-			return fmt.Errorf("failover failed: %w", err)
+		log.Printf("TargetMainPod %s not ready, queuing failover check and waiting...", targetMainNode.Name)
+		
+		// Queue failover check and wait for completion
+		if err := c.waitForFailoverCompletion(ctx, targetMainNode.Name, 30*time.Second); err != nil {
+			return fmt.Errorf("failover check failed or timed out: %w", err)
 		}
+		
+		// Re-fetch target main node after failover
+		targetMainNode, err = c.getTargetMainNode(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get new target main node after failover: %w", err)
+		}
+		log.Printf("Failover completed, new target main is %s", targetMainNode.Name)
 	}
 
 	// Step 3: Run SHOW REPLICA to TargetMainPod
@@ -272,14 +281,24 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 		return fmt.Errorf("target main pod %s not found", targetMainPodName)
 	}
 
-	// Step 2: If TargetMainPod is not ready, perform failover
+	// Step 2: If TargetMainPod is not ready, queue failover and wait
 	if !isPodReady(targetMainPod) {
-		log.Printf("TargetMainPod not ready, performing failover...")
-		if err := c.performFailover(ctx); err != nil {
-			return fmt.Errorf("failover failed: %w", err)
+		log.Printf("TargetMainPod %s not ready, queuing failover check and waiting...", targetMainPodName)
+		
+		// Queue failover check and wait for completion
+		if err := c.waitForFailoverCompletion(ctx, targetMainPodName, 30*time.Second); err != nil {
+			return fmt.Errorf("failover check failed or timed out: %w", err)
 		}
+		
 		// Reload target main index after failover
-		targetMainIndex, _ = c.GetTargetMainIndex(ctx)
+		targetMainIndex, err = c.GetTargetMainIndex(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to get new target main index after failover: %w", err)
+		}
+		
+		// Re-fetch the new target main pod
+		targetMainPodName = c.config.GetPodName(targetMainIndex)
+		log.Printf("Failover completed, new target main is %s", targetMainPodName)
 	}
 
 	// Steps 3-8: Configure replication according to DESIGN.md
@@ -312,52 +331,6 @@ func (c *MemgraphController) listMemgraphPods(ctx context.Context) ([]*v1.Pod, e
 	return podList, nil
 }
 
-// performFailover implements DESIGN.md "Failover Actions"
-func (c *MemgraphController) performFailover(ctx context.Context) error {
-	log.Println("=== FAILOVER ACTIONS ===")
-
-	// Get current target main index
-	currentMainIndex, err := c.GetTargetMainIndex(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get current target main index: %w", err)
-	}
-	
-	// Get current pods
-	syncReplicaNode, err := c.getTargetSyncReplicaNode(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get sync replica node: %w", err)
-	}
-	if syncReplicaNode == nil {
-		return fmt.Errorf("no sync replica available - cluster not recoverable")
-	}
-
-	// If sync replica pod is not ready, failover cannot proceed
-	syncReplicaPod := syncReplicaNode.Pod
-	if !isPodReady(syncReplicaPod) {
-		return fmt.Errorf("sync replica pod not ready - cluster not recoverable")
-	}
-
-	// Gateway disconnects all existing connections - TODO: add to interface
-	// c.gatewayServer.DisconnectAll()
-	log.Println("✅ Gateway connection handling delegated")
-
-	// Promote sync replica to main
-	if err := syncReplicaNode.SetToMainRole(ctx); err != nil {
-		return fmt.Errorf("failed to promote sync replica to main: %w", err)
-	}
-
-	// Flip target: if main was 0, new main is 1; if main was 1, new main is 0
-	newMainIndex := 1 - currentMainIndex // Simple flip for 0<->1
-
-	// Update ConfigMap with new target main
-	if err := c.SetTargetMainIndex(ctx, newMainIndex); err != nil {
-		return fmt.Errorf("failed to update target main index: %w", err)
-	}
-
-	log.Printf("✅ Failover completed: new main index is %d", newMainIndex)
-	return nil
-
-}
 
 // configureReplication implements DESIGN.md steps 3-8
 func (c *MemgraphController) configureReplication(ctx context.Context, targetMainIndex int) error {

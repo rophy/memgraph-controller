@@ -235,14 +235,13 @@ func (c *MemgraphController) discoverClusterState(ctx context.Context) error {
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}
 
-	// Get target main index from controller state
-	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	// Use DESIGN.md compliant discovery logic to determine target main index
+	targetMainIndex, err := c.cluster.discoverClusterState(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get target main index: %w", err)
+		return fmt.Errorf("failed to discover cluster state: %w", err)
 	}
-	if targetMainIndex < 0 {
-		return fmt.Errorf("ambiguous cluster state detected - manual intervention required")
-	}
+
+	// Create ConfigMap with discovered target main index
 	if err := c.SetTargetMainIndex(ctx, targetMainIndex); err != nil {
 		return fmt.Errorf("failed to set target main index in ConfigMap: %w", err)
 	}

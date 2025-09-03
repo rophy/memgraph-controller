@@ -1,20 +1,20 @@
 # Build stage
-FROM golang:1.21-alpine AS builder
+FROM golang:1.24-alpine AS builder
 
 # Set working directory
 WORKDIR /app
 
-# Copy go.mod and go.sum from tests directory
+# Copy go.mod and go.sum from project root
 COPY go.mod go.sum ./
 
 # Download dependencies
 RUN go mod download
 
 # Copy test source code
-COPY *.go ./
+COPY tests/*.go ./
 
 # Build test binary
-RUN CGO_ENABLED=0 GOOS=linux go test -c -o e2e-tests ./...
+RUN CGO_ENABLED=0 GOOS=linux go test -c -o e2e-tests .
 
 # Final stage
 FROM alpine:3.18

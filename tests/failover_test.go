@@ -94,6 +94,9 @@ func TestE2E_DataReplicationVerification(t *testing.T) {
 	// Verify cluster state shows healthy replication topology
 	var mainCount, syncCount, asyncCount int
 	for _, pod := range status.Pods {
+		t.Logf("Pod %s: MemgraphRole=%s, IsSyncReplica=%v, Healthy=%v", 
+			pod.Name, pod.MemgraphRole, pod.IsSyncReplica, pod.Healthy)
+		
 		if !pod.Healthy {
 			t.Logf("⚠ Pod %s is unhealthy", pod.Name)
 			continue

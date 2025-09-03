@@ -65,8 +65,15 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			// Stop reconciliation operations but keep the process running
 		},
 		func(identity string) {
-			// OnNewLeader: A new leader was elected
-			log.Printf("👑 New leader elected: %s", identity)
+			// OnNewLeader: Check if leader actually changed
+			c.leaderMu.Lock()
+			defer c.leaderMu.Unlock()
+			
+			// Only log if this is an actual leader change
+			if identity != c.lastKnownLeader {
+				log.Printf("👑 New leader elected: %s", identity)
+				c.lastKnownLeader = identity
+			}
 		},
 	)
 }

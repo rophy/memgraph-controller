@@ -37,9 +37,10 @@ type MemgraphController struct {
 	gatewayServer  *gateway.Server
 
 	// Leader election
-	leaderElection *LeaderElection
-	isLeader       bool
-	leaderMu       sync.RWMutex
+	leaderElection  *LeaderElection
+	isLeader        bool
+	lastKnownLeader string // Track last known leader to detect actual changes
+	leaderMu        sync.RWMutex
 
 	// State management
 	targetMainIndex int

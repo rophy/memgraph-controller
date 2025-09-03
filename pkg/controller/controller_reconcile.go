@@ -329,6 +329,32 @@ func (c *MemgraphController) configureReplication(ctx context.Context, targetMai
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}
 
+	// Query Memgraph roles for all discovered pods
+	for podName, node := range c.cluster.MemgraphNodes {
+		if node.BoltAddress == "" {
+			log.Printf("Skipping role query for %s: no bolt address", podName)
+			continue
+		}
+
+		log.Printf("Querying replication role for pod %s", podName)
+		if err := node.QueryReplicationRole(ctx); err != nil {
+			log.Printf("Failed to query role for %s: %v", podName, err)
+			// Continue with other pods even if one fails
+		}
+	}
+
+	// Query replicas from the main pod to get current replication status
+	targetMainPodName := c.config.GetPodName(targetMainIndex)
+	if mainNode, exists := c.cluster.MemgraphNodes[targetMainPodName]; exists && mainNode.MemgraphRole == "main" {
+		log.Printf("Querying replicas from main pod %s", targetMainPodName)
+		if replicasResp, err := mainNode.QueryReplicas(ctx); err != nil {
+			log.Printf("Failed to query replicas from main %s: %v", targetMainPodName, err)
+		} else {
+			mainNode.ReplicasInfo = replicasResp.Replicas
+			log.Printf("Main pod %s has %d registered replicas", targetMainPodName, len(mainNode.ReplicasInfo))
+		}
+	}
+
 	// Configure replication using existing logic but with direct target main index
 	return c.ConfigureReplication(ctx, c.cluster)
 }

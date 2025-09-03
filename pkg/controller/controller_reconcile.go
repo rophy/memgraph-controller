@@ -50,10 +50,23 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 
 			if !configMapReady {
 				log.Println("ConfigMap not ready - performing discovery and creating ConfigMap...")
-				if err := c.discoverClusterState(ctx); err != nil {
+				
+				// Discover current pods and populate cluster state
+				if err := c.cluster.DiscoverPods(ctx); err != nil {
+					return fmt.Errorf("failed to discover pods: %w", err)
+				}
+
+				// Use DESIGN.md compliant discovery logic to determine target main index
+				targetMainIndex, err := c.cluster.discoverClusterState(ctx)
+				if err != nil {
 					return fmt.Errorf("failed to discover cluster state: %w", err)
 				}
-				log.Println("✅ Cluster discovered and ConfigMap updated")
+
+				// Create ConfigMap with discovered target main index
+				if err := c.SetTargetMainIndex(ctx, targetMainIndex); err != nil {
+					return fmt.Errorf("failed to set target main index in ConfigMap: %w", err)
+				}
+				log.Printf("✅ Cluster discovered with target main index: %d", targetMainIndex)
 			}
 
 			if err := c.performReconciliationActions(ctx); err != nil {
@@ -226,29 +239,6 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	return response, nil
 }
 
-// discoverClusterState implements DESIGN.md "Discover Cluster State" section
-func (c *MemgraphController) discoverClusterState(ctx context.Context) error {
-	log.Println("=== CLUSTER DISCOVERY ===")
-
-	// Discover current pods and populate cluster state
-	if err := c.cluster.DiscoverPods(ctx); err != nil {
-		return fmt.Errorf("failed to discover pods: %w", err)
-	}
-
-	// Use DESIGN.md compliant discovery logic to determine target main index
-	targetMainIndex, err := c.cluster.discoverClusterState(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to discover cluster state: %w", err)
-	}
-
-	// Create ConfigMap with discovered target main index
-	if err := c.SetTargetMainIndex(ctx, targetMainIndex); err != nil {
-		return fmt.Errorf("failed to set target main index in ConfigMap: %w", err)
-	}
-	log.Printf("✅ Cluster discovered with target main index: %d", targetMainIndex)
-
-	return nil
-}
 
 // executeReconcileActions implements DESIGN.md Reconcile Actions steps 1-8 directly
 func (c *MemgraphController) executeReconcileActions(ctx context.Context) error {

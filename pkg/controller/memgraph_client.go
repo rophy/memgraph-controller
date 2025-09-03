@@ -360,41 +360,33 @@ func (mc *MemgraphClient) QueryReplicationRole(ctx context.Context, boltAddress 
 	session := driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer session.Close(ctx)
 
-	result, err := session.ExecuteRead(ctx, func(tx neo4j.ManagedTransaction) (interface{}, error) {
-		result, err := tx.Run(ctx, "SHOW REPLICATION ROLE", nil)
-		if err != nil {
-			return nil, err
-		}
-
-		if result.Next(ctx) {
-			record := result.Record()
-			role, found := record.Get("replication_role")
-			if !found {
-				return nil, fmt.Errorf("replication_role field not found in result")
-			}
-			
-			roleStr, ok := role.(string)
-			if !ok {
-				return nil, fmt.Errorf("replication_role is not a string: %T", role)
-			}
-
-			return &ReplicationRole{Role: roleStr}, nil
-		}
-
-		return nil, fmt.Errorf("no results returned from SHOW REPLICATION ROLE")
-	})
-
+	// Use auto-commit mode for replication queries (Memgraph doesn't allow them in managed transactions)
+	result, err := session.Run(ctx, "SHOW REPLICATION ROLE", nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query replication role from %s: %w", boltAddress, err)
 	}
 
-	replicationRole, ok := result.(*ReplicationRole)
-	if !ok {
-		return nil, fmt.Errorf("unexpected result type: %T", result)
+	if result.Next(ctx) {
+		record := result.Record()
+		role, found := record.Get("replication_role")
+		if !found {
+			// Try alternative field name (some versions use different naming)
+			role, found = record.Get("replication role")
+			if !found {
+				return nil, fmt.Errorf("replication_role field not found in result")
+			}
+		}
+		
+		roleStr, ok := role.(string)
+		if !ok {
+			return nil, fmt.Errorf("replication_role is not a string: %T", role)
+		}
+
+		replicationRole := &ReplicationRole{Role: roleStr}
+		return replicationRole, nil
 	}
 
-	log.Printf("Queried replication role from %s: %s", boltAddress, replicationRole.Role)
-	return replicationRole, nil
+	return nil, fmt.Errorf("no results returned from SHOW REPLICATION ROLE")
 }
 
 func (mc *MemgraphClient) TestConnection(ctx context.Context, boltAddress string) error {

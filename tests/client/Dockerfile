@@ -6,6 +6,9 @@ WORKDIR /app
 # Copy package files
 COPY package.json ./
 
+# Install system utilities for debugging
+RUN apk add --no-cache curl jq
+
 # Install dependencies
 RUN npm install --only=production
 

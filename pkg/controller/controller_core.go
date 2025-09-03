@@ -342,26 +342,57 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 
 // GetCurrentMainNode returns the current main MemgraphNode for the gateway
 func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphNode, error) {
+	// During failover, the target main index may point to a pod that isn't actually main yet
+	// We need to find the pod that ACTUALLY has the main role in Memgraph
+	
+	// First, ensure we have current cluster state
+	if c.cluster == nil || len(c.cluster.MemgraphNodes) == 0 {
+		// Fallback to target-based approach if no cluster state
+		targetMainIndex, err := c.GetTargetMainIndex(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("no cluster state and failed to get target main index: %w", err)
+		}
+		podName := c.config.GetPodName(targetMainIndex)
+		pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+		if err != nil {
+			return nil, fmt.Errorf("failed to get pod %s: %w", podName, err)
+		}
+		if pod.Status.PodIP == "" {
+			return nil, fmt.Errorf("pod %s has no IP address assigned", podName)
+		}
+		mainNode := NewMemgraphNode(pod, c.memgraphClient)
+		return mainNode, nil
+	}
+	
+	// Look for the pod that actually has the main role
+	for _, node := range c.cluster.MemgraphNodes {
+		if node.MemgraphRole == "main" && node.Pod != nil && node.Pod.Status.PodIP != "" {
+			// Found a pod that is actually in main role
+			return node, nil
+		}
+	}
+	
+	// If no pod has main role yet (during failover transition), fall back to target
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get target main index: %w", err)
+		return nil, fmt.Errorf("no main node found and failed to get target main index: %w", err)
 	}
-
 	podName := c.config.GetPodName(targetMainIndex)
-
-	// Get the actual pod IP instead of using FQDN to avoid DNS refresh timing issues
+	
+	// Check if the target pod exists in cluster state
+	if node, exists := c.cluster.MemgraphNodes[podName]; exists && node.Pod != nil {
+		return node, nil
+	}
+	
+	// Last resort: fetch the pod directly
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
 		return nil, fmt.Errorf("failed to get pod %s: %w", podName, err)
 	}
-
 	if pod.Status.PodIP == "" {
 		return nil, fmt.Errorf("pod %s has no IP address assigned", podName)
 	}
-
-	// Create a MemgraphNode instance with the required information for the gateway
 	mainNode := NewMemgraphNode(pod, c.memgraphClient)
-
 	return mainNode, nil
 }
 

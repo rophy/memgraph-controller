@@ -55,6 +55,19 @@ When issues are found during log analysis, I will:
 
 This ensures you stay informed about all modifications and maintains control over the codebase evolution.
 
+## Debugging and Investigation
+
+**NEVER run kubectl port-forward to investigate issues. Run commands inside the test client pod which is deployed by skaffold.**
+
+The neo4j-client pod includes curl and jq for API testing:
+```bash
+# Check controller status from inside the cluster
+kubectl exec -n memgraph neo4j-client-<pod-suffix> -- curl -s http://memgraph-controller:8080/api/v1/status | kubectl exec -i -n memgraph neo4j-client-<pod-suffix> -- jq '.'
+
+# Or simpler form within the same pod
+kubectl exec -n memgraph <neo4j-client-pod> -- sh -c "curl -s http://memgraph-controller:8080/api/v1/status | jq '.pods[] | {name: .name, role: .memgraph_role}'"
+```
+
 ## Debugging Memgraph Replication
 
 **For debugging replication issues, always query Memgraph directly using mgconsole in the pods:**

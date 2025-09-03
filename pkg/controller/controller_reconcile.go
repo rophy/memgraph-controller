@@ -249,6 +249,7 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 	if err != nil {
 		return fmt.Errorf("step 1 failed: %w", err)
 	}
+	log.Printf("Listed %d memgraph pods", len(podList))
 
 	// Get target main index from ConfigMap
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
@@ -271,6 +272,7 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 	}
 
 	// Step 2: If TargetMainPod is not ready, queue failover and wait
+	log.Printf("Target main pod %s ready: %v", targetMainPodName, isPodReady(targetMainPod))
 	if !isPodReady(targetMainPod) {
 		log.Printf("TargetMainPod %s not ready, queuing failover check and waiting...", targetMainPodName)
 		
@@ -290,7 +292,8 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 		log.Printf("Failover completed, new target main is %s", targetMainPodName)
 	}
 
-	// Steps 3-8: Configure replication according to DESIGN.md
+	// Steps 3-8: Configure replication according to DESIGN.md  
+	log.Println("Proceeding to configure replication...")
 	if err := c.configureReplication(ctx, targetMainIndex); err != nil {
 		return fmt.Errorf("replication configuration failed: %w", err)
 	}
@@ -328,6 +331,8 @@ func (c *MemgraphController) configureReplication(ctx context.Context, targetMai
 	if err != nil {
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}
+
+	log.Printf("Discovered %d pods in cluster", len(c.cluster.MemgraphNodes))
 
 	// Query Memgraph roles for all discovered pods
 	for podName, node := range c.cluster.MemgraphNodes {

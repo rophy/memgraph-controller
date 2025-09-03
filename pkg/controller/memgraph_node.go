@@ -177,7 +177,7 @@ func (node *MemgraphNode) QueryReplicationRole(ctx context.Context) error {
 		return fmt.Errorf("failed to query replication role for node %s: %w", node.Name, err)
 	}
 	node.MemgraphRole = roleResp.Role
-	log.Printf("Pod %s has Memgraph role: %s", node.Pod.Name, roleResp.Role)
+	log.Printf("Pod %s has Memgraph role: %s", node.Name, roleResp.Role)
 	return nil
 }
 
@@ -194,7 +194,13 @@ func (node *MemgraphNode) SetToMainRole(ctx context.Context) error {
 	if node.client == nil {
 		return fmt.Errorf("client not injected for node %s", node.Name)
 	}
-	return node.client.SetReplicationRoleToMainWithRetry(ctx, node.BoltAddress)
+	err := node.client.SetReplicationRoleToMainWithRetry(ctx, node.BoltAddress)
+	if err != nil {
+		return err
+	}
+	// Update cached role after successful change
+	node.MemgraphRole = "main"
+	return nil
 }
 
 // RegisterReplica registers a replica on this MAIN node
@@ -210,7 +216,13 @@ func (node *MemgraphNode) SetToReplicaRole(ctx context.Context) error {
 	if node.client == nil {
 		return fmt.Errorf("client not injected for node %s", node.Name)
 	}
-	return node.client.SetReplicationRoleToReplicaWithRetry(ctx, node.BoltAddress)
+	err := node.client.SetReplicationRoleToReplicaWithRetry(ctx, node.BoltAddress)
+	if err != nil {
+		return err
+	}
+	// Update cached role after successful change
+	node.MemgraphRole = "replica"
+	return nil
 }
 
 // CheckConnectivity verifies that this node is reachable

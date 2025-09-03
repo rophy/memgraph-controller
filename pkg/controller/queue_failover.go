@@ -121,18 +121,49 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 	
 	log.Printf("Failover check: Verifying target main pod %s status", podName)
 	
-	// Step 2: Check if targetMain actually doesn't exist or is not ready
-	_, err = c.getTargetMainNode(ctx)
+	// Step 2: Check if targetMain is functioning as main
+	// According to DESIGN.md: failover when "pod status of TargetMainPod is not ready"
+	// We need to check both Kubernetes pod readiness AND Memgraph functionality
+	
+	var mainFunctioning bool
+	
+	// First check if pod exists and is ready in Kubernetes
+	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
-		log.Printf("Failover check: Target main pod %s not found in cluster state", podName)
-	} else {
-		// Pod exists, check if it's ready
-		pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
-		if err == nil && isPodReady(pod) {
-			log.Printf("Failover check: Target main pod %s is still ready, no failover needed", podName)
-			return nil
-		}
+		log.Printf("Failover check: Target main pod %s not found in Kubernetes: %v", podName, err)
+		mainFunctioning = false
+	} else if !isPodReady(pod) {
 		log.Printf("Failover check: Target main pod %s exists but is not ready", podName)
+		mainFunctioning = false
+	} else {
+		// Pod is ready in Kubernetes, now check if Memgraph is functioning as main
+		targetMainNode, err := c.getTargetMainNode(ctx)
+		if err != nil {
+			log.Printf("Failover check: Cannot get target main node %s from cluster state: %v", podName, err)
+			mainFunctioning = false
+		} else if targetMainNode.BoltAddress == "" {
+			log.Printf("Failover check: Target main pod %s has no bolt address", podName)
+			mainFunctioning = false
+		} else {
+			// Try to query the replication role to confirm it's actually functioning as main
+			// QueryReplicationRole now uses auto-commit mode directly
+			role, err := c.memgraphClient.QueryReplicationRole(ctx, targetMainNode.BoltAddress)
+			if err != nil {
+				log.Printf("Failover check: Cannot query role from target main pod %s: %v", podName, err)
+				mainFunctioning = false
+			} else if role.Role != "main" {
+				log.Printf("Failover check: Target main pod %s has role '%s', not 'main'", podName, role.Role)
+				mainFunctioning = false
+			} else {
+				log.Printf("Failover check: Target main pod %s is functioning properly as main", podName)
+				mainFunctioning = true
+			}
+		}
+	}
+	
+	if mainFunctioning {
+		log.Printf("Failover check: Target main pod %s is functioning, no failover needed", podName)
+		return nil
 	}
 	
 	// Step 3: Check if targetSyncReplica is ready and has replica role
@@ -153,6 +184,7 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 	}
 	
 	// Check if sync replica actually has replica role
+	// Use WithRetry version which uses auto-commit mode (required for replication queries)
 	role, err := c.memgraphClient.QueryReplicationRole(ctx, targetSyncReplicaNode.BoltAddress)
 	if err != nil {
 		log.Printf("Failover check: Failed to query replication role for sync replica %s: %v", targetSyncReplicaNode.Name, err)

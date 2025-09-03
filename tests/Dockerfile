@@ -4,14 +4,14 @@ FROM golang:1.24-alpine AS builder
 # Set working directory
 WORKDIR /app
 
-# Copy go.mod and go.sum from project root
+# Copy go.mod and go.sum
 COPY go.mod go.sum ./
 
 # Download dependencies
 RUN go mod download
 
 # Copy test source code
-COPY tests/*.go ./
+COPY *.go ./
 
 # Build test binary
 RUN CGO_ENABLED=0 GOOS=linux go test -c -o e2e-tests .

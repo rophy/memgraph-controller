@@ -139,13 +139,13 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 		if err != nil {
 			log.Printf("Failover check: Cannot get target main node %s from cluster state: %v", podName, err)
 			mainFunctioning = false
-		} else if targetMainNode.BoltAddress == "" {
+		} else if targetMainNode.GetBoltAddress() == "" {
 			log.Printf("Failover check: Target main pod %s has no bolt address", podName)
 			mainFunctioning = false
 		} else {
 			// Try to query the replication role to confirm it's actually functioning as main
 			// QueryReplicationRole now uses auto-commit mode directly
-			role, err := c.memgraphClient.QueryReplicationRole(ctx, targetMainNode.BoltAddress)
+			role, err := c.memgraphClient.QueryReplicationRole(ctx, targetMainNode.GetBoltAddress())
 			if err != nil {
 				log.Printf("Failover check: Cannot query role from target main pod %s: %v", podName, err)
 				mainFunctioning = false
@@ -171,31 +171,31 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 	}
 
 	// Check if sync replica pod is ready (using informer cache)
-	syncReplicaPod, err := c.getPodFromCache(targetSyncReplicaNode.Name)
+	syncReplicaPod, err := c.getPodFromCache(targetSyncReplicaNode.GetName())
 	if err != nil {
-		return fmt.Errorf("failed to get sync replica pod %s from cache: %w", targetSyncReplicaNode.Name, err)
+		return fmt.Errorf("failed to get sync replica pod %s from cache: %w", targetSyncReplicaNode.GetName(), err)
 	}
 
 	if !isPodReady(syncReplicaPod) {
-		log.Printf("Failover check: Sync replica pod %s is not ready, cannot perform failover", targetSyncReplicaNode.Name)
-		return fmt.Errorf("sync replica pod %s is not ready for failover", targetSyncReplicaNode.Name)
+		log.Printf("Failover check: Sync replica pod %s is not ready, cannot perform failover", targetSyncReplicaNode.GetName())
+		return fmt.Errorf("sync replica pod %s is not ready for failover", targetSyncReplicaNode.GetName())
 	}
 
 	// Check if sync replica actually has replica role
 	// Use WithRetry version which uses auto-commit mode (required for replication queries)
-	role, err := c.memgraphClient.QueryReplicationRole(ctx, targetSyncReplicaNode.BoltAddress)
+	role, err := c.memgraphClient.QueryReplicationRole(ctx, targetSyncReplicaNode.GetBoltAddress())
 	if err != nil {
-		log.Printf("Failover check: Failed to query replication role for sync replica %s: %v", targetSyncReplicaNode.Name, err)
+		log.Printf("Failover check: Failed to query replication role for sync replica %s: %v", targetSyncReplicaNode.GetName(), err)
 		return fmt.Errorf("failed to query sync replica role: %w", err)
 	}
 
 	if role.Role != "replica" {
-		log.Printf("Failover check: Sync replica %s has role '%s', not 'replica' - cannot failover", targetSyncReplicaNode.Name, role.Role)
+		log.Printf("Failover check: Sync replica %s has role '%s', not 'replica' - cannot failover", targetSyncReplicaNode.GetName(), role.Role)
 		return fmt.Errorf("sync replica has role '%s', not 'replica'", role.Role)
 	}
 
 	// Step 4: All conditions met - perform failover
-	log.Printf("🔄 Failover conditions met: main pod %s down, sync replica %s ready with replica role", podName, targetSyncReplicaNode.Name)
+	log.Printf("🔄 Failover conditions met: main pod %s down, sync replica %s ready with replica role", podName, targetSyncReplicaNode.GetName())
 
 	// Step 4a: Immediately terminate all gateway connections (DESIGN.md line 159)
 	log.Printf("🔌 Terminating all gateway connections for failover")
@@ -209,11 +209,11 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 		newTargetMainIndex = 0
 	}
 	log.Printf("🔄 Performing failover: %s (index %d) -> %s (index %d)",
-		podName, targetMainIndex, targetSyncReplicaNode.Name, newTargetMainIndex)
+		podName, targetMainIndex, targetSyncReplicaNode.GetName(), newTargetMainIndex)
 
 	// Step 4b: Promote sync replica to main role (DESIGN.md line 162)
 	if err := targetSyncReplicaNode.SetToMainRole(ctx); err != nil {
-		return fmt.Errorf("failed to set sync replica %s to main role: %w", targetSyncReplicaNode.Name, err)
+		return fmt.Errorf("failed to set sync replica %s to main role: %w", targetSyncReplicaNode.GetName(), err)
 	}
 
 	// Update target main index to trigger failover

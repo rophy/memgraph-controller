@@ -14,14 +14,14 @@ func (c *MemgraphController) isPodHealthyForMain(node *MemgraphNode) bool {
 	}
 
 	// Pod must have a Bolt address for client connections
-	if node.BoltAddress == "" {
-		log.Printf("Pod %s not healthy for main: no bolt address", node.Name)
+	if node.GetBoltAddress() == "" {
+		log.Printf("Pod %s not healthy for main: no bolt address", node.GetName())
 		return false
 	}
 
 	// Pod must have Memgraph role information
-	if node.MemgraphRole == "" {
-		log.Printf("Pod %s not healthy for main: no Memgraph role info", node.Name)
+	if role, _ := node.GetReplicationRole(context.Background()); role == "" {
+		log.Printf("Pod %s not healthy for main: no Memgraph role info", node.GetName())
 		return false
 	}
 
@@ -225,11 +225,11 @@ func (c *MemgraphController) configureReplicationWithEnhancedSyncStrategy(ctx co
 
 	// Refresh replica information from main to get current state after configuration
 	mainPod := cluster.MemgraphNodes[currentMain]
-	if replicasResp, err := mainPod.QueryReplicas(ctx); err != nil {
+	if replicasResp, err := mainPod.GetReplicas(ctx); err != nil {
 		log.Printf("Warning: Failed to refresh replicas info from main %s: %v", currentMain, err)
 	} else {
-		mainPod.ReplicasInfo = replicasResp.Replicas
-		log.Printf("Refreshed replica information from main - found %d replicas", len(mainPod.ReplicasInfo))
+		// ReplicasInfo is now cached internally in GetReplicas()
+		log.Printf("Refreshed replica information from main - found %d replicas", len(replicasResp))
 	}
 
 	// Phase 3: Verify final SYNC replica configuration
@@ -303,9 +303,9 @@ func (c *MemgraphController) configureAsyncReplicas(ctx context.Context, cluster
 // configurePodAsAsyncReplica configures a specific pod as ASYNC replica
 func (c *MemgraphController) configurePodAsAsyncReplica(ctx context.Context, mainPod, replicaPod *MemgraphNode) error {
 	// Get pod from cache
-	pod, err := c.getPodFromCache(replicaPod.Name)
+	pod, err := c.getPodFromCache(replicaPod.GetName())
 	if err != nil {
-		return fmt.Errorf("replica pod %s not ready for replication (cannot get from cache: %v)", replicaPod.Name, err)
+		return fmt.Errorf("replica pod %s not ready for replication (cannot get from cache: %v)", replicaPod.GetName(), err)
 	}
 	
 	replicaName := replicaPod.GetReplicaName()
@@ -314,14 +314,16 @@ func (c *MemgraphController) configurePodAsAsyncReplica(ctx context.Context, mai
 	// Check if replica pod is ready for replication
 	if replicaAddress == "" || !replicaPod.IsReadyForReplication(pod) {
 		return fmt.Errorf("replica pod %s not ready for replication (IP: %s, Ready: %v)",
-			replicaPod.Name, replicaAddress, replicaPod.IsReadyForReplication(pod))
+			replicaPod.GetName(), replicaAddress, replicaPod.IsReadyForReplication(pod))
 	}
 
 	// Check if already configured correctly as ASYNC
-	for _, replica := range mainPod.ReplicasInfo {
-		if replica.Name == replicaName && replica.SyncMode == "async" {
-			replicaPod.IsSyncReplica = false
-			return nil // Already configured correctly
+	if replicasInfo, err := mainPod.GetReplicas(ctx); err == nil {
+		for _, replica := range replicasInfo {
+			if replica.Name == replicaName && replica.SyncMode == "async" {
+				replicaPod.IsSyncReplica = false
+				return nil // Already configured correctly
+			}
 		}
 	}
 
@@ -383,10 +385,12 @@ func (c *MemgraphController) verifySyncReplicaConfiguration(ctx context.Context,
 		// Find the SYNC replica info from main's perspective
 		syncReplicaPodName := strings.ReplaceAll(syncReplicaName, "-", "_")
 		var syncReplicaInfo *ReplicaInfo
-		for _, replica := range mainPod.ReplicasInfo {
-			if replica.Name == syncReplicaPodName && replica.SyncMode == "sync" {
-				syncReplicaInfo = &replica
-				break
+		if replicasInfo, err := mainPod.GetReplicas(ctx); err == nil {
+			for _, replica := range replicasInfo {
+				if replica.Name == syncReplicaPodName && replica.SyncMode == "sync" {
+					syncReplicaInfo = &replica
+					break
+				}
 			}
 		}
 
@@ -458,11 +462,13 @@ func (c *MemgraphController) detectSyncReplicaHealth(ctx context.Context, cluste
 	// Find current SYNC replica
 	var syncReplicaName string
 	var syncReplicaInfo *ReplicaInfo
-	for _, replica := range mainPod.ReplicasInfo {
-		if replica.SyncMode == "sync" {
-			syncReplicaName = strings.ReplaceAll(replica.Name, "_", "-")
-			syncReplicaInfo = &replica
-			break
+	if replicasInfo, err := mainPod.GetReplicas(ctx); err == nil {
+		for _, replica := range replicasInfo {
+			if replica.SyncMode == "sync" {
+				syncReplicaName = strings.ReplaceAll(replica.Name, "_", "-")
+				syncReplicaInfo = &replica
+				break
+			}
 		}
 	}
 
@@ -576,7 +582,7 @@ func (c *MemgraphController) configurePodAsSyncReplica(ctx context.Context, clus
 	log.Printf("Configuring %s as SYNC replica", podName)
 
 	// Get pod from cache
-	pod, err := c.getPodFromCache(targetPod.Name)
+	pod, err := c.getPodFromCache(targetPod.GetName())
 	if err != nil {
 		return fmt.Errorf("target pod %s not found in cache: %w", podName, err)
 	}
@@ -591,11 +597,13 @@ func (c *MemgraphController) configurePodAsSyncReplica(ctx context.Context, clus
 	}
 
 	// Check if already configured as SYNC
-	for _, replica := range mainPod.ReplicasInfo {
-		if replica.Name == replicaName && replica.SyncMode == "sync" {
-			targetPod.IsSyncReplica = true
-			log.Printf("Pod %s already configured as SYNC replica", podName)
-			return nil
+	if replicasInfo, err := mainPod.GetReplicas(ctx); err == nil {
+		for _, replica := range replicasInfo {
+			if replica.Name == replicaName && replica.SyncMode == "sync" {
+				targetPod.IsSyncReplica = true
+				log.Printf("Pod %s already configured as SYNC replica", podName)
+				return nil
+			}
 		}
 	}
 

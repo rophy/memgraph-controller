@@ -2,7 +2,6 @@ package controller
 
 import (
 	"context"
-	"fmt"
 	"testing"
 	"time"
 
@@ -10,6 +9,29 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
 )
+
+// mockPodStore implements cache.Store for testing
+type mockPodStore struct {
+	pods []*v1.Pod
+}
+
+func (m *mockPodStore) Add(obj interface{}) error                   { return nil }
+func (m *mockPodStore) Update(obj interface{}) error                { return nil }
+func (m *mockPodStore) Delete(obj interface{}) error               { return nil }
+func (m *mockPodStore) Get(obj interface{}) (item interface{}, exists bool, err error) { return nil, false, nil }
+func (m *mockPodStore) GetByKey(key string) (item interface{}, exists bool, err error) { return nil, false, nil }
+func (m *mockPodStore) Replace([]interface{}, string) error        { return nil }
+func (m *mockPodStore) Resync() error                              { return nil }
+
+func (m *mockPodStore) List() []interface{} {
+	result := make([]interface{}, len(m.pods))
+	for i, pod := range m.pods {
+		result[i] = pod
+	}
+	return result
+}
+
+func (m *mockPodStore) ListKeys() []string { return nil }
 
 
 func TestMemgraphController_DiscoverPods(t *testing.T) {
@@ -75,16 +97,12 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 		config:    config,
 	}
 	testClient := NewMemgraphClient(config)
-	controller.cluster = NewMemgraphCluster(nil, config, testClient)
-	err := controller.cluster.DiscoverPods(context.Background(), func() []v1.Pod {
-		podList, err := fakeClient.CoreV1().Pods(controller.cluster.config.Namespace).List(context.Background(), metav1.ListOptions{
-			LabelSelector: fmt.Sprintf("app.kubernetes.io/name=%s", controller.cluster.config.AppName),
-		})
-		if err != nil {
-			return []v1.Pod{}
-		}
-		return podList.Items
-	})
+	
+	// For the test, we need to simulate having pods in the cache store
+	// Since the real implementation uses a podInformer cache store, let's create a mock one
+	podStore := &mockPodStore{pods: []*v1.Pod{pod1, pod2, pod3}}
+	controller.cluster = NewMemgraphCluster(podStore, config, testClient)
+	err := controller.cluster.Refresh(context.Background())
 
 	if err != nil {
 		t.Fatalf("DiscoverPods() failed: %v", err)
@@ -101,8 +119,8 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 
 	// Check pod1
 	if podInfo, exists := controller.cluster.MemgraphNodes["memgraph-0"]; exists {
-		if podInfo.BoltAddress != "10.0.0.1:7687" {
-			t.Errorf("Pod memgraph-0 BoltAddress = %s, want 10.0.0.1:7687", podInfo.BoltAddress)
+		if podInfo.GetBoltAddress() != "10.0.0.1:7687" {
+			t.Errorf("Pod memgraph-0 BoltAddress = %s, want 10.0.0.1:7687", podInfo.GetBoltAddress())
 		}
 	} else {
 		t.Error("Pod memgraph-0 not found")
@@ -110,8 +128,8 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 
 	// Check pod2
 	if podInfo, exists := controller.cluster.MemgraphNodes["memgraph-1"]; exists {
-		if podInfo.ReplicaName != "memgraph_1" {
-			t.Errorf("Pod memgraph-1 ReplicaName = %s, want memgraph_1", podInfo.ReplicaName)
+		if podInfo.GetReplicaName() != "memgraph_1" {
+			t.Errorf("Pod memgraph-1 ReplicaName = %s, want memgraph_1", podInfo.GetReplicaName())
 		}
 	} else {
 		t.Error("Pod memgraph-1 not found")

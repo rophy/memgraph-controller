@@ -35,8 +35,9 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 	testClient := NewMemgraphClient(config)
 	
 	node := NewMemgraphNode(pod, testClient)
-	node.MemgraphRole = "main"
-	node.Replicas = []string{"memgraph_1", "memgraph_2"}
+	// For testing, we need to set private fields directly since we can't actually connect to Memgraph
+	node.memgraphRole = "main"
+	// Note: Replicas field was removed in favor of GetReplicas() method
 	// // node.State = MAIN // State removed // State removed
 
 	// Test healthy pod conversion
@@ -72,7 +73,7 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 	}
 
 	// Test unhealthy pod conversion
-	node.MemgraphRole = "" // Simulate unreachable pod
+	node.memgraphRole = "" // Simulate unreachable pod
 	statusUnhealthy := convertMemgraphNodeToStatus(node, false, testPod)
 
 	if statusUnhealthy.Healthy {
@@ -110,7 +111,7 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 	testClient := NewMemgraphClient(config)
 	
 	node := NewMemgraphNode(pod, testClient)
-	node.MemgraphRole = "replica"
+	node.memgraphRole = "replica"
 	// node.State = REPLICA // State removed
 	node.IsSyncReplica = true
 
@@ -177,11 +178,11 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 	}
 
 	node1 := NewMemgraphNode(pod1, testClient)
-	node1.MemgraphRole = "main"
+	node1.memgraphRole = "main"
 	// node1.State = MAIN // State removed
 
 	node2 := NewMemgraphNode(pod2, testClient)
-	node2.MemgraphRole = "replica"
+	node2.memgraphRole = "replica"
 	// node2.State = REPLICA // State removed
 	node2.IsSyncReplica = true
 

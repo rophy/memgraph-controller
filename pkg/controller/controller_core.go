@@ -98,13 +98,13 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 		if controllerNode == nil {
 			return nil, fmt.Errorf("no main node available")
 		}
-		pod, err := controller.getPodFromCache(controllerNode.Name)
+		pod, err := controller.getPodFromCache(controllerNode.GetName())
 		if err != nil {
-			return nil, fmt.Errorf("failed to get pod %s from cache: %w", controllerNode.Name, err)
+			return nil, fmt.Errorf("failed to get pod %s from cache: %w", controllerNode.GetName(), err)
 		}
 		return &gateway.MemgraphNode{
-			Name:        controllerNode.Name,
-			BoltAddress: controllerNode.BoltAddress,
+			Name:        controllerNode.GetName(),
+			BoltAddress: controllerNode.GetBoltAddress(),
 			Pod:         pod,
 		}, nil
 	}
@@ -310,7 +310,7 @@ func (c *MemgraphController) TestConnection() error {
 
 // TestMemgraphConnections tests connections to all discovered Memgraph pods
 func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error {
-	err := c.cluster.DiscoverPods(ctx, c.getPodsFromCache)
+	err := c.cluster.Refresh(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}
@@ -325,7 +325,7 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 	var lastErr error
 	connectedCount := 0
 	for podName, pod := range pods {
-		endpoint := pod.BoltAddress
+		endpoint := pod.GetBoltAddress()
 		if err := c.memgraphClient.TestConnection(ctx, endpoint); err != nil {
 			log.Printf("❌ Failed to connect to %s (%s): %v", podName, endpoint, err)
 			lastErr = err
@@ -369,9 +369,9 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 
 	// Look for the pod that actually has the main role
 	for _, node := range c.cluster.MemgraphNodes {
-		if node.MemgraphRole == "main" {
+		if role, _ := node.GetReplicationRole(ctx); role == "MAIN" {
 			// Check if pod exists in cache and has IP
-			pod, err := c.getPodFromCache(node.Name)
+			pod, err := c.getPodFromCache(node.GetName())
 			if err == nil && pod != nil && pod.Status.PodIP != "" {
 				// Found a pod that is actually in main role
 				return node, nil
@@ -389,7 +389,7 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 	// Check if the target pod exists in cluster state
 	if node, exists := c.cluster.MemgraphNodes[podName]; exists {
 		// Check if pod exists in cache
-		_, err := c.getPodFromCache(node.Name)
+		_, err := c.getPodFromCache(node.GetName())
 		if err == nil {
 			return node, nil
 		}

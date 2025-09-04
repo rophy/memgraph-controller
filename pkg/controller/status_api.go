@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"time"
 	
 	v1 "k8s.io/api/core/v1"
@@ -59,8 +60,8 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, pod *v1.Pod) 
 	if !healthy {
 		// If pod is unhealthy and no inconsistency detected, create one for unreachable pod
 		memgraphRole := "unknown"
-		if node.MemgraphRole != "" {
-			memgraphRole = node.MemgraphRole
+		if role, _ := node.GetReplicationRole(context.Background()); role != "" {
+			memgraphRole = role
 		}
 
 		inconsistency = &StatusInconsistency{
@@ -70,16 +71,21 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, pod *v1.Pod) 
 	}
 
 	// Convert replica names to readable format (underscore back to dash)
-	replicasRegistered := make([]string, len(node.Replicas))
-	copy(replicasRegistered, node.Replicas)
+	var replicasRegistered []string
+	if replicas, err := node.GetReplicas(context.Background()); err == nil {
+		replicasRegistered = make([]string, len(replicas))
+		for i, replica := range replicas {
+			replicasRegistered[i] = replica.Name
+		}
+	}
 
 	return PodStatus{
-		Name:               node.Name,
+		Name:               node.GetName(),
 		State:              "unknown", // TODO: implement proper state
-		MemgraphRole:       node.MemgraphRole,
-		BoltAddress:        node.BoltAddress,
+		MemgraphRole:       func() string { role, _ := node.GetReplicationRole(context.Background()); return role }(),
+		BoltAddress:        node.GetBoltAddress(),
 		ReplicationAddress: node.GetReplicationAddress(pod),
-		Timestamp:          node.Timestamp,
+		Timestamp:          node.timestamp,
 		Healthy:            healthy,
 		IsSyncReplica:      node.IsSyncReplica,
 		ReplicasRegistered: replicasRegistered,

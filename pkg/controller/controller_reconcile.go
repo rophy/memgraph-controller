@@ -49,9 +49,9 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 
 			if !configMapReady {
 				log.Println("ConfigMap not ready - performing discovery and creating ConfigMap...")
-				
+
 				// Discover current pods and populate cluster state
-				if err := c.cluster.DiscoverPods(ctx, c.getPodsFromCache); err != nil {
+				if err := c.cluster.Refresh(ctx); err != nil {
 					return fmt.Errorf("failed to discover pods: %w", err)
 				}
 
@@ -86,7 +86,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	log.Println("Starting DESIGN.md compliant reconcile actions...")
 
 	// Step 1: List all memgraph pods with kubernetes status
-	err := c.cluster.DiscoverPods(ctx, c.getPodsFromCache)
+	err := c.cluster.Refresh(ctx)
 	if err != nil {
 		return fmt.Errorf("step 1 failed: %w", err)
 	}
@@ -97,21 +97,21 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	}
 
 	// Step 2: If TargetMainPod is not ready, queue failover and wait
-	targetMainPod, err := c.getPodFromCache(targetMainNode.Name)
+	targetMainPod, err := c.getPodFromCache(targetMainNode.GetName())
 	if err != nil || !isPodReady(targetMainPod) {
-		log.Printf("TargetMainPod %s not ready, queuing failover check and waiting...", targetMainNode.Name)
-		
+		log.Printf("TargetMainPod %s not ready, queuing failover check and waiting...", targetMainNode.GetName())
+
 		// Queue failover check and wait for completion
-		if err := c.waitForFailoverCompletion(ctx, targetMainNode.Name, 30*time.Second); err != nil {
+		if err := c.waitForFailoverCompletion(ctx, targetMainNode.GetName(), 30*time.Second); err != nil {
 			return fmt.Errorf("failover check failed or timed out: %w", err)
 		}
-		
+
 		// Re-fetch target main node after failover
 		targetMainNode, err = c.getTargetMainNode(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get new target main node after failover: %w", err)
 		}
-		log.Printf("Failover completed, new target main is %s", targetMainNode.Name)
+		log.Printf("Failover completed, new target main is %s", targetMainNode.GetName())
 	}
 
 	// Step 3: Run SHOW REPLICA to TargetMainPod
@@ -120,7 +120,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	// Step 6: Ensure that the sync replica is correctly configured
 	// Step 7: Ensure that all replicas are connected to the main
 	// Step 8: Update any necessary annotations or status fields
-	
+
 	return nil
 }
 
@@ -219,7 +219,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	// Convert pods to API format
 	var pods []PodStatus
 	for _, node := range clusterState.MemgraphNodes {
-		pod, err := c.getPodFromCache(node.Name)
+		pod, err := c.getPodFromCache(node.GetName())
 		healthy := err == nil && isPodReady(pod)
 		podStatus := convertMemgraphNodeToStatus(node, healthy, pod)
 		pods = append(pods, podStatus)
@@ -240,7 +240,6 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 
 	return response, nil
 }
-
 
 // executeReconcileActions implements DESIGN.md Reconcile Actions steps 1-8 directly
 func (c *MemgraphController) executeReconcileActions(ctx context.Context) error {
@@ -274,24 +273,24 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 	log.Printf("Target main pod %s ready: %v", targetMainPodName, isPodReady(targetMainPod))
 	if !isPodReady(targetMainPod) {
 		log.Printf("TargetMainPod %s not ready, queuing failover check and waiting...", targetMainPodName)
-		
+
 		// Queue failover check and wait for completion
 		if err := c.waitForFailoverCompletion(ctx, targetMainPodName, 30*time.Second); err != nil {
 			return fmt.Errorf("failover check failed or timed out: %w", err)
 		}
-		
+
 		// Reload target main index after failover
 		targetMainIndex, err = c.GetTargetMainIndex(ctx)
 		if err != nil {
 			return fmt.Errorf("failed to get new target main index after failover: %w", err)
 		}
-		
+
 		// Re-fetch the new target main pod
 		targetMainPodName = c.config.GetPodName(targetMainIndex)
 		log.Printf("Failover completed, new target main is %s", targetMainPodName)
 	}
 
-	// Steps 3-8: Configure replication according to DESIGN.md  
+	// Steps 3-8: Configure replication according to DESIGN.md
 	log.Println("Proceeding to configure replication...")
 	if err := c.configureReplication(ctx, targetMainIndex); err != nil {
 		return fmt.Errorf("replication configuration failed: %w", err)
@@ -301,12 +300,10 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 	return nil
 }
 
-
-
 // configureReplication implements DESIGN.md steps 3-8
 func (c *MemgraphController) configureReplication(ctx context.Context, targetMainIndex int) error {
 	// Get current cluster state by querying pods
-	err := c.cluster.DiscoverPods(ctx, c.getPodsFromCache)
+	err := c.cluster.Refresh(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}
@@ -315,13 +312,13 @@ func (c *MemgraphController) configureReplication(ctx context.Context, targetMai
 
 	// Query Memgraph roles for all discovered pods
 	for podName, node := range c.cluster.MemgraphNodes {
-		if node.BoltAddress == "" {
+		if node.GetBoltAddress() == "" {
 			log.Printf("Skipping role query for %s: no bolt address", podName)
 			continue
 		}
 
 		log.Printf("Querying replication role for pod %s", podName)
-		if err := node.QueryReplicationRole(ctx); err != nil {
+		if _, err := node.GetReplicationRole(ctx); err != nil {
 			log.Printf("Failed to query role for %s: %v", podName, err)
 			// Continue with other pods even if one fails
 		}
@@ -329,13 +326,14 @@ func (c *MemgraphController) configureReplication(ctx context.Context, targetMai
 
 	// Query replicas from the main pod to get current replication status
 	targetMainPodName := c.config.GetPodName(targetMainIndex)
-	if mainNode, exists := c.cluster.MemgraphNodes[targetMainPodName]; exists && mainNode.MemgraphRole == "main" {
-		log.Printf("Querying replicas from main pod %s", targetMainPodName)
-		if replicasResp, err := mainNode.QueryReplicas(ctx); err != nil {
-			log.Printf("Failed to query replicas from main %s: %v", targetMainPodName, err)
-		} else {
-			mainNode.ReplicasInfo = replicasResp.Replicas
-			log.Printf("Main pod %s has %d registered replicas", targetMainPodName, len(mainNode.ReplicasInfo))
+	if mainNode, exists := c.cluster.MemgraphNodes[targetMainPodName]; exists {
+		if role, _ := mainNode.GetReplicationRole(ctx); role == "MAIN" {
+			log.Printf("Querying replicas from main pod %s", targetMainPodName)
+			if replicasResp, err := mainNode.GetReplicas(ctx); err != nil {
+				log.Printf("Failed to query replicas from main %s: %v", targetMainPodName, err)
+			} else {
+				log.Printf("Main pod %s has %d registered replicas", targetMainPodName, len(replicasResp))
+			}
 		}
 	}
 

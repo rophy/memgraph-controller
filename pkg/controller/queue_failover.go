@@ -21,27 +21,27 @@ type FailoverCheckEvent struct {
 
 // FailoverCheckQueue manages failover check events
 type FailoverCheckQueue struct {
-	events    chan FailoverCheckEvent
-	dedup     map[string]time.Time // Deduplication map
-	dedupMu   sync.Mutex
-	ctx       context.Context
-	cancel    context.CancelFunc
+	events  chan FailoverCheckEvent
+	dedup   map[string]time.Time // Deduplication map
+	dedupMu sync.Mutex
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 // newFailoverCheckQueue creates and starts a new failover check event queue
 func (c *MemgraphController) newFailoverCheckQueue() *FailoverCheckQueue {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	fq := &FailoverCheckQueue{
 		events: make(chan FailoverCheckEvent, 50), // Smaller buffer - failovers are less frequent
 		dedup:  make(map[string]time.Time),
 		ctx:    ctx,
 		cancel: cancel,
 	}
-	
+
 	// Start the queue processor goroutine
 	go c.processFailoverCheckQueue(fq)
-	
+
 	return fq
 }
 
@@ -65,10 +65,10 @@ func (c *MemgraphController) handleFailoverCheckEvent(event FailoverCheckEvent) 
 		log.Printf("Non-leader ignoring failover check event: %s", event.Reason)
 		return
 	}
-	
+
 	// Deduplication: ignore events for same pod within 5 seconds (longer than reconcile)
 	dedupKey := fmt.Sprintf("failover:%s", event.PodName)
-	
+
 	fq := c.failoverCheckQueue
 	fq.dedupMu.Lock()
 	lastEventTime, exists := fq.dedup[dedupKey]
@@ -79,20 +79,20 @@ func (c *MemgraphController) handleFailoverCheckEvent(event FailoverCheckEvent) 
 	}
 	fq.dedup[dedupKey] = event.Timestamp
 	fq.dedupMu.Unlock()
-	
+
 	// Process the failover check
 	log.Printf("🚨 Processing failover check event: %s", event.Reason)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
-	
+
 	err := c.executeFailoverCheck(ctx, event.PodName)
 	if err != nil {
 		log.Printf("❌ Failed failover check for event %s: %v", event.Reason, err)
 	} else {
 		log.Printf("✅ Completed failover check for event: %s", event.Reason)
 	}
-	
+
 	// Notify completion if there's a completion channel
 	if event.CompletionChan != nil {
 		select {
@@ -112,21 +112,21 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 	if err != nil {
 		return fmt.Errorf("failed to get target main index: %w", err)
 	}
-	
+
 	expectedMainPodName := c.config.GetPodName(targetMainIndex)
 	if podName != expectedMainPodName {
 		log.Printf("Failover check: Pod %s is not the target main (%s), ignoring", podName, expectedMainPodName)
 		return nil
 	}
-	
+
 	log.Printf("Failover check: Verifying target main pod %s status", podName)
-	
+
 	// Step 2: Check if targetMain is functioning as main
 	// According to DESIGN.md: failover when "pod status of TargetMainPod is not ready"
 	// We need to check both Kubernetes pod readiness AND Memgraph functionality
-	
+
 	var mainFunctioning bool
-	
+
 	// First check if pod exists and is ready in Kubernetes
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
@@ -160,29 +160,29 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 			}
 		}
 	}
-	
+
 	if mainFunctioning {
 		log.Printf("Failover check: Target main pod %s is functioning, no failover needed", podName)
 		return nil
 	}
-	
+
 	// Step 3: Check if targetSyncReplica is ready and has replica role
 	targetSyncReplicaNode, err := c.getTargetSyncReplicaNode(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get target sync replica node: %w", err)
 	}
-	
+
 	// Check if sync replica pod is ready
 	syncReplicaPod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, targetSyncReplicaNode.Name, metav1.GetOptions{})
 	if err != nil {
 		return fmt.Errorf("failed to get sync replica pod %s: %w", targetSyncReplicaNode.Name, err)
 	}
-	
+
 	if !isPodReady(syncReplicaPod) {
 		log.Printf("Failover check: Sync replica pod %s is not ready, cannot perform failover", targetSyncReplicaNode.Name)
 		return fmt.Errorf("sync replica pod %s is not ready for failover", targetSyncReplicaNode.Name)
 	}
-	
+
 	// Check if sync replica actually has replica role
 	// Use WithRetry version which uses auto-commit mode (required for replication queries)
 	role, err := c.memgraphClient.QueryReplicationRole(ctx, targetSyncReplicaNode.BoltAddress)
@@ -190,15 +190,15 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 		log.Printf("Failover check: Failed to query replication role for sync replica %s: %v", targetSyncReplicaNode.Name, err)
 		return fmt.Errorf("failed to query sync replica role: %w", err)
 	}
-	
+
 	if role.Role != "replica" {
 		log.Printf("Failover check: Sync replica %s has role '%s', not 'replica' - cannot failover", targetSyncReplicaNode.Name, role.Role)
 		return fmt.Errorf("sync replica has role '%s', not 'replica'", role.Role)
 	}
-	
+
 	// Step 4: All conditions met - perform failover
 	log.Printf("🔄 Failover conditions met: main pod %s down, sync replica %s ready with replica role", podName, targetSyncReplicaNode.Name)
-	
+
 	// Determine new target main index (swap to sync replica)
 	var newTargetMainIndex int
 	if targetMainIndex == 0 {
@@ -206,28 +206,33 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 	} else {
 		newTargetMainIndex = 0
 	}
-	
-	log.Printf("🔄 Performing failover: %s (index %d) -> %s (index %d)", 
+	log.Printf("🔄 Performing failover: %s (index %d) -> %s (index %d)",
 		podName, targetMainIndex, targetSyncReplicaNode.Name, newTargetMainIndex)
-	
+
+	// Promote sync replica to main role
+	if err := targetSyncReplicaNode.SetToMainRole(ctx); err != nil {
+		return fmt.Errorf("failed to set sync replica %s to main role: %w", targetSyncReplicaNode.Name, err)
+	}
+
 	// Update target main index to trigger failover
-	if err := c.updateTargetMainIndex(ctx, newTargetMainIndex, fmt.Sprintf("failover-from-%s", podName)); err != nil {
+	log.Printf("🔄 Updating target main index: %d → %d (reason: failover-from-%s)", targetMainIndex, newTargetMainIndex, podName)
+	if err := c.SetTargetMainIndex(ctx, newTargetMainIndex); err != nil {
 		return fmt.Errorf("failed to update target main index during failover: %w", err)
 	}
-	
-	log.Printf("✅ Failover completed: new target main is %s (index %d)", 
+
+	log.Printf("✅ Failover completed: new target main is %s (index %d)",
 		c.config.GetPodName(newTargetMainIndex), newTargetMainIndex)
-	
+
 	return nil
 }
 
 // waitForFailoverCompletion queues a failover check and waits for it to complete
 func (c *MemgraphController) waitForFailoverCompletion(ctx context.Context, podName string, timeout time.Duration) error {
 	completionChan := make(chan error, 1)
-	
+
 	// Queue the failover check with completion channel
 	c.enqueueFailoverCheckEventWithCompletion("reconcile-triggered", "target-main-unavailable", podName, completionChan)
-	
+
 	// Wait for completion, context cancellation, or timeout
 	select {
 	case err := <-completionChan:
@@ -264,7 +269,7 @@ func (c *MemgraphController) enqueueFailoverCheckEventWithCompletion(eventType, 
 		Timestamp:      time.Now(),
 		CompletionChan: completionChan,
 	}
-	
+
 	// Non-blocking send with overflow protection
 	select {
 	case c.failoverCheckQueue.events <- event:

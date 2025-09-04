@@ -310,10 +310,4 @@ func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
 	return false
 }
 
-// updateTargetMainIndex updates target main index
-func (c *MemgraphController) updateTargetMainIndex(ctx context.Context, newTargetIndex int, reason string) error {
-	currentIndex, _ := c.GetTargetMainIndex(ctx)
-	log.Printf("Updating target main index: %d → %d (reason: %s)", currentIndex, newTargetIndex, reason)
-	return c.SetTargetMainIndex(ctx, newTargetIndex)
-}
 

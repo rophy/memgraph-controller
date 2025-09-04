@@ -119,8 +119,6 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	controller.configMapName = generateStateConfigMapName()
 	controller.targetMainIndex = -1 // -1 indicates not yet loaded from ConfigMap
 
-	// Initialize cluster operations
-	controller.cluster = NewMemgraphCluster(clientset, config, controller.memgraphClient)
 
 	// Initialize event-driven reconciliation queue
 	controller.reconcileQueue = controller.newReconcileQueue()
@@ -135,6 +133,9 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 
 	// Set up pod informer for event-driven reconciliation
 	controller.setupInformers()
+
+	// Initialize cluster operations (after informers are set up)
+	controller.cluster = NewMemgraphCluster(controller.podInformer.GetStore(), config, controller.memgraphClient)
 
 	return controller
 }

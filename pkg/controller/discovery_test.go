@@ -75,9 +75,9 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 		config:    config,
 	}
 	testClient := NewMemgraphClient(config)
-	controller.cluster = NewMemgraphCluster(fakeClient, config, testClient)
+	controller.cluster = NewMemgraphCluster(nil, config, testClient)
 	err := controller.cluster.DiscoverPods(context.Background(), func() []v1.Pod {
-		podList, err := controller.cluster.clientset.CoreV1().Pods(controller.cluster.config.Namespace).List(context.Background(), metav1.ListOptions{
+		podList, err := fakeClient.CoreV1().Pods(controller.cluster.config.Namespace).List(context.Background(), metav1.ListOptions{
 			LabelSelector: fmt.Sprintf("app.kubernetes.io/name=%s", controller.cluster.config.AppName),
 		})
 		if err != nil {

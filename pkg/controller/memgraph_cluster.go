@@ -8,31 +8,29 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
 )
 
 // MemgraphCluster handles all Memgraph cluster-specific operations and represents the cluster state
 type MemgraphCluster struct {
 	// Cluster data (formerly ClusterState)
 	MemgraphNodes map[string]*MemgraphNode
-	CurrentMain   string
 
 	// External dependencies
-	clientset      kubernetes.Interface
+	podCacheStore  cache.Store
 	config         *Config
 	memgraphClient *MemgraphClient
 }
 
 // NewMemgraphCluster creates a new MemgraphCluster instance
-func NewMemgraphCluster(clientset kubernetes.Interface, config *Config, memgraphClient *MemgraphClient) *MemgraphCluster {
+func NewMemgraphCluster(podCacheStore cache.Store, config *Config, memgraphClient *MemgraphClient) *MemgraphCluster {
 
 	cluster := &MemgraphCluster{
 		// Initialize cluster data
 		MemgraphNodes: make(map[string]*MemgraphNode),
-		CurrentMain:   "",
 
 		// External dependencies
-		clientset:      clientset,
+		podCacheStore:  podCacheStore,
 		config:         config,
 		memgraphClient: memgraphClient,
 	}
@@ -113,19 +111,6 @@ func (mc *MemgraphCluster) GetTargetSyncReplica(targetMainIndex int) string {
 }
 
 
-// ValidateControllerState validates the controller state consistency
-func (mc *MemgraphCluster) ValidateControllerState(config *Config) []string {
-	var warnings []string
-
-	// Validate current main exists in pods
-	if mc.CurrentMain != "" {
-		if _, exists := mc.MemgraphNodes[mc.CurrentMain]; !exists {
-			warnings = append(warnings, fmt.Sprintf("Current main '%s' not found in discovered pods", mc.CurrentMain))
-		}
-	}
-
-	return warnings
-}
 
 // GetMainPods returns a list of pod names that have the MAIN role
 func (mc *MemgraphCluster) GetMainPods() []string {

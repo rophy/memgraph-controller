@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"log"
-	"strconv"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -30,15 +29,6 @@ func (c *MemgraphController) setupInformers() {
 		DeleteFunc: c.onPodDelete,
 	})
 
-	// Set up ConfigMap informer for controller state synchronization
-	c.configMapInformer = c.informerFactory.Core().V1().ConfigMaps().Informer()
-
-	// Add event handlers for ConfigMaps
-	c.configMapInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc:    c.onConfigMapAdd,
-		UpdateFunc: c.onConfigMapUpdate,
-		DeleteFunc: c.onConfigMapDelete,
-	})
 }
 
 // setupLeaderElectionCallbacks configures the callbacks for leader election
@@ -68,7 +58,7 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			// OnNewLeader: Check if leader actually changed
 			c.leaderMu.Lock()
 			defer c.leaderMu.Unlock()
-			
+
 			// Only log if this is an actual leader change
 			if identity != c.lastKnownLeader {
 				log.Printf("👑 New leader elected: %s", identity)
@@ -171,112 +161,6 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 	c.enqueueReconcileEvent("pod-delete", "pod-deleted", pod.Name)
 }
 
-// onConfigMapAdd handles ConfigMap creation events
-func (c *MemgraphController) onConfigMapAdd(obj interface{}) {
-	configMap := obj.(*v1.ConfigMap)
-
-	// Only process our controller state ConfigMap
-	if configMap.Name != c.configMapName {
-		return
-	}
-
-	log.Printf("🔄 ConfigMap added: %s", configMap.Name)
-
-	// Gateway will automatically detect bootstrap phase via bootstrap provider
-	// No manual phase transitions needed with dynamic providers
-
-	// Update our cached state if we're not the leader (leaders maintain state directly)
-	// State loading now handled via GetTargetMainIndex() calls
-}
-
-// onConfigMapUpdate handles ConfigMap update events for distributed state synchronization
-func (c *MemgraphController) onConfigMapUpdate(oldObj, newObj interface{}) {
-	newConfigMap := newObj.(*v1.ConfigMap)
-
-	// Only process our controller state ConfigMap
-	if newConfigMap.Name != c.configMapName {
-		return
-	}
-
-	log.Printf("🔄 ConfigMap updated: %s", newConfigMap.Name)
-
-	// Parse the new target main index to detect external changes
-	targetMainIndexStr, exists := newConfigMap.Data["targetMainIndex"]
-	if !exists {
-		log.Printf("Warning: ConfigMap %s missing targetMainIndex field", newConfigMap.Name)
-		return
-	}
-
-	newTargetMainIndex, err := strconv.Atoi(targetMainIndexStr)
-	if err != nil {
-		log.Printf("Warning: Invalid targetMainIndex in ConfigMap: %s", targetMainIndexStr)
-		return
-	}
-
-	// Only react to changes if we're the leader
-	if c.IsLeader() {
-		currentTargetIndex, err := c.GetTargetMainIndex(context.Background())
-		if err != nil {
-			log.Printf("Failed to get current target main index: %v", err)
-			return
-		}
-
-		if currentTargetIndex != newTargetMainIndex {
-			log.Printf("🔄 Target main changed externally: %d -> %d", currentTargetIndex, newTargetMainIndex)
-			c.handleTargetMainChanged(newTargetMainIndex)
-		}
-	}
-}
-
-// onConfigMapDelete handles ConfigMap deletion events
-func (c *MemgraphController) onConfigMapDelete(obj interface{}) {
-	configMap := obj.(*v1.ConfigMap)
-
-	// Only process our controller state ConfigMap
-	if configMap.Name != c.configMapName {
-		return
-	}
-
-	log.Printf("⚠️  ConfigMap deleted: %s - will recreate on next reconciliation", configMap.Name)
-}
-
-// handleTargetMainChanged handles external changes to target main index
-func (c *MemgraphController) handleTargetMainChanged(newTargetMainIndex int) {
-	log.Printf("🔄 Handling target main change to index %d", newTargetMainIndex)
-
-	// Immediately update cluster state to reflect the change
-	if c.cluster != nil {
-		// Update gateway to point to new main using IP address
-		newMainName := c.config.GetPodName(newTargetMainIndex)
-
-		// Gateway will automatically route to new main via MainNodeProvider
-		// No manual endpoint update needed with dynamic providers
-		log.Printf("🔄 Gateway will route to new main pod: %s", newMainName)
-
-		// Update cluster state - no need to track CurrentMain anymore since we use GetTargetMainIndex
-	}
-
-	// Enqueue reconciliation to fully process the change
-	newMainName := c.config.GetPodName(newTargetMainIndex)
-	c.enqueueReconcileEvent("target-main-change", "target-main-changed", newMainName)
-
-	// CRITICAL: Trigger immediate reconciliation for main changes
-	if c.IsLeader() {
-		log.Println("🚨 CRITICAL: Target main changed - performing immediate reconciliation")
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-			defer cancel()
-
-			if err := c.executeReconcileActions(ctx); err != nil {
-				log.Printf("❌ Failed immediate reconciliation after main change: %v", err)
-			} else {
-				log.Println("✅ Immediate reconciliation completed after main change")
-			}
-		}()
-	}
-}
-
-
 // shouldReconcile determines if a pod update should trigger reconciliation
 func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
 	// Always reconcile if pod readiness changed
@@ -309,5 +193,3 @@ func (c *MemgraphController) shouldReconcile(oldPod, newPod *v1.Pod) bool {
 	// Skip reconciliation for minor metadata changes
 	return false
 }
-
-

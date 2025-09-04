@@ -28,7 +28,6 @@ func generateStateConfigMapName() string {
 	return fmt.Sprintf("%s-controller-state", releaseName)
 }
 
-
 type MemgraphController struct {
 	clientset      kubernetes.Interface
 	config         *Config
@@ -62,10 +61,9 @@ type MemgraphController struct {
 	maxFailures int
 
 	// Event-driven reconciliation
-	podInformer       cache.SharedInformer
-	configMapInformer cache.SharedInformer
-	informerFactory   informers.SharedInformerFactory
-	stopCh            chan struct{}
+	podInformer     cache.SharedInformer
+	informerFactory informers.SharedInformerFactory
+	stopCh          chan struct{}
 
 	// Reconciliation metrics
 	metrics *ReconciliationMetrics
@@ -344,7 +342,7 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphNode, error) {
 	// During failover, the target main index may point to a pod that isn't actually main yet
 	// We need to find the pod that ACTUALLY has the main role in Memgraph
-	
+
 	// First, ensure we have current cluster state
 	if c.cluster == nil || len(c.cluster.MemgraphNodes) == 0 {
 		// Fallback to target-based approach if no cluster state
@@ -363,7 +361,7 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 		mainNode := NewMemgraphNode(pod, c.memgraphClient)
 		return mainNode, nil
 	}
-	
+
 	// Look for the pod that actually has the main role
 	for _, node := range c.cluster.MemgraphNodes {
 		if node.MemgraphRole == "main" && node.Pod != nil && node.Pod.Status.PodIP != "" {
@@ -371,19 +369,19 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 			return node, nil
 		}
 	}
-	
+
 	// If no pod has main role yet (during failover transition), fall back to target
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("no main node found and failed to get target main index: %w", err)
 	}
 	podName := c.config.GetPodName(targetMainIndex)
-	
+
 	// Check if the target pod exists in cluster state
 	if node, exists := c.cluster.MemgraphNodes[podName]; exists && node.Pod != nil {
 		return node, nil
 	}
-	
+
 	// Last resort: fetch the pod directly
 	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
 	if err != nil {
@@ -416,7 +414,7 @@ func (c *MemgraphController) StartInformers() error {
 	c.informerFactory.Start(c.stopCh)
 
 	// Wait for informer caches to sync
-	if !cache.WaitForCacheSync(c.stopCh, c.podInformer.HasSynced, c.configMapInformer.HasSynced) {
+	if !cache.WaitForCacheSync(c.stopCh, c.podInformer.HasSynced) {
 		return fmt.Errorf("failed to sync informer caches")
 	}
 	return nil
@@ -467,7 +465,7 @@ func (c *MemgraphController) stop() {
 
 	// Stop reconcile queue
 	c.stopReconcileQueue()
-	
+
 	// Stop failover check queue
 	c.stopFailoverCheckQueue()
 

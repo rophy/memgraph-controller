@@ -8,7 +8,6 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 )
 
@@ -42,12 +41,13 @@ func NewMemgraphCluster(clientset kubernetes.Interface, config *Config, memgraph
 }
 
 // DiscoverPods discovers running pods with the configured app name and updates cluster state
-func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) error {
-	podList, err := mc.clientset.CoreV1().Pods(mc.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: "app.kubernetes.io/name=" + mc.config.AppName,
-	})
-	if err != nil {
-		return err
+func (mc *MemgraphCluster) DiscoverPods(ctx context.Context, getPodList func() []v1.Pod) error {
+	// Get pods from informer cache instead of API call
+	pods := getPodList()
+	
+	// Create podList structure similar to API response
+	podList := &v1.PodList{
+		Items: pods,
 	}
 
 	// Create a map of podName to pod for quick lookup
@@ -63,7 +63,7 @@ func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) error {
 			if err := mc.MemgraphNodes[podName].InvalidateConnection(); err != nil {
 				log.Printf("Failed to invalidate connection for pod %s: %v", podName, err)
 			}
-			mc.MemgraphNodes[podName].PodExists = false
+			// Pod no longer exists - will be handled by MarkPodDeleted if needed
 		}
 	}
 
@@ -82,25 +82,6 @@ func (mc *MemgraphCluster) DiscoverPods(ctx context.Context) error {
 	return nil
 }
 
-// GetPodsByLabel discovers pods matching the given label selector and updates cluster state
-func (mc *MemgraphCluster) GetPodsByLabel(ctx context.Context, labelSelector string) error {
-	pods, err := mc.clientset.CoreV1().Pods(mc.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: labelSelector,
-	})
-	if err != nil {
-		return err
-	}
-
-	// Clear existing pods and repopulate with filtered results
-	mc.MemgraphNodes = make(map[string]*MemgraphNode)
-
-	for _, pod := range pods.Items {
-		node := NewMemgraphNode(&pod, mc.memgraphClient)
-		mc.MemgraphNodes[pod.Name] = node
-	}
-
-	return nil
-}
 
 // GetTargetMainPod returns the pod name for the given target main index
 func (mc *MemgraphCluster) GetTargetMainPod(targetMainIndex int) string {
@@ -131,136 +112,6 @@ func (mc *MemgraphCluster) GetTargetSyncReplica(targetMainIndex int) string {
 	return mc.config.GetPodName(syncReplicaIndex)
 }
 
-// RefreshClusterInfo refreshes cluster state information in operational phase
-func (mc *MemgraphCluster) RefreshClusterInfo(ctx context.Context, updateSyncReplicaInfoFunc func(*MemgraphCluster), detectMainFailoverFunc func(*MemgraphCluster) bool, handleMainFailoverFunc func(context.Context, *MemgraphCluster) error) error {
-	log.Println("Refreshing Memgraph cluster information...")
-
-	err := mc.DiscoverPods(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to discover pods: %w", err)
-	}
-
-	// Connection pool is already shared between MemgraphClient and ClusterState
-
-	if len(mc.MemgraphNodes) == 0 {
-		log.Println("No pods found in cluster")
-		return nil
-	}
-
-	// Always operational phase since bootstrap is handled separately
-	log.Printf("Controller in operational phase - maintaining OPERATIONAL_STATE authority")
-
-	log.Printf("Discovered %d pods, querying Memgraph state...", len(mc.MemgraphNodes))
-
-	// Track errors for comprehensive reporting
-	var queryErrors []error
-	successCount := 0
-
-	// Query Memgraph role and replicas for each pod
-	for podName, node := range mc.MemgraphNodes {
-		if node.BoltAddress == "" {
-			log.Printf("Skipping pod %s: no Bolt address", podName)
-			continue
-		}
-
-		log.Printf("Querying replication role for pod %s at %s", podName, node.BoltAddress)
-
-		// Query replication role with retry
-		err := node.QueryReplicationRole(ctx)
-		if err != nil {
-			log.Printf("Failed to query replication role for pod %s: %v", podName, err)
-			queryErrors = append(queryErrors, fmt.Errorf("pod %s role query: %w", podName, err))
-			continue
-		}
-
-		// MemgraphRole is set by QueryReplicationRole internally
-		log.Printf("Pod %s has Memgraph role: %s", podName, node.MemgraphRole)
-
-		// If this is a MAIN node, query its replicas
-		if node.MemgraphRole == "main" {
-			log.Printf("Querying replicas for main pod %s", podName)
-
-			replicasResp, err := node.QueryReplicas(ctx)
-			if err != nil {
-				log.Printf("Failed to query replicas for pod %s: %v", podName, err)
-				queryErrors = append(queryErrors, fmt.Errorf("pod %s replicas query: %w", podName, err))
-			} else {
-				// Store detailed replica information including sync mode
-				node.ReplicasInfo = replicasResp.Replicas
-
-				// Extract replica names for backward compatibility
-				var replicaNames []string
-				for _, replica := range replicasResp.Replicas {
-					replicaNames = append(replicaNames, replica.Name)
-				}
-				node.Replicas = replicaNames
-
-				// Log detailed replica information including sync modes
-				log.Printf("Pod %s has %d replicas:", podName, len(replicaNames))
-				for _, replica := range replicasResp.Replicas {
-					log.Printf("  - %s (sync_mode: %s)", replica.Name, replica.SyncMode)
-				}
-			}
-		}
-
-		// Classify the pod state based on collected information (TODO: implement state classification)
-		// newState := node.ClassifyState()
-		// if newState != node.State {
-		// 	log.Printf("Pod %s state changed from %s to %s", podName, node.State, newState)
-		// 	node.State = newState
-		// }
-
-		// Check for state inconsistencies (TODO: implement inconsistency detection)
-		// if inconsistency := node.DetectStateInconsistency(); inconsistency != nil {
-		//	log.Printf("WARNING: State inconsistency detected for pod %s: %s",
-		//		podName, inconsistency.Description)
-		// }
-
-		successCount++
-	}
-
-	// Update SYNC replica information based on actual main's replica data (via callback)
-	if updateSyncReplicaInfoFunc != nil {
-		updateSyncReplicaInfoFunc(mc)
-	}
-
-	// Operational phase - detect and handle main failover scenarios (via callbacks)
-	log.Println("Checking for main failover scenarios...")
-	if detectMainFailoverFunc != nil && detectMainFailoverFunc(mc) {
-		log.Printf("Main failover detected - handling failover...")
-		if handleMainFailoverFunc != nil {
-			if err := handleMainFailoverFunc(ctx, mc); err != nil {
-				log.Printf("⚠️  Failover handling failed: %v", err)
-				// Don't crash - log warning and continue as per design
-			}
-		}
-	}
-
-	// Operational phase properties set (no tracking needed)
-
-	// Validate controller state consistency
-	if warnings := mc.ValidateControllerState(mc.config); len(warnings) > 0 {
-		log.Printf("⚠️  Controller state validation warnings:")
-		for _, warning := range warnings {
-			log.Printf("  - %s", warning)
-		}
-	}
-
-	// Controller will call selectMainAfterQuerying separately
-
-	// Log summary of query results
-	log.Printf("Cluster discovery complete: %d/%d pods successfully queried",
-		successCount, len(mc.MemgraphNodes))
-
-	if len(queryErrors) > 0 {
-		log.Printf("Encountered %d errors during cluster discovery:", len(queryErrors))
-		for _, err := range queryErrors {
-			log.Printf("  - %v", err)
-		}
-	}
-
-	return nil
-}
 
 // ValidateControllerState validates the controller state consistency
 func (mc *MemgraphCluster) ValidateControllerState(config *Config) []string {
@@ -312,7 +163,7 @@ func (mc *MemgraphCluster) LogMainSelectionDecision(metrics *MainSelectionMetric
 
 // discoverClusterState implements DESIGN.md "Discover Cluster State" section (steps 1-4)
 // Returns target main index based on current cluster state
-func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int, error) {
+func (mc *MemgraphCluster) discoverClusterState(ctx context.Context, getPodFromCache func(string) (*v1.Pod, error)) (int, error) {
 	log.Println("=== DISCOVERING CLUSTER STATE ===")
 
 	// Step 1: If kubernetes status of either pod-0 or pod-1 is not ready, log warning and stop
@@ -322,7 +173,11 @@ func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int, error
 	pod0Node, pod0Exists := mc.MemgraphNodes[pod0Name]
 	pod1Node, pod1Exists := mc.MemgraphNodes[pod1Name]
 
-	if !pod0Exists || !pod1Exists || !isPodReady(pod0Node.Pod) || !isPodReady(pod1Node.Pod) {
+	// Check if pods are ready using cache
+	pod0, pod0CacheErr := getPodFromCache(pod0Name)
+	pod1, pod1CacheErr := getPodFromCache(pod1Name)
+	
+	if !pod0Exists || !pod1Exists || pod0CacheErr != nil || !isPodReady(pod0) || pod1CacheErr != nil || !isPodReady(pod1) {
 		log.Printf("DESIGN.md step 1: pod-0 or pod-1 not ready - cannot proceed with discovery")
 		return -1, fmt.Errorf("DESIGN.md step 1: pod-0 or pod-1 not ready - cannot proceed with discovery")
 	}

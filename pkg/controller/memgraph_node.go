@@ -21,8 +21,6 @@ type MemgraphNode struct {
 	Replicas      []string      // Result of SHOW REPLICAS (only for MAIN nodes)
 	ReplicasInfo  []ReplicaInfo // Detailed replica information including sync mode
 	IsSyncReplica bool          // True if this replica is configured as SYNC
-	Pod           *v1.Pod       // Reference to Kubernetes pod object
-	PodExists     bool          // True if pod currently exists in Kubernetes
 
 	// Memgraph client for database operations (shared connection pool underneath)
 	client *MemgraphClient
@@ -60,8 +58,6 @@ func NewMemgraphNode(pod *v1.Pod, client *MemgraphClient) *MemgraphNode {
 		Replicas:      []string{},
 		ReplicasInfo:  []ReplicaInfo{},
 		IsSyncReplica: false,
-		Pod:           pod,
-		PodExists:     true,
 		client:        client, // Required - all node methods depend on this
 	}
 }
@@ -85,23 +81,14 @@ func convertPodNameForReplica(podName string) string {
 	return result
 }
 
-// UpdatePod updates the pod reference and related fields (IP, addresses)
+// UpdatePod updates the node with new pod information (IP, addresses)
+// Note: IP change detection is handled by the connection pool
 func (node *MemgraphNode) UpdatePod(pod *v1.Pod) {
-	if node.Pod.Status.PodIP != pod.Status.PodIP {
-		log.Printf("Pod %s IP changed from %s to %s - invalidating connection",
-			pod.Name, node.Pod.Status.PodIP, pod.Status.PodIP)
-		if err := node.InvalidateConnection(); err != nil {
-			log.Printf("Failed to invalidate connection for pod %s: %v", pod.Name, err)
-		}
-	}
-
 	timestamp := pod.CreationTimestamp.Time
 	if pod.Status.StartTime != nil {
 		timestamp = pod.Status.StartTime.Time
 	}
 	node.Timestamp = timestamp
-	node.Pod = pod
-	node.PodExists = true
 
 	// Update Bolt address if Pod IP is available
 	if pod.Status.PodIP != "" {
@@ -111,10 +98,8 @@ func (node *MemgraphNode) UpdatePod(pod *v1.Pod) {
 	}
 }
 
-// MarkPodDeleted marks the pod as deleted (no longer exists in Kubernetes)
+// MarkPodDeleted marks the node as having no available pod (pod deleted)
 func (node *MemgraphNode) MarkPodDeleted() {
-	node.Pod = nil
-	node.PodExists = false
 	node.BoltAddress = ""
 }
 
@@ -124,21 +109,21 @@ func (node *MemgraphNode) GetReplicaName() string {
 }
 
 // GetReplicationAddress returns the replication address using pod IP for reliable connectivity
-func (node *MemgraphNode) GetReplicationAddress() string {
-	if node.Pod != nil && node.Pod.Status.PodIP != "" {
-		return node.Pod.Status.PodIP + ":10000"
+func (node *MemgraphNode) GetReplicationAddress(pod *v1.Pod) string {
+	if pod != nil && pod.Status.PodIP != "" {
+		return pod.Status.PodIP + ":10000"
 	}
 	return "" // Pod IP not available
 }
 
 // IsReadyForReplication checks if pod is ready for replication (has IP and passes readiness checks)
-func (node *MemgraphNode) IsReadyForReplication() bool {
-	if node.Pod == nil || node.Pod.Status.PodIP == "" {
+func (node *MemgraphNode) IsReadyForReplication(pod *v1.Pod) bool {
+	if pod == nil || pod.Status.PodIP == "" {
 		return false
 	}
 
 	// Check Kubernetes readiness conditions
-	for _, condition := range node.Pod.Status.Conditions {
+	for _, condition := range pod.Status.Conditions {
 		if condition.Type == v1.PodReady {
 			return condition.Status == v1.ConditionTrue
 		}
@@ -245,7 +230,7 @@ func (node *MemgraphNode) QueryStorageInfo(ctx context.Context) error {
 		return fmt.Errorf("failed to query storage info for node %s: %w", node.Name, err)
 	}
 	node.StorageInfo = storageInfo
-	log.Printf("Pod %s has storage info: vertices=%d, edges=%d", node.Pod.Name, storageInfo.VertexCount, storageInfo.EdgeCount)
+	log.Printf("Pod %s has storage info: vertices=%d, edges=%d", node.Name, storageInfo.VertexCount, storageInfo.EdgeCount)
 	return nil
 }
 
@@ -277,18 +262,18 @@ func (node *MemgraphNode) GetName() string {
 }
 
 // IsReady returns true if the Kubernetes pod is ready for connections
-func (node *MemgraphNode) IsReady() bool {
-	if node.Pod == nil {
+func (node *MemgraphNode) IsReady(pod *v1.Pod) bool {
+	if pod == nil {
 		return false
 	}
 	
 	// Check pod phase
-	if node.Pod.Status.Phase != v1.PodRunning {
+	if pod.Status.Phase != v1.PodRunning {
 		return false
 	}
 	
 	// Check readiness conditions
-	for _, condition := range node.Pod.Status.Conditions {
+	for _, condition := range pod.Status.Conditions {
 		if condition.Type == v1.PodReady {
 			return condition.Status == v1.ConditionTrue
 		}

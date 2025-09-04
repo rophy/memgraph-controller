@@ -2,6 +2,8 @@ package controller
 
 import (
 	"time"
+	
+	v1 "k8s.io/api/core/v1"
 )
 
 // StatusResponse represents the complete API response for cluster status
@@ -44,7 +46,7 @@ type StatusInconsistency struct {
 }
 
 // convertMemgraphNodeToStatus converts internal MemgraphNode to API PodStatus
-func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool) PodStatus {
+func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, pod *v1.Pod) PodStatus {
 	var inconsistency *StatusInconsistency
 
 	// Check for state inconsistencies (TODO: implement state inconsistency detection)
@@ -76,7 +78,7 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool) PodStatus {
 		State:              "unknown", // TODO: implement proper state
 		MemgraphRole:       node.MemgraphRole,
 		BoltAddress:        node.BoltAddress,
-		ReplicationAddress: node.GetReplicationAddress(),
+		ReplicationAddress: node.GetReplicationAddress(pod),
 		Timestamp:          node.Timestamp,
 		Healthy:            healthy,
 		IsSyncReplica:      node.IsSyncReplica,

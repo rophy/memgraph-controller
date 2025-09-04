@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -75,7 +76,15 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 	}
 	testClient := NewMemgraphClient(config)
 	controller.cluster = NewMemgraphCluster(fakeClient, config, testClient)
-	err := controller.cluster.DiscoverPods(context.Background())
+	err := controller.cluster.DiscoverPods(context.Background(), func() []v1.Pod {
+		podList, err := controller.cluster.clientset.CoreV1().Pods(controller.cluster.config.Namespace).List(context.Background(), metav1.ListOptions{
+			LabelSelector: fmt.Sprintf("app.kubernetes.io/name=%s", controller.cluster.config.AppName),
+		})
+		if err != nil {
+			return []v1.Pod{}
+		}
+		return podList.Items
+	})
 
 	if err != nil {
 		t.Fatalf("DiscoverPods() failed: %v", err)
@@ -111,46 +120,6 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 	// CurrentMain field has been removed - target main is now tracked via controller's target main index
 }
 
-func TestMemgraphController_GetPodsByLabel(t *testing.T) {
-	pod := &v1.Pod{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      "custom-pod",
-			Namespace: "memgraph",
-			Labels: map[string]string{
-				"custom": "label",
-			},
-		},
-		Status: v1.PodStatus{
-			Phase: v1.PodRunning,
-			PodIP: "10.0.0.3",
-		},
-	}
-
-	fakeClient := fake.NewSimpleClientset(pod)
-	config := &Config{
-		Namespace: "memgraph",
-	}
-
-	controller := &MemgraphController{
-		clientset: fakeClient,
-		config:    config,
-	}
-	testClient := NewMemgraphClient(config)
-	controller.cluster = NewMemgraphCluster(fakeClient, config, testClient)
-	err := controller.cluster.GetPodsByLabel(context.Background(), "custom=label")
-
-	if err != nil {
-		t.Fatalf("GetPodsByLabel() failed: %v", err)
-	}
-
-	if len(controller.cluster.MemgraphNodes) != 1 {
-		t.Errorf("Found %d pods, want 1", len(controller.cluster.MemgraphNodes))
-	}
-
-	if _, exists := controller.cluster.MemgraphNodes["custom-pod"]; !exists {
-		t.Error("Pod custom-pod not found")
-	}
-}
 
 // Tests for main controller discovery functions
 

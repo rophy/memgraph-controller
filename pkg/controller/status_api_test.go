@@ -40,7 +40,12 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 	// // node.State = MAIN // State removed // State removed
 
 	// Test healthy pod conversion
-	status := convertMemgraphNodeToStatus(node, true)
+	testPod := &v1.Pod{
+		Status: v1.PodStatus{
+			PodIP: "10.244.1.50",
+		},
+	}
+	status := convertMemgraphNodeToStatus(node, true, testPod)
 
 	if status.Name != "memgraph-0" {
 		t.Errorf("Expected name 'memgraph-0', got '%s'", status.Name)
@@ -68,7 +73,7 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 
 	// Test unhealthy pod conversion
 	node.MemgraphRole = "" // Simulate unreachable pod
-	statusUnhealthy := convertMemgraphNodeToStatus(node, false)
+	statusUnhealthy := convertMemgraphNodeToStatus(node, false, testPod)
 
 	if statusUnhealthy.Healthy {
 		t.Error("Expected pod to be unhealthy")
@@ -109,8 +114,8 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 	// node.State = REPLICA // State removed
 	node.IsSyncReplica = true
 
-	// Test SYNC replica conversion
-	status := convertMemgraphNodeToStatus(node, true)
+	// Test SYNC replica conversion  
+	status := convertMemgraphNodeToStatus(node, true, pod)
 
 	if status.Name != "memgraph-1" {
 		t.Errorf("Expected name 'memgraph-1', got '%s'", status.Name)
@@ -195,8 +200,8 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 			SyncReplicaHealthy: true,
 		},
 		Pods: []PodStatus{
-			convertMemgraphNodeToStatus(node1, true),
-			convertMemgraphNodeToStatus(node2, true),
+			convertMemgraphNodeToStatus(node1, true, pod1),
+			convertMemgraphNodeToStatus(node2, true, pod2),
 		},
 	}
 

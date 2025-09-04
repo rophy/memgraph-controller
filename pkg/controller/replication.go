@@ -302,13 +302,19 @@ func (c *MemgraphController) configureAsyncReplicas(ctx context.Context, cluster
 
 // configurePodAsAsyncReplica configures a specific pod as ASYNC replica
 func (c *MemgraphController) configurePodAsAsyncReplica(ctx context.Context, mainPod, replicaPod *MemgraphNode) error {
+	// Get pod from cache
+	pod, err := c.getPodFromCache(replicaPod.Name)
+	if err != nil {
+		return fmt.Errorf("replica pod %s not ready for replication (cannot get from cache: %v)", replicaPod.Name, err)
+	}
+	
 	replicaName := replicaPod.GetReplicaName()
-	replicaAddress := replicaPod.GetReplicationAddress()
+	replicaAddress := replicaPod.GetReplicationAddress(pod)
 
 	// Check if replica pod is ready for replication
-	if replicaAddress == "" || !replicaPod.IsReadyForReplication() {
+	if replicaAddress == "" || !replicaPod.IsReadyForReplication(pod) {
 		return fmt.Errorf("replica pod %s not ready for replication (IP: %s, Ready: %v)",
-			replicaPod.Name, replicaAddress, replicaPod.IsReadyForReplication())
+			replicaPod.Name, replicaAddress, replicaPod.IsReadyForReplication(pod))
 	}
 
 	// Check if already configured correctly as ASYNC
@@ -569,13 +575,19 @@ func (c *MemgraphController) configurePodAsSyncReplica(ctx context.Context, clus
 
 	log.Printf("Configuring %s as SYNC replica", podName)
 
+	// Get pod from cache
+	pod, err := c.getPodFromCache(targetPod.Name)
+	if err != nil {
+		return fmt.Errorf("target pod %s not found in cache: %w", podName, err)
+	}
+	
 	replicaName := targetPod.GetReplicaName()
-	replicaAddress := targetPod.GetReplicationAddress()
+	replicaAddress := targetPod.GetReplicationAddress(pod)
 
 	// Check if replica pod is ready for replication
-	if replicaAddress == "" || !targetPod.IsReadyForReplication() {
+	if replicaAddress == "" || !targetPod.IsReadyForReplication(pod) {
 		return fmt.Errorf("target pod %s not ready for replication (IP: %s, Ready: %v)",
-			podName, replicaAddress, targetPod.IsReadyForReplication())
+			podName, replicaAddress, targetPod.IsReadyForReplication(pod))
 	}
 
 	// Check if already configured as SYNC

@@ -2,27 +2,33 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
 )
 
 // setupInformers sets up Kubernetes informers for event-driven reconciliation
 func (c *MemgraphController) setupInformers() {
-	// Create shared informer factory
+	// Create shared informer factory with label selector filtering
+	labelSelector := fmt.Sprintf("app.kubernetes.io/name=%s", c.config.AppName)
 	c.informerFactory = informers.NewSharedInformerFactoryWithOptions(
 		c.clientset,
 		time.Second*30, // Resync period
 		informers.WithNamespace(c.config.Namespace),
+		informers.WithTweakListOptions(func(opts *metav1.ListOptions) {
+			opts.LabelSelector = labelSelector
+		}),
 	)
 
-	// Set up pod informer with label selector
+	// Set up pod informer - now automatically filtered to memgraph pods only
 	c.podInformer = c.informerFactory.Core().V1().Pods().Informer()
 
-	// Add event handlers for pods
+	// Add event handlers for pods - no manual filtering needed
 	c.podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc:    c.onPodAdd,
 		UpdateFunc: c.onPodUpdate,
@@ -71,9 +77,7 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 // onPodAdd handles pod addition events
 func (c *MemgraphController) onPodAdd(obj interface{}) {
 	pod := obj.(*v1.Pod)
-	if !c.config.IsMemgraphPod(pod.Name) {
-		return // Ignore unrelated pods
-	}
+	// No manual filtering needed - informer is already filtered to memgraph pods
 	c.enqueueReconcileEvent("pod-add", "pod-added", pod.Name)
 }
 
@@ -82,10 +86,7 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 
-	// Only process Memgraph pods
-	if !c.config.IsMemgraphPod(newPod.Name) {
-		return
-	}
+	// No manual filtering needed - informer is already filtered to memgraph pods
 
 	// Check for IP changes and update connection pool
 	if oldPod.Status.PodIP != newPod.Status.PodIP {

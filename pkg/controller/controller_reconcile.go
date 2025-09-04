@@ -8,7 +8,6 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // Run starts the controller reconciliation loop
@@ -52,12 +51,12 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				log.Println("ConfigMap not ready - performing discovery and creating ConfigMap...")
 				
 				// Discover current pods and populate cluster state
-				if err := c.cluster.DiscoverPods(ctx); err != nil {
+				if err := c.cluster.DiscoverPods(ctx, c.getPodsFromCache); err != nil {
 					return fmt.Errorf("failed to discover pods: %w", err)
 				}
 
 				// Use DESIGN.md compliant discovery logic to determine target main index
-				targetMainIndex, err := c.cluster.discoverClusterState(ctx)
+				targetMainIndex, err := c.cluster.discoverClusterState(ctx, c.getPodFromCache)
 				if err != nil {
 					return fmt.Errorf("failed to discover cluster state: %w", err)
 				}
@@ -87,7 +86,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	log.Println("Starting DESIGN.md compliant reconcile actions...")
 
 	// Step 1: List all memgraph pods with kubernetes status
-	err := c.cluster.DiscoverPods(ctx)
+	err := c.cluster.DiscoverPods(ctx, c.getPodsFromCache)
 	if err != nil {
 		return fmt.Errorf("step 1 failed: %w", err)
 	}
@@ -98,7 +97,8 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	}
 
 	// Step 2: If TargetMainPod is not ready, queue failover and wait
-	if !isPodReady(targetMainNode.Pod) {
+	targetMainPod, err := c.getPodFromCache(targetMainNode.Name)
+	if err != nil || !isPodReady(targetMainPod) {
 		log.Printf("TargetMainPod %s not ready, queuing failover check and waiting...", targetMainNode.Name)
 		
 		// Queue failover check and wait for completion
@@ -203,13 +203,14 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	// Count healthy vs unhealthy pods and find sync replica
 	healthyCount := 0
 	for podName, pod := range clusterState.MemgraphNodes {
-		if pod.Pod != nil && isPodReady(pod.Pod) {
+		if cachedPod, err := c.getPodFromCache(podName); err == nil && isPodReady(cachedPod) {
 			healthyCount++
 		}
 		// Find sync replica
 		if pod.IsSyncReplica {
 			statusResponse.CurrentSyncReplica = podName
-			statusResponse.SyncReplicaHealthy = pod.Pod != nil && isPodReady(pod.Pod)
+			syncPod, err := c.getPodFromCache(podName)
+			statusResponse.SyncReplicaHealthy = err == nil && isPodReady(syncPod)
 		}
 	}
 	statusResponse.HealthyPods = healthyCount
@@ -218,8 +219,9 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	// Convert pods to API format
 	var pods []PodStatus
 	for _, node := range clusterState.MemgraphNodes {
-		healthy := node.Pod != nil && isPodReady(node.Pod)
-		podStatus := convertMemgraphNodeToStatus(node, healthy)
+		pod, err := c.getPodFromCache(node.Name)
+		healthy := err == nil && isPodReady(pod)
+		podStatus := convertMemgraphNodeToStatus(node, healthy, pod)
 		pods = append(pods, podStatus)
 	}
 
@@ -245,11 +247,8 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 	log.Println("Starting DESIGN.md compliant reconcile actions...")
 
 	// Step 1: List all memgraph pods with kubernetes status
-	podList, err := c.listMemgraphPods(ctx)
-	if err != nil {
-		return fmt.Errorf("step 1 failed: %w", err)
-	}
-	log.Printf("Listed %d memgraph pods", len(podList))
+	pods := c.getPodsFromCache()
+	log.Printf("Listed %d memgraph pods", len(pods))
 
 	// Get target main index from ConfigMap
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
@@ -260,9 +259,9 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 	// Get target main pod based on TargetMainIndex
 	targetMainPodName := c.config.GetPodName(targetMainIndex)
 	var targetMainPod *v1.Pod
-	for _, pod := range podList {
-		if pod.Name == targetMainPodName {
-			targetMainPod = pod
+	for i := range pods {
+		if pods[i].Name == targetMainPodName {
+			targetMainPod = &pods[i]
 			break
 		}
 	}
@@ -302,32 +301,12 @@ func (c *MemgraphController) executeReconcileActions(ctx context.Context) error 
 	return nil
 }
 
-// listMemgraphPods implements DESIGN.md step 1
-func (c *MemgraphController) listMemgraphPods(ctx context.Context) ([]*v1.Pod, error) {
-	pods, err := c.clientset.CoreV1().Pods(c.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app.kubernetes.io/name=%s", c.config.AppName),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list pods: %w", err)
-	}
-
-	var podList []*v1.Pod
-	for i := range pods.Items {
-		pod := &pods.Items[i]
-		if c.config.IsMemgraphPod(pod.Name) {
-			podList = append(podList, pod)
-		}
-	}
-
-	log.Printf("Listed %d memgraph pods", len(podList))
-	return podList, nil
-}
 
 
 // configureReplication implements DESIGN.md steps 3-8
 func (c *MemgraphController) configureReplication(ctx context.Context, targetMainIndex int) error {
 	// Get current cluster state by querying pods
-	err := c.cluster.DiscoverPods(ctx)
+	err := c.cluster.DiscoverPods(ctx, c.getPodsFromCache)
 	if err != nil {
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}

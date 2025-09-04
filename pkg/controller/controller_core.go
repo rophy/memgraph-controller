@@ -98,10 +98,14 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 		if controllerNode == nil {
 			return nil, fmt.Errorf("no main node available")
 		}
+		pod, err := controller.getPodFromCache(controllerNode.Name)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get pod %s from cache: %w", controllerNode.Name, err)
+		}
 		return &gateway.MemgraphNode{
 			Name:        controllerNode.Name,
 			BoltAddress: controllerNode.BoltAddress,
-			Pod:         controllerNode.Pod,
+			Pod:         pod,
 		}, nil
 	}
 
@@ -305,7 +309,7 @@ func (c *MemgraphController) TestConnection() error {
 
 // TestMemgraphConnections tests connections to all discovered Memgraph pods
 func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error {
-	err := c.cluster.DiscoverPods(ctx)
+	err := c.cluster.DiscoverPods(ctx, c.getPodsFromCache)
 	if err != nil {
 		return fmt.Errorf("failed to discover pods: %w", err)
 	}
@@ -364,9 +368,13 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 
 	// Look for the pod that actually has the main role
 	for _, node := range c.cluster.MemgraphNodes {
-		if node.MemgraphRole == "main" && node.Pod != nil && node.Pod.Status.PodIP != "" {
-			// Found a pod that is actually in main role
-			return node, nil
+		if node.MemgraphRole == "main" {
+			// Check if pod exists in cache and has IP
+			pod, err := c.getPodFromCache(node.Name)
+			if err == nil && pod != nil && pod.Status.PodIP != "" {
+				// Found a pod that is actually in main role
+				return node, nil
+			}
 		}
 	}
 
@@ -378,8 +386,12 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 	podName := c.config.GetPodName(targetMainIndex)
 
 	// Check if the target pod exists in cluster state
-	if node, exists := c.cluster.MemgraphNodes[podName]; exists && node.Pod != nil {
-		return node, nil
+	if node, exists := c.cluster.MemgraphNodes[podName]; exists {
+		// Check if pod exists in cache
+		_, err := c.getPodFromCache(node.Name)
+		if err == nil {
+			return node, nil
+		}
 	}
 
 	// Last resort: fetch the pod directly
@@ -499,4 +511,18 @@ func (c *MemgraphController) getPodFromCache(podName string) (*v1.Pod, error) {
 		return nil, fmt.Errorf("cached object for %s is not a Pod", podName)
 	}
 	return pod, nil
+}
+
+// getPodsFromCache retrieves all memgraph pods from the informer cache
+func (c *MemgraphController) getPodsFromCache() []v1.Pod {
+	objects := c.podInformer.GetStore().List()
+	pods := make([]v1.Pod, 0, len(objects))
+	
+	for _, obj := range objects {
+		if pod, ok := obj.(*v1.Pod); ok {
+			pods = append(pods, *pod)
+		}
+	}
+	
+	return pods
 }

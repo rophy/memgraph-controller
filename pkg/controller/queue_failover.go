@@ -199,6 +199,10 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 	// Step 4: All conditions met - perform failover
 	log.Printf("🔄 Failover conditions met: main pod %s down, sync replica %s ready with replica role", podName, targetSyncReplicaNode.Name)
 
+	// Step 4a: Immediately terminate all gateway connections (DESIGN.md line 159)
+	log.Printf("🔌 Terminating all gateway connections for failover")
+	c.gatewayServer.DisconnectAll()
+
 	// Determine new target main index (swap to sync replica)
 	var newTargetMainIndex int
 	if targetMainIndex == 0 {
@@ -209,7 +213,7 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 	log.Printf("🔄 Performing failover: %s (index %d) -> %s (index %d)",
 		podName, targetMainIndex, targetSyncReplicaNode.Name, newTargetMainIndex)
 
-	// Promote sync replica to main role
+	// Step 4b: Promote sync replica to main role (DESIGN.md line 162)
 	if err := targetSyncReplicaNode.SetToMainRole(ctx); err != nil {
 		return fmt.Errorf("failed to set sync replica %s to main role: %w", targetSyncReplicaNode.Name, err)
 	}

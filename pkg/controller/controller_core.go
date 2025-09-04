@@ -485,3 +485,20 @@ func (c *MemgraphController) GetControllerStatus() map[string]interface{} {
 		"metrics":    c.GetReconciliationMetrics(),
 	}
 }
+
+// getPodFromCache retrieves a pod from the informer cache instead of making API calls
+func (c *MemgraphController) getPodFromCache(podName string) (*v1.Pod, error) {
+	key := fmt.Sprintf("%s/%s", c.config.Namespace, podName)
+	obj, exists, err := c.podInformer.GetStore().GetByKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod %s from cache: %w", podName, err)
+	}
+	if !exists {
+		return nil, fmt.Errorf("pod %s not found in cache", podName)
+	}
+	pod, ok := obj.(*v1.Pod)
+	if !ok {
+		return nil, fmt.Errorf("cached object for %s is not a Pod", podName)
+	}
+	return pod, nil
+}

@@ -6,8 +6,6 @@ import (
 	"log"
 	"sync"
 	"time"
-
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
 // FailoverCheckEvent represents an event that triggers failover checking
@@ -127,10 +125,10 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 
 	var mainFunctioning bool
 
-	// First check if pod exists and is ready in Kubernetes
-	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	// First check if pod exists and is ready in Kubernetes (using informer cache)
+	pod, err := c.getPodFromCache(podName)
 	if err != nil {
-		log.Printf("Failover check: Target main pod %s not found in Kubernetes: %v", podName, err)
+		log.Printf("Failover check: Target main pod %s not found in cache: %v", podName, err)
 		mainFunctioning = false
 	} else if !isPodReady(pod) {
 		log.Printf("Failover check: Target main pod %s exists but is not ready", podName)
@@ -172,10 +170,10 @@ func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName s
 		return fmt.Errorf("failed to get target sync replica node: %w", err)
 	}
 
-	// Check if sync replica pod is ready
-	syncReplicaPod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, targetSyncReplicaNode.Name, metav1.GetOptions{})
+	// Check if sync replica pod is ready (using informer cache)
+	syncReplicaPod, err := c.getPodFromCache(targetSyncReplicaNode.Name)
 	if err != nil {
-		return fmt.Errorf("failed to get sync replica pod %s: %w", targetSyncReplicaNode.Name, err)
+		return fmt.Errorf("failed to get sync replica pod %s from cache: %w", targetSyncReplicaNode.Name, err)
 	}
 
 	if !isPodReady(syncReplicaPod) {

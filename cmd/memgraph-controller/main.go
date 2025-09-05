@@ -5,7 +5,6 @@ import (
 	"log"
 	"os"
 	"os/signal"
-	"sync"
 	"syscall"
 	"time"
 
@@ -52,12 +51,10 @@ func main() {
 		log.Fatalf("Failed to initialize controller: %v", err)
 	}
 
-	var wg sync.WaitGroup
-
 	// Start reconciliation loop
-	wg.Add(1)
+	done := make(chan struct{})
 	go func() {
-		defer wg.Done()
+		defer close(done)
 		log.Println("Starting reconciliation loop...")
 		if err := ctrl.Run(ctx); err != nil && err != context.Canceled {
 			log.Printf("Controller reconciliation loop failed: %v", err)
@@ -90,8 +87,8 @@ func main() {
 		cancel()
 	}()
 
-	// Wait for all components to finish
-	wg.Wait()
+	// Wait for reconciliation loop to finish
+	<-done
 	log.Println("Controller shutdown complete")
 }
 

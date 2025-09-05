@@ -140,6 +140,45 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	return controller
 }
 
+// Initialize starts all controller components (informers, servers, leader election)
+// This should be called after NewMemgraphController but before Run
+func (c *MemgraphController) Initialize(ctx context.Context) error {
+	log.Println("Initializing Memgraph Controller components...")
+
+	// STEP 1: Start Kubernetes informers
+	log.Println("Starting Kubernetes informers...")
+	if err := c.StartInformers(); err != nil {
+		return fmt.Errorf("failed to start informers: %w", err)
+	}
+	log.Println("Informer caches synced successfully")
+
+	// STEP 2: Start HTTP server for status API (always running, not leader-dependent)
+	log.Println("Starting HTTP server...")
+	if err := c.StartHTTPServer(); err != nil {
+		return fmt.Errorf("failed to start HTTP server: %w", err)
+	}
+	log.Printf("HTTP server started successfully on port %s", c.config.HTTPPort)
+
+	// STEP 3: Start gateway server
+	log.Println("Starting gateway server...")
+	if err := c.StartGatewayServer(ctx); err != nil {
+		return fmt.Errorf("failed to start gateway server: %w", err)
+	}
+	log.Println("Gateway server started successfully")
+
+	// STEP 4: Start leader election (in background goroutine)
+	log.Println("Starting leader election...")
+	go func() {
+		if err := c.RunLeaderElection(ctx); err != nil {
+			log.Printf("Leader election failed: %v", err)
+		}
+	}()
+	log.Println("Leader election started successfully")
+
+	log.Println("✅ All controller components initialized successfully")
+	return nil
+}
+
 // GetTargetMainIndex returns the target main index from ConfigMap or error if not available
 func (c *MemgraphController) GetTargetMainIndex(ctx context.Context) (int, error) {
 	if c.targetMainIndex != -1 {

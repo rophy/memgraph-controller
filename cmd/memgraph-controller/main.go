@@ -37,7 +37,7 @@ func main() {
 		log.Fatalf("Failed to connect to Kubernetes API: %v", err)
 	}
 
-	log.Println("Memgraph Controller initialized successfully")
+	log.Println("Memgraph Controller created successfully")
 
 	// Set up graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -47,40 +47,14 @@ func main() {
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// STEP 1: Start Kubernetes informers
-	log.Println("Starting Kubernetes informers...")
-	if err := ctrl.StartInformers(); err != nil {
-		log.Fatalf("Failed to start informers: %v", err)
+	// Initialize all controller components
+	if err := ctrl.Initialize(ctx); err != nil {
+		log.Fatalf("Failed to initialize controller: %v", err)
 	}
-	log.Println("Informer caches synced successfully")
-
-	// STEP 2: Start HTTP server for status API (always running, not leader-dependent)
-	log.Println("Starting HTTP server...")
-	if err := ctrl.StartHTTPServer(); err != nil {
-		log.Fatalf("Failed to start HTTP server: %v", err)
-	}
-	log.Println("HTTP server started successfully on port", config.HTTPPort)
-
-	// STEP 3: Start gateway server
-	log.Println("Starting gateway server...")
-	if err := ctrl.StartGatewayServer(ctx); err != nil {
-		log.Fatalf("Failed to start gateway server: %v", err)
-	}
-	log.Println("Gateway server started successfully")
-
-	// STEP 4: Start leader election
-	log.Println("Starting leader election...")
-	go func() {
-		if err := ctrl.RunLeaderElection(ctx); err != nil {
-			log.Printf("Leader election failed: %v", err)
-			cancel()
-		}
-	}()
-	log.Println("Leader election started successfully")
 
 	var wg sync.WaitGroup
 
-	// STEP 5: Start reconciliation loop
+	// Start reconciliation loop
 	wg.Add(1)
 	go func() {
 		defer wg.Done()

@@ -179,6 +179,32 @@ func (c *MemgraphController) Initialize(ctx context.Context) error {
 	return nil
 }
 
+// Shutdown stops all controller components gracefully
+func (c *MemgraphController) Shutdown(ctx context.Context) error {
+	log.Println("Shutting down all controller components...")
+
+	// Stop HTTP server
+	if err := c.StopHTTPServer(ctx); err != nil {
+		log.Printf("HTTP server shutdown error: %v", err)
+	} else {
+		log.Println("HTTP server stopped successfully")
+	}
+
+	// Stop gateway server
+	if err := c.StopGatewayServer(ctx); err != nil {
+		log.Printf("Gateway server shutdown error: %v", err)
+	} else {
+		log.Println("Gateway server stopped successfully")
+	}
+
+	// Stop informers
+	c.StopInformers()
+	log.Println("Informers stopped successfully")
+
+	log.Println("✅ All controller components shut down successfully")
+	return nil
+}
+
 // GetTargetMainIndex returns the target main index from ConfigMap or error if not available
 func (c *MemgraphController) GetTargetMainIndex(ctx context.Context) (int, error) {
 	if c.targetMainIndex != -1 {

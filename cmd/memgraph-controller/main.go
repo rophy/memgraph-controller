@@ -71,19 +71,7 @@ func main() {
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
 		
-		// Stop HTTP server
-		if err := ctrl.StopHTTPServer(shutdownCtx); err != nil {
-			log.Printf("HTTP server shutdown error: %v", err)
-		}
-		
-		// Stop gateway server
-		if err := ctrl.StopGatewayServer(shutdownCtx); err != nil {
-			log.Printf("Gateway server shutdown error: %v", err)
-		}
-		
-		// Stop informers
-		ctrl.StopInformers()
-		
+		ctrl.Shutdown(shutdownCtx)
 		cancel()
 	}()
 

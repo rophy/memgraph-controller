@@ -56,7 +56,7 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				}
 
 				// Use DESIGN.md compliant discovery logic to determine target main index
-				targetMainIndex, err := c.cluster.discoverClusterState(ctx, c.getPodFromCache)
+				targetMainIndex, err := c.cluster.discoverClusterState(ctx)
 				if err != nil {
 					return fmt.Errorf("failed to discover cluster state: %w", err)
 				}

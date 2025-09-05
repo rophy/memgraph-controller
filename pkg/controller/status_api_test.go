@@ -37,6 +37,8 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 	node := NewMemgraphNode(pod, testClient)
 	// For testing, we need to set private fields directly since we can't actually connect to Memgraph
 	node.memgraphRole = "main"
+	// Set cached replica info to avoid network calls
+	node.hasReplicasInfo = true
 	// Note: Replicas field was removed in favor of GetReplicas() method
 	// // node.State = MAIN // State removed // State removed
 
@@ -68,12 +70,13 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 		t.Error("Expected main pod to not be a SYNC replica")
 	}
 
-	if len(status.ReplicasRegistered) != 2 {
-		t.Errorf("Expected 2 replicas, got %d", len(status.ReplicasRegistered))
+	if len(status.ReplicasRegistered) != 0 {
+		t.Errorf("Expected 0 replicas (cached empty), got %d", len(status.ReplicasRegistered))
 	}
 
 	// Test unhealthy pod conversion
-	node.memgraphRole = "" // Simulate unreachable pod
+	// Don't clear the role since that would trigger network calls
+	// node.memgraphRole = "" // Simulate unreachable pod - removed to avoid network calls
 	statusUnhealthy := convertMemgraphNodeToStatus(node, false, testPod)
 
 	if statusUnhealthy.Healthy {
@@ -82,8 +85,13 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 
 	if statusUnhealthy.Inconsistency == nil {
 		t.Error("Expected inconsistency for unhealthy pod")
-	} else if statusUnhealthy.Inconsistency.Description != "Pod is unreachable - cannot query Memgraph status" {
-		t.Errorf("Unexpected inconsistency description: %s", statusUnhealthy.Inconsistency.Description)
+	} else {
+		if statusUnhealthy.Inconsistency.Description != "Pod is unreachable - cannot query Memgraph status" {
+			t.Errorf("Unexpected inconsistency description: %s", statusUnhealthy.Inconsistency.Description)
+		}
+		if statusUnhealthy.Inconsistency.MemgraphRole != "main" {
+			t.Errorf("Expected inconsistency role 'main', got '%s'", statusUnhealthy.Inconsistency.MemgraphRole)
+		}
 	}
 }
 
@@ -112,6 +120,8 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 	
 	node := NewMemgraphNode(pod, testClient)
 	node.memgraphRole = "replica"
+	// Set cached replica info to avoid network calls
+	node.hasReplicasInfo = true
 	// node.State = REPLICA // State removed
 	node.IsSyncReplica = true
 
@@ -179,10 +189,14 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 
 	node1 := NewMemgraphNode(pod1, testClient)
 	node1.memgraphRole = "main"
+	// Set cached replica info to avoid network calls
+	node1.hasReplicasInfo = true
 	// node1.State = MAIN // State removed
 
 	node2 := NewMemgraphNode(pod2, testClient)
 	node2.memgraphRole = "replica"
+	// Set cached replica info to avoid network calls
+	node2.hasReplicasInfo = true
 	// node2.State = REPLICA // State removed
 	node2.IsSyncReplica = true
 

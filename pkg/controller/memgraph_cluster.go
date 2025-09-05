@@ -157,7 +157,7 @@ func (mc *MemgraphCluster) LogMainSelectionDecision(metrics *MainSelectionMetric
 
 // discoverClusterState implements DESIGN.md "Discover Cluster State" section (steps 1-4)
 // Returns target main index based on current cluster state
-func (mc *MemgraphCluster) discoverClusterState(ctx context.Context, getPodFromCache func(string) (*v1.Pod, error)) (int, error) {
+func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int, error) {
 	log.Println("=== DISCOVERING CLUSTER STATE ===")
 
 	// Step 1: If kubernetes status of either pod-0 or pod-1 is not ready, log warning and stop
@@ -166,12 +166,23 @@ func (mc *MemgraphCluster) discoverClusterState(ctx context.Context, getPodFromC
 
 	pod0Node, pod0Exists := mc.MemgraphNodes[pod0Name]
 	pod1Node, pod1Exists := mc.MemgraphNodes[pod1Name]
+	
+	pod0Obj, pod0CacheExists, pod0CacheErr := mc.podCacheStore.GetByKey(pod0Name)
+	pod1Obj, pod1CacheExists, pod1CacheErr := mc.podCacheStore.GetByKey(pod1Name)
 
-	// Check if pods are ready using cache
-	pod0, pod0CacheErr := getPodFromCache(pod0Name)
-	pod1, pod1CacheErr := getPodFromCache(pod1Name)
+	var pod0Ready, pod1Ready bool
+	if pod0CacheExists && pod0CacheErr == nil {
+		if pod, ok := pod0Obj.(*v1.Pod); ok {
+			pod0Ready = isPodReady(pod)
+		}
+	}
+	if pod1CacheExists && pod1CacheErr == nil {
+		if pod, ok := pod1Obj.(*v1.Pod); ok {
+			pod1Ready = isPodReady(pod)
+		}
+	}
 
-	if !pod0Exists || !pod1Exists || pod0CacheErr != nil || !isPodReady(pod0) || pod1CacheErr != nil || !isPodReady(pod1) {
+	if !pod0Exists || !pod1Exists || pod0CacheErr != nil || !pod0Ready || pod1CacheErr != nil || !pod1Ready {
 		log.Printf("DESIGN.md step 1: pod-0 or pod-1 not ready - cannot proceed with discovery")
 		return -1, fmt.Errorf("DESIGN.md step 1: pod-0 or pod-1 not ready - cannot proceed with discovery")
 	}

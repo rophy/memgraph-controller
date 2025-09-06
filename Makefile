@@ -28,12 +28,9 @@ test-e2e: ## Run shell-based E2E tests
 	@echo "Running shell-based E2E tests..."
 	./tests/scripts/simple-e2e-tests.sh
 
-# Development targets
-up: ## Deploy memgraph cluster only (no controller)
-	skaffold run --profile memgraph-only
 
 run: ## Deploy full memgraph-ha cluster with controller (background)
-	skaffold run --tail
+	skaffold run
 
 down: ## Remove all skaffold resources and PVCs
 	skaffold delete

@@ -58,6 +58,11 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				if err != nil {
 					return fmt.Errorf("failed to discover cluster state: %w", err)
 				}
+				if targetMainIndex == -1 {
+					// -1 without error means cluster is not ready to be discovered
+					log.Printf("Cluster is not ready to be discovered")
+					continue
+				}
 
 				// Create ConfigMap with discovered target main index
 				if err := c.SetTargetMainIndex(ctx, targetMainIndex); err != nil {

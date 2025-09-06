@@ -98,64 +98,131 @@ func (mc *MemgraphCluster) getPodsFromCache() []v1.Pod {
 }
 
 // discoverClusterState implements DESIGN.md "Discover Cluster State" section (steps 1-4)
-// Returns target main index based on current cluster state
+// Returns (targetMainIndex, nil) if cluster is ready
+// Returns (-1, nil) if cluster is not ready to be discovered
+// Returns (-1, error) if cluster is in an unknown state
 func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int, error) {
-	log.Println("=== DISCOVERING CLUSTER STATE ===")
 
-	// Step 1: If kubernetes status of either pod-0 or pod-1 is not ready, log warning and stop
 	pod0Name := mc.config.GetPodName(0)
 	pod1Name := mc.config.GetPodName(1)
 
-	pod0Node, pod0Exists := mc.MemgraphNodes[pod0Name]
-	pod1Node, pod1Exists := mc.MemgraphNodes[pod1Name]
+	// discoverClusterState step 1
+	log.Printf("discoverClusterState step 1: %s and %s must be ready", pod0Name, pod1Name)
 
-	pod0Obj, pod0CacheExists, pod0CacheErr := mc.podCacheStore.GetByKey(pod0Name)
-	pod1Obj, pod1CacheExists, pod1CacheErr := mc.podCacheStore.GetByKey(pod1Name)
-
-	var pod0Ready, pod1Ready bool
-	if pod0CacheExists && pod0CacheErr == nil {
-		if pod, ok := pod0Obj.(*v1.Pod); ok {
-			pod0Ready = isPodReady(pod)
-		}
+	err := mc.Refresh(ctx)
+	if err != nil {
+		log.Printf("Failed to refresh cluster state: %v", err)
+		return -1, nil
 	}
-	if pod1CacheExists && pod1CacheErr == nil {
-		if pod, ok := pod1Obj.(*v1.Pod); ok {
-			pod1Ready = isPodReady(pod)
-		}
+	// The key for podCacheStore is "namespace/podName"
+	pod0Key := fmt.Sprintf("%s/%s", mc.config.Namespace, pod0Name)
+	pod0Obj, pod0Exists, pod0Err := mc.podCacheStore.GetByKey(pod0Key)
+	if pod0Err != nil {
+		log.Printf("Failed to get %s from cache: %v", pod0Key, pod0Err)
+		return -1, nil
 	}
-
-	if !pod0Exists || !pod1Exists || pod0CacheErr != nil || !pod0Ready || pod1CacheErr != nil || !pod1Ready {
-		log.Printf("DESIGN.md step 1: pod-0 or pod-1 not ready - cannot proceed with discovery")
-		return -1, fmt.Errorf("DESIGN.md step 1: pod-0 or pod-1 not ready - cannot proceed with discovery")
+	if !pod0Exists {
+		log.Printf("Pod %s does not exist", pod0Key)
+		return -1, nil
 	}
-
-	// Query Memgraph roles for both pods
-	if err := mc.queryMemgraphRoles(ctx); err != nil {
-		return -1, fmt.Errorf("failed to query Memgraph roles: %w", err)
+	if !isPodReady(pod0Obj.(*v1.Pod)) {
+		log.Printf("Pod %s is not ready", pod0Key)
+		return -1, nil
 	}
 
-	// Step 2: If both pod-0 and pod-1 have replication role as `MAIN` and storage shows 0 edge_count, 0 vertex_count
-	if mc.isBothMainWithEmptyStorage(ctx) {
-		log.Println("✅ DESIGN.md step 2: INITIAL_STATE detected (both MAIN, empty storage)")
-		// Initialize cluster with pod-0 as main
+	pod1Key := fmt.Sprintf("%s/%s", mc.config.Namespace, pod1Name)
+	pod1Obj, pod1Exists, pod1Err := mc.podCacheStore.GetByKey(pod1Key)
+	if pod1Err != nil {
+		log.Printf("Failed to get %s from cache: %v", pod1Key, pod1Err)
+		return -1, nil
+	}
+	if !pod1Exists {
+		log.Printf("Pod %s does not exist", pod1Key)
+		return -1, nil
+	}
+	if !isPodReady(pod1Obj.(*v1.Pod)) {
+		log.Printf("Pod %s is not ready", pod1Key)
+		return -1, nil
+	}
+
+	// discoverClusterState step 2
+	log.Printf("discoverClusterState step 2: check if both %s and %s are new nodes", pod0Name, pod1Name)
+	isNew, err := mc.isNewCluster(ctx)
+	if err != nil {
+		return -1, fmt.Errorf("failed to check if this is a new cluster: %w", err)
+	}
+	if isNew {
+		log.Printf("discoverClusterState step 2: this appears to be a new cluster, initializing")
 		if err := mc.initializeCluster(ctx); err != nil {
 			return -1, fmt.Errorf("failed to initialize cluster: %w", err)
 		}
 		return 0, nil // pod-0 becomes main
 	}
 
-	// Step 3: If one of pod-0 and pod-1 has replication role as `REPLICA`, the other one as `MAIN`
-	if mainPodIndex := mc.getSingleMainPodIndex(); mainPodIndex >= 0 {
-		log.Printf("✅ DESIGN.md step 3: OPERATIONAL_STATE detected (main: pod-%d)", mainPodIndex)
-		return mainPodIndex, nil
+	// discoverClusterState step 3
+	log.Printf("discoverClusterState step 3: determine main pod")
+	pod0Role, err := mc.MemgraphNodes[pod0Name].GetReplicationRole(ctx)
+	if err != nil {
+		log.Printf("Failed to get replication role for %s: %v", pod0Name, err)
+		return -1, fmt.Errorf("failed to get replication role for %s: %w", pod0Name, err)
+	}
+	pod1Role, err := mc.MemgraphNodes[pod1Name].GetReplicationRole(ctx)
+	if err != nil {
+		log.Printf("Failed to get replication role for %s: %v", pod1Name, err)
+		return -1, fmt.Errorf("failed to get replication role for %s: %w", pod1Name, err)
+	}
+	log.Printf("Pod roles: %s=%s, %s=%s", pod0Name, pod0Role, pod1Name, pod1Role)
+	if pod0Role == "main" && pod1Role == "replica" {
+		log.Printf("discoverClusterState step 3: %s is main, %s is sync replica", pod0Name, pod1Name)
+		return 0, nil
+	}
+	if pod0Role == "replica" && pod1Role == "main" {
+		log.Printf("discoverClusterState step 3: %s is sync replica, %s is main", pod0Name, pod1Name)
+		return 1, nil
 	}
 
-	// Step 4: Otherwise, memgraph-ha is in an unknown state, controller log error and crash immediately
-	log.Printf("❌ DESIGN.md step 4: UNKNOWN_STATE detected")
-	pod0Role, _ := pod0Node.GetReplicationRole(ctx)
-	pod1Role, _ := pod1Node.GetReplicationRole(ctx)
-	log.Printf("Pod roles: pod-0=%s, pod-1=%s", pod0Role, pod1Role)
-	return -1, fmt.Errorf("UNKNOWN_STATE: controller must crash - manual intervention required")
+	// discoverClusterState step 4: memgraph-ha is in an unknown state
+	log.Printf("❌ discoverClusterState step 4: cluster is in an unknown state - manual intervention required")
+	return -1, fmt.Errorf("cluster is in an unknown state - manual intervention required")
+}
+
+// isNewCluster checks if the cluster is new
+func (mc *MemgraphCluster) isNewCluster(ctx context.Context) (bool, error) {
+
+	pod0Name := mc.config.GetPodName(0)
+	pod1Name := mc.config.GetPodName(1)
+	node0 := mc.MemgraphNodes[pod0Name]
+	node1 := mc.MemgraphNodes[pod1Name]
+
+	pod0Role, err := node0.GetReplicationRole(ctx)
+	if err != nil {
+		log.Printf("Failed to get replication role for %s: %v", pod0Name, err)
+		return false, fmt.Errorf("failed to get replication role for %s: %w", pod0Name, err)
+	}
+	pod1Role, err := node1.GetReplicationRole(ctx)
+	if err != nil {
+		log.Printf("Failed to get replication role for %s: %v", pod1Name, err)
+		return false, fmt.Errorf("failed to get replication role for %s: %w", pod1Name, err)
+	}
+
+	if pod0Role != "main" || pod1Role != "main" {
+		return false, nil
+	}
+	if err := node0.QueryStorageInfo(ctx); err != nil {
+		return false, fmt.Errorf("failed to query storage info for %s: %w", pod0Name, err)
+	}
+	if node0.storageInfo.EdgeCount != 0 || node0.storageInfo.VertexCount != 0 {
+		return false, nil
+	}
+	if err := node1.QueryStorageInfo(ctx); err != nil {
+		return false, fmt.Errorf("failed to query storage info for %s: %w", pod1Name, err)
+	}
+	if node1.storageInfo.EdgeCount != 0 || node1.storageInfo.VertexCount != 0 {
+		return false, nil
+	}
+
+	// Both pods are main and empty, this is a new cluster
+	return true, nil
 }
 
 // initializeCluster implements DESIGN.md "Initialize Memgraph Cluster" section
@@ -213,92 +280,4 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 
 	log.Printf("✅ Initialize Memgraph Cluster completed: pod-0 is MAIN, pod-1 is SYNC REPLICA")
 	return nil
-}
-
-// queryMemgraphRoles queries replication roles from both pods
-func (mc *MemgraphCluster) queryMemgraphRoles(ctx context.Context) error {
-	for podName, podNode := range mc.MemgraphNodes {
-		if !mc.config.IsMemgraphPod(podName) {
-			continue
-		}
-
-		if podNode.GetBoltAddress() == "" {
-			log.Printf("Skipping role query for %s: no bolt address", podName)
-			continue
-		}
-
-		if _, err := podNode.GetReplicationRole(ctx); err != nil {
-			log.Printf("Failed to query role for %s: %v", podName, err)
-			continue
-		}
-
-		if role, err := podNode.GetReplicationRole(ctx); err == nil {
-			log.Printf("Pod %s has Memgraph role: %s", podName, role)
-		}
-	}
-
-	return nil
-}
-
-// isBothMainWithEmptyStorage checks DESIGN.md step 2 condition
-func (mc *MemgraphCluster) isBothMainWithEmptyStorage(ctx context.Context) bool {
-	pod0Name := mc.config.GetPodName(0)
-	pod1Name := mc.config.GetPodName(1)
-
-	pod0Node := mc.MemgraphNodes[pod0Name]
-	pod1Node := mc.MemgraphNodes[pod1Name]
-
-	// Both must have MAIN role
-	pod0Role, _ := pod0Node.GetReplicationRole(ctx)
-	pod1Role, _ := pod1Node.GetReplicationRole(ctx)
-	if pod0Role != "MAIN" || pod1Role != "MAIN" {
-		return false
-	}
-
-	// Both must have empty storage
-	return mc.hasEmptyStorage(ctx, pod0Node) && mc.hasEmptyStorage(ctx, pod1Node)
-}
-
-// getSingleMainPodIndex checks DESIGN.md step 3 condition - returns main pod index if exactly one main found
-func (mc *MemgraphCluster) getSingleMainPodIndex() int {
-	pod0Name := mc.config.GetPodName(0)
-	pod1Name := mc.config.GetPodName(1)
-
-	pod0Node := mc.MemgraphNodes[pod0Name]
-	pod1Node := mc.MemgraphNodes[pod1Name]
-
-	if pod0Node == nil || pod1Node == nil {
-		return -1
-	}
-
-	// Check if exactly one is main and one is replica
-	pod0Role, _ := pod0Node.GetReplicationRole(context.Background())
-	pod1Role, _ := pod1Node.GetReplicationRole(context.Background())
-	if pod0Role == "MAIN" && pod1Role == "REPLICA" {
-		return 0
-	}
-	if pod1Role == "MAIN" && pod0Role == "REPLICA" {
-		return 1
-	}
-
-	return -1
-}
-
-// hasEmptyStorage checks if pod has empty storage (0 edges, 0 vertices)
-func (mc *MemgraphCluster) hasEmptyStorage(ctx context.Context, podNode *MemgraphNode) bool {
-	if podNode.GetBoltAddress() == "" {
-		log.Printf("Cannot check storage for pod %s: no bolt address", podNode.GetName())
-		return false
-	}
-
-	if err := podNode.QueryStorageInfo(ctx); err != nil {
-		log.Printf("Failed to query storage info for %s: %v", podNode.GetName(), err)
-		return false
-	}
-
-	isEmpty := podNode.storageInfo.EdgeCount == 0 && podNode.storageInfo.VertexCount == 0
-	log.Printf("Pod %s storage: %d vertices, %d edges (empty: %v)",
-		podNode.GetName(), podNode.storageInfo.VertexCount, podNode.storageInfo.EdgeCount, isEmpty)
-
-	return isEmpty
 }

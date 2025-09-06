@@ -24,8 +24,12 @@ clean: ## Remove build artifacts
 test: ## Run unit tests
 	go test -v ./...
 
-test-e2e: ## Run E2E tests as Kubernetes Job (recommended)
-	@echo "Running E2E tests as Kubernetes Job..."
+test-e2e: ## Run shell-based E2E tests (recommended)
+	@echo "Running shell-based E2E tests..."
+	./tests/scripts/simple-e2e-tests.sh
+
+test-e2e-go: ## Run Go-based E2E tests as Kubernetes Job (legacy)
+	@echo "Running Go-based E2E tests as Kubernetes Job..."
 	skaffold run -p e2e-test
 	@echo "E2E tests completed. Check logs above for results."
 

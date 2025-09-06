@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"sync"
 	"time"
@@ -16,23 +15,10 @@ import (
 	"k8s.io/client-go/tools/cache"
 
 	"memgraph-controller/pkg/gateway"
+	"memgraph-controller/pkg/logging"
 )
 
-// generateStateConfigMapName creates a ConfigMap name based on the release name
-func generateStateConfigMapName() string {
-	configMapName := ""
-	releaseName := os.Getenv("RELEASE_NAME")
-	if releaseName == "" {
-		log.Printf("Warning: RELEASE_NAME env var not set, using default ConfigMap name")
-		configMapName = "memgraph-controller-state"
-	}
-	configMapName = fmt.Sprintf("%s-state", releaseName)
-	// Truncate to 63 characters
-	if len(configMapName) > 63 {
-		configMapName = configMapName[:63]
-	}
-	return configMapName
-}
+var logger = logging.GetLogger()
 
 type MemgraphController struct {
 	clientset      kubernetes.Interface
@@ -78,6 +64,7 @@ type MemgraphController struct {
 }
 
 func NewMemgraphController(clientset kubernetes.Interface, config *Config) *MemgraphController {
+
 	controller := &MemgraphController{
 		clientset:      clientset,
 		config:         config,
@@ -124,7 +111,16 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	controller.setupLeaderElectionCallbacks()
 
 	// Initialize state management with release-based ConfigMap name
-	controller.configMapName = generateStateConfigMapName()
+	configMapName := "memgraph-controller-state"
+	releaseName := os.Getenv("RELEASE_NAME")
+	if releaseName != "" {
+		configMapName = fmt.Sprintf("%s-state", releaseName)
+	}
+	if len(configMapName) > 63 {
+		configMapName = configMapName[:63]
+	}
+	controller.configMapName = configMapName
+
 	controller.targetMainIndex = -1 // -1 indicates not yet loaded from ConfigMap
 
 	// Initialize event-driven reconciliation queue
@@ -150,65 +146,62 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 // Initialize starts all controller components (informers, servers, leader election)
 // This should be called after NewMemgraphController but before Run
 func (c *MemgraphController) Initialize(ctx context.Context) error {
-	log.Println("Initializing Memgraph Controller components...")
 
 	// STEP 1: Start Kubernetes informers
-	log.Println("Starting Kubernetes informers...")
 	if err := c.StartInformers(); err != nil {
 		return fmt.Errorf("failed to start informers: %w", err)
 	}
-	log.Println("Informer caches synced successfully")
 
 	// STEP 2: Start HTTP server for status API (always running, not leader-dependent)
-	log.Println("Starting HTTP server...")
+	logger.Info("starting HTTP server")
 	if err := c.StartHTTPServer(); err != nil {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
-	log.Printf("HTTP server started successfully on port %s", c.config.HTTPPort)
+	logger.Info("HTTP server started successfully", "port", c.config.HTTPPort)
 
 	// STEP 3: Start gateway server
-	log.Println("Starting gateway server...")
+	logger.Info("Starting gateway server...")
 	if err := c.StartGatewayServer(ctx); err != nil {
 		return fmt.Errorf("failed to start gateway server: %w", err)
 	}
-	log.Println("Gateway server started successfully")
+	logger.Info("Gateway server started successfully")
 
 	// STEP 4: Start leader election (in background goroutine)
-	log.Println("Starting leader election...")
+	logger.Info("Starting leader election...")
 	go func() {
 		if err := c.RunLeaderElection(ctx); err != nil {
-			log.Printf("Leader election failed: %v", err)
+			logger.Info("Leader election failed", "error", err)
 		}
 	}()
-	log.Println("Leader election started successfully")
+	logger.Info("Leader election started successfully")
 
-	log.Println("✅ All controller components initialized successfully")
+	logger.Info("✅ All controller components initialized successfully")
 	return nil
 }
 
 // Shutdown stops all controller components gracefully
 func (c *MemgraphController) Shutdown(ctx context.Context) error {
-	log.Println("Shutting down all controller components...")
+	logger.Info("Shutting down all controller components...")
 
 	// Stop HTTP server
 	if err := c.StopHTTPServer(ctx); err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		logger.Info("HTTP server shutdown error", "error", err)
 	} else {
-		log.Println("HTTP server stopped successfully")
+		logger.Info("HTTP server stopped successfully")
 	}
 
 	// Stop gateway server
 	if err := c.StopGatewayServer(ctx); err != nil {
-		log.Printf("Gateway server shutdown error: %v", err)
+		logger.Info("Gateway server shutdown error", "error", err)
 	} else {
-		log.Println("Gateway server stopped successfully")
+		logger.Info("Gateway server stopped successfully")
 	}
 
 	// Stop informers
 	c.StopInformers()
-	log.Println("Informers stopped successfully")
+	logger.Info("Informers stopped successfully")
 
-	log.Println("✅ All controller components shut down successfully")
+	logger.Info("✅ All controller components shut down successfully")
 	return nil
 }
 
@@ -251,7 +244,7 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 	// Get owner reference to the controller pod for proper cleanup
 	ownerRef, err := c.getControllerOwnerReference(ctx)
 	if err != nil {
-		log.Printf("Warning: Failed to get controller owner reference: %v. ConfigMap will not be cleaned up automatically.", err)
+		logger.Warn("Failed to get controller owner reference - ConfigMap will not be cleaned up automatically", "error", err)
 	}
 
 	// Update ConfigMap first
@@ -285,7 +278,7 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 
 	// Update in-memory value
 	c.targetMainIndex = index
-	log.Printf("Updated TargetMainIndex to %d", index)
+	logger.Info("Updated TargetMainIndex", "index", index)
 	return nil
 }
 
@@ -336,7 +329,7 @@ func (c *MemgraphController) isPodBecomeUnhealthy(oldPod, newPod *v1.Pod) bool {
 
 	// Pod became unhealthy if it was ready before and is not ready now
 	if oldReady && !newReady {
-		log.Printf("Pod %s became unhealthy: ready %v -> %v", newPod.Name, oldReady, newReady)
+		logger.Info("Pod became unhealthy", "pod", newPod.Name, "old_ready", oldReady, "new_ready", newReady)
 		return true
 	}
 
@@ -386,8 +379,7 @@ func (c *MemgraphController) TestConnection() error {
 		return fmt.Errorf("failed to connect to Kubernetes API: %w", err)
 	}
 
-	log.Printf("Successfully connected to Kubernetes API. Found pods with app.kubernetes.io/name=%s in namespace %s",
-		c.config.AppName, c.config.Namespace)
+	logger.Info("Successfully connected to Kubernetes API", "app_name", c.config.AppName, "namespace", c.config.Namespace)
 	return nil
 }
 
@@ -403,17 +395,17 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 		return fmt.Errorf("no pods found with label app.kubernetes.io/name=%s", c.config.AppName)
 	}
 
-	log.Printf("Testing Memgraph connections to %d pods...", len(pods))
+	logger.Info("Testing Memgraph connections", "pod_count", len(pods))
 
 	var lastErr error
 	connectedCount := 0
 	for podName, pod := range pods {
 		endpoint := pod.GetBoltAddress()
 		if err := c.memgraphClient.TestConnection(ctx, endpoint); err != nil {
-			log.Printf("❌ Failed to connect to %s (%s): %v", podName, endpoint, err)
+			logger.Info("❌ Failed to connect to pod", "pod", podName, "endpoint", endpoint, "error", err)
 			lastErr = err
 		} else {
-			log.Printf("✅ Successfully connected to %s (%s)", podName, endpoint)
+			logger.Info("✅ Successfully connected to pod", "pod", podName, "endpoint", endpoint)
 			connectedCount++
 		}
 	}
@@ -422,7 +414,7 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 		return fmt.Errorf("failed to connect to any Memgraph pods: %w", lastErr)
 	}
 
-	log.Printf("Successfully tested Memgraph connections: %d/%d pods accessible", connectedCount, len(pods))
+	logger.Info("Successfully tested Memgraph connections", "connected_count", connectedCount, "total_pods", len(pods))
 	return nil
 }
 
@@ -492,13 +484,13 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 
 // StartHTTPServer starts the HTTP server
 func (c *MemgraphController) StartHTTPServer() error {
-	log.Println("Starting HTTP server...")
+	logger.Info("Starting HTTP server...")
 	return c.httpServer.Start()
 }
 
 // StopHTTPServer stops the HTTP server gracefully
 func (c *MemgraphController) StopHTTPServer(ctx context.Context) error {
-	log.Println("Stopping HTTP server...")
+	logger.Info("Stopping HTTP server...")
 	if c.httpServer != nil {
 		return c.httpServer.Stop(ctx)
 	}
@@ -507,6 +499,7 @@ func (c *MemgraphController) StopHTTPServer(ctx context.Context) error {
 
 // StartInformers starts the Kubernetes informers and waits for cache sync
 func (c *MemgraphController) StartInformers() error {
+	logger.Info("starting informers")
 	c.informerFactory.Start(c.stopCh)
 
 	// Wait for informer caches to sync
@@ -519,6 +512,7 @@ func (c *MemgraphController) StartInformers() error {
 // StopInformers stops the Kubernetes informers
 func (c *MemgraphController) StopInformers() {
 	if c.stopCh != nil {
+		logger.Info("stopping informers")
 		close(c.stopCh)
 	}
 }
@@ -530,7 +524,7 @@ func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
 
 // StopGatewayServer stops the gateway server (no-op - process termination handles cleanup)
 func (c *MemgraphController) StopGatewayServer(ctx context.Context) error {
-	log.Println("Gateway: No explicit shutdown needed - process termination handles cleanup")
+	logger.Info("Gateway: No explicit shutdown needed - process termination handles cleanup")
 	return nil
 }
 
@@ -551,7 +545,7 @@ func (c *MemgraphController) stop() {
 		return // Already stopped
 	}
 
-	log.Println("Stopping Memgraph Controller...")
+	logger.Info("Stopping Memgraph Controller...")
 	c.isRunning = false
 
 	// Stop informers
@@ -566,9 +560,9 @@ func (c *MemgraphController) stop() {
 	c.stopFailoverCheckQueue()
 
 	// Gateway cleanup handled by process termination
-	log.Println("Gateway: Cleanup will be handled by process termination")
+	logger.Info("Gateway: Cleanup will be handled by process termination")
 
-	log.Println("Memgraph Controller stopped")
+	logger.Info("Memgraph Controller stopped")
 }
 
 // GetControllerStatus returns the current status of the controller

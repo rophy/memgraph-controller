@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 )
@@ -23,28 +22,28 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	ticker := time.NewTicker(c.config.ReconcileInterval)
 	defer ticker.Stop()
 
-	log.Printf("Starting reconciliation loop with interval: %s", c.config.ReconcileInterval)
+	logger.Info("Starting reconciliation loop", "interval", c.config.ReconcileInterval)
 
 	// Main reconciliation loop - implements DESIGN.md simplified flow
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("Context cancelled, stopping controller...")
+			logger.Info("Context cancelled, stopping controller...")
 			c.stop()
 			return ctx.Err()
 
 		case <-ticker.C:
 			if !c.IsLeader() {
-				log.Println("Not leader, skipping reconciliation cycle")
+				logger.Info("Not leader, skipping reconciliation cycle")
 				continue
 			}
 
-			log.Println("Starting reconciliation cycle...")
+			logger.Info("Starting reconciliation cycle...")
 
 			// Check if ConfigMap is ready by trying to get the target main index
 			_, err := c.GetTargetMainIndex(ctx)
 			if err != nil {
-				log.Println("ConfigMap not ready - performing discovery...")
+				logger.Info("ConfigMap not ready - performing discovery...")
 
 				// Use DESIGN.md compliant discovery logic to determine target main index
 				targetMainIndex, err := c.cluster.discoverClusterState(ctx)
@@ -53,7 +52,7 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				}
 				if targetMainIndex == -1 {
 					// -1 without error means cluster is not ready to be discovered
-					log.Printf("Cluster is not ready to be discovered")
+					logger.Info("Cluster is not ready to be discovered")
 					continue
 				}
 
@@ -61,11 +60,11 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				if err := c.SetTargetMainIndex(ctx, targetMainIndex); err != nil {
 					return fmt.Errorf("failed to set target main index in ConfigMap: %w", err)
 				}
-				log.Printf("✅ Cluster discovered with target main index: %d", targetMainIndex)
+				logger.Info("✅ Cluster discovered with target main index", "index", targetMainIndex)
 			}
 
 			if err := c.performReconciliationActions(ctx); err != nil {
-				log.Printf("Error during reconciliation: %v", err)
+				logger.Error("Error during reconciliation", "error", err)
 				// Retry on next tick
 			}
 		}
@@ -80,42 +79,42 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	// Skip reconciliation if TargetMainIndex is still not set.
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {
-		log.Printf("Failed to get target main index: %v", err)
+		logger.Info("Failed to get target main index", "error", err)
 		return nil // Retry on next tick
 	}
 	if targetMainIndex == -1 {
-		log.Printf("Target main index is not set, skipping reconciliation")
+		logger.Info("Target main index is not set, skipping reconciliation")
 		return nil // Retry on next tick
 	}
 
-	log.Println("Starting DESIGN.md compliant reconcile actions...")
+	logger.Info("Starting DESIGN.md compliant reconcile actions...")
 
 	// List all memgraph pods with kubernetes status
 	err = c.cluster.Refresh(ctx)
 	if err != nil {
-		log.Printf("Failed to refresh cluster state: %v", err)
+		logger.Info("Failed to refresh cluster state", "error", err)
 		return nil // Retry on next tick
 	}
 
 	// If TargetMainPod is not ready, queue failover and wait
 	err = c.performFailoverCheck(ctx)
 	if err != nil {
-		log.Printf("Failover check failed: %v", err)
+		logger.Info("Failover check failed", "error", err)
 		return nil // Retry on next tick
 	}
 	targetMainNode, err := c.getTargetMainNode(ctx)
 	if err != nil {
-		log.Printf("Failed to get target main node: %v", err)
+		logger.Info("Failed to get target main node", "error", err)
 		return nil // Retry on next tick
 	}
 
 	// Run SHOW REPLICA to TargetMainPod
 	replicas, err := targetMainNode.GetReplicas(ctx)
 	if err != nil {
-		log.Printf("Failed to get replicas from main node %s: %v", targetMainNode.GetName(), err)
+		logger.Info("Failed to get replicas from main node", "main_node", targetMainNode.GetName(), "error", err)
 		return nil // Retry on next tick
 	}
-	log.Printf("Main pod %s has %d registered replicas", targetMainNode.GetName(), len(replicas))
+	logger.Info("Main pod has registered replicas", "pod", targetMainNode.GetName(), "replica_count", len(replicas))
 
 	// Create a map of replica names for easy lookup
 	replicaMap := make(map[string]ReplicaInfo)
@@ -131,17 +130,17 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		isHealthy := true
 		if err != nil || !isPodReady(pod) {
 			isHealthy = false
-			log.Printf("Step 4: Replica %s is not healthy (pod missing or not ready)", podName)
+			logger.Info("Step 4: Replica is not healthy (pod missing or not ready)", "pod_name", podName)
 		} else if ipAddress != pod.Status.PodIP {
 			isHealthy = false
-			log.Printf("Step 4: Replica %s has IP %s but pod IP is %s", podName, ipAddress, pod.Status.PodIP)
+			logger.Info("Step 4: Replica has IP mismatch", "pod_name", podName, "replica_ip", ipAddress, "pod_ip", pod.Status.PodIP)
 		}
 		if !isHealthy {
-			log.Printf("Step 4: Dropping unhealthy or misconfigured replica %s", podName)
+			logger.Info("Step 4: Dropping unhealthy or misconfigured replica", "pod_name", podName)
 			if err := targetMainNode.DropReplica(ctx, replicaName); err != nil {
-				log.Printf("Failed to drop replica %s: %v", podName, err)
+				logger.Info("Failed to drop replica", "pod_name", podName, "error", err)
 			} else {
-				log.Printf("Dropped replica %s successfully", podName)
+				logger.Info("Dropped replica successfully", "pod_name", podName)
 				delete(replicaMap, replicaName) // Remove from map after dropping
 			}
 		}
@@ -155,7 +154,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 
 		pod, err := c.getPodFromCache(podName)
 		if err != nil || !isPodReady(pod) {
-			log.Printf("Replica pod %s is not ready", podName)
+			logger.Info("Replica pod is not ready", "pod_name", podName)
 			continue // Skip if pod not ready
 		}
 
@@ -165,13 +164,13 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		// All replica nodes should have role "replica"
 		role, err := node.GetReplicationRole(ctx)
 		if err != nil {
-			log.Printf("Failed to get role for pod %s: %v", podName, err)
+			logger.Info("Failed to get role for pod", "pod_name", podName, "error", err)
 			continue // Skip if cannot get role
 		}
 		if role != "replica" {
-			log.Printf("Pod %s has role %s but should be replica - demoting...", podName, role)
+			logger.Info("Pod has wrong role, demoting to replica", "pod_name", podName, "current_role", role)
 			if err := node.SetToReplicaRole(ctx); err != nil {
-				log.Printf("Failed to demote pod %s to replica: %v", podName, err)
+				logger.Info("Failed to demote pod to replica", "pod_name", podName, "error", err)
 				continue // Skip if cannot demote
 			}
 		}
@@ -185,7 +184,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		// Missing replication - try to register
 		syncReplicaNode, err := c.getTargetSyncReplicaNode(ctx)
 		if err != nil {
-			log.Printf("Failed to get sync replica node: %v", err)
+			logger.Info("Failed to get sync replica node", "error", err)
 			continue
 		}
 		syncMode := "ASYNC"
@@ -196,9 +195,9 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		// Specifying replication address without port implies port 10000.
 		err = targetMainNode.RegisterReplica(ctx, replicaName, ipAddress, syncMode)
 		if err != nil {
-			log.Printf("Failed to register replication %s for address %s, mode %s", replicaName, ipAddress, syncMode)
+			logger.Info("Failed to register replication", "replica_name", replicaName, "address", ipAddress, "sync_mode", syncMode)
 		}
-		log.Printf("Registered replication %s, address %s, mode %s", replicaName, ipAddress, syncMode)
+		logger.Info("Registered replication", "replica_name", replicaName, "address", ipAddress, "sync_mode", syncMode)
 	}
 
 	return nil
@@ -282,8 +281,8 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 		Pods:         pods,
 	}
 
-	log.Printf("Generated cluster status: %d pods, main=%s, healthy=%d/%d",
-		len(pods), currentMain, healthyCount, statusResponse.TotalPods)
+	logger.Info("Generated cluster status", 
+		"pod_count", len(pods), "current_main", currentMain, "healthy_pods", healthyCount, "total_pods", statusResponse.TotalPods)
 
 	return response, nil
 }

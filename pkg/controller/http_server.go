@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net/http"
 	"time"
 )
@@ -45,31 +44,31 @@ func NewHTTPServer(controller *MemgraphController, config *Config) *HTTPServer {
 
 // Start begins listening for HTTP requests (non-blocking)
 func (h *HTTPServer) Start() error {
-	log.Printf("Starting HTTP server on port %s", h.config.HTTPPort)
+	logger.Info("Starting HTTP server", "port", h.config.HTTPPort)
 
 	go func() {
 		if err := h.server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Printf("HTTP server error: %v", err)
+			logger.Info("HTTP server error", "error", err)
 		}
 	}()
 
 	// Give server a moment to start up
 	time.Sleep(100 * time.Millisecond)
-	log.Printf("HTTP server started successfully on port %s", h.config.HTTPPort)
+	logger.Info("HTTP server started successfully", "port", h.config.HTTPPort)
 	return nil
 }
 
 // Stop gracefully shuts down the HTTP server
 func (h *HTTPServer) Stop(ctx context.Context) error {
-	log.Println("Shutting down HTTP server...")
+	logger.Info("Shutting down HTTP server...")
 
 	err := h.server.Shutdown(ctx)
 	if err != nil {
-		log.Printf("HTTP server shutdown error: %v", err)
+		logger.Info("HTTP server shutdown error", "error", err)
 		return err
 	}
 
-	log.Println("HTTP server stopped successfully")
+	logger.Info("HTTP server stopped successfully")
 	return nil
 }
 
@@ -80,7 +79,7 @@ func (h *HTTPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("Handling status API request")
+	logger.Info("Handling status API request")
 
 	// Create context with timeout for status collection
 	ctx, cancel := context.WithTimeout(r.Context(), 25*time.Second)
@@ -89,7 +88,7 @@ func (h *HTTPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 	// Collect cluster status
 	status, err := h.controller.GetClusterStatus(ctx)
 	if err != nil {
-		log.Printf("Failed to get cluster status: %v", err)
+		logger.Info("Failed to get cluster status", "error", err)
 		http.Error(w, fmt.Sprintf("Failed to get cluster status: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -100,13 +99,12 @@ func (h *HTTPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 
 	// Encode and send response
 	if err := json.NewEncoder(w).Encode(status); err != nil {
-		log.Printf("Failed to encode status response: %v", err)
+		logger.Info("Failed to encode status response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Successfully handled status API request: %d pods, main: %s",
-		status.ClusterState.TotalPods, status.ClusterState.CurrentMain)
+	logger.Info("Successfully handled status API request", "pod_count", status.ClusterState.TotalPods, "main_pod", status.ClusterState.CurrentMain)
 }
 
 // handleLeadership handles GET /api/v1/leadership requests
@@ -116,7 +114,7 @@ func (h *HTTPServer) handleLeadership(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	log.Println("Handling leadership API request")
+	logger.Info("Handling leadership API request")
 
 	// Create context with timeout
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
@@ -126,7 +124,7 @@ func (h *HTTPServer) handleLeadership(w http.ResponseWriter, r *http.Request) {
 	leaderElection := h.controller.GetLeaderElection()
 	currentLeader, err := leaderElection.GetCurrentLeader(ctx)
 	if err != nil {
-		log.Printf("Failed to get current leader: %v", err)
+		logger.Info("Failed to get current leader", "error", err)
 		http.Error(w, fmt.Sprintf("Failed to get current leader: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -134,7 +132,7 @@ func (h *HTTPServer) handleLeadership(w http.ResponseWriter, r *http.Request) {
 	// Get this pod's identity
 	myIdentity, err := leaderElection.GetMyIdentity()
 	if err != nil {
-		log.Printf("Failed to get my identity: %v", err)
+		logger.Info("Failed to get my identity", "error", err)
 		http.Error(w, fmt.Sprintf("Failed to get pod identity: %v", err), http.StatusInternalServerError)
 		return
 	}
@@ -144,13 +142,13 @@ func (h *HTTPServer) handleLeadership(w http.ResponseWriter, r *http.Request) {
 
 	// Prepare response
 	response := map[string]interface{}{
-		"current_leader":    currentLeader,
-		"my_identity":       myIdentity,
-		"i_am_leader":       isLeader,
-		"leader_match":      currentLeader == myIdentity,
-		"timestamp":         time.Now(),
-		"lease_name":        "memgraph-controller-leader",
-		"namespace":         h.config.Namespace,
+		"current_leader": currentLeader,
+		"my_identity":    myIdentity,
+		"i_am_leader":    isLeader,
+		"leader_match":   currentLeader == myIdentity,
+		"timestamp":      time.Now(),
+		"lease_name":     "memgraph-controller-leader",
+		"namespace":      h.config.Namespace,
 	}
 
 	// Set response headers
@@ -159,12 +157,12 @@ func (h *HTTPServer) handleLeadership(w http.ResponseWriter, r *http.Request) {
 
 	// Encode and send response
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		log.Printf("Failed to encode leadership response: %v", err)
+		logger.Info("Failed to encode leadership response", "error", err)
 		http.Error(w, "Failed to encode response", http.StatusInternalServerError)
 		return
 	}
 
-	log.Printf("Leadership info: leader=%s, me=%s, i_am_leader=%t", currentLeader, myIdentity, isLeader)
+	logger.Info("Leadership info", "leader", currentLeader, "me", myIdentity, "i_am_leader", isLeader)
 }
 
 // handleHealth handles GET /health requests for basic health checks
@@ -251,7 +249,7 @@ func (h *HTTPServer) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	// - Gateway server is running and healthy
 	// - Can connect to Kubernetes API
 	// - Can connect to Memgraph pods
-	
+
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
 }

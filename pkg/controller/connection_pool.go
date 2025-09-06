@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"sync"
 	"time"
@@ -47,7 +46,7 @@ func (cp *ConnectionPool) GetDriver(ctx context.Context, boltAddress string) (ne
 			return driver, nil
 		} else {
 			// Driver is no longer valid, remove it and create a new one
-			log.Printf("Driver for %s is no longer valid: %v", boltAddress, err)
+			logger.Warn("driver for %s is no longer valid", "bolt_address", boltAddress, "error", err)
 			cp.removeDriver(boltAddress)
 		}
 	}
@@ -80,7 +79,7 @@ func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) 
 	}
 
 	cp.drivers[boltAddress] = driver
-	log.Printf("Created new driver for %s", boltAddress)
+	logger.Debug("created new driver for %s", "bolt_address", boltAddress)
 	return driver, nil
 }
 
@@ -94,7 +93,6 @@ func (cp *ConnectionPool) removeDriver(boltAddress string) error {
 			return fmt.Errorf("failed to close driver for %s: %w", boltAddress, err)
 		}
 		delete(cp.drivers, boltAddress)
-		log.Printf("Removed driver for %s", boltAddress)
 	}
 	return nil
 }
@@ -110,7 +108,7 @@ func (cp *ConnectionPool) UpdatePodIP(podName, newIP string) {
 		if driver, exists := cp.drivers[oldBoltAddress]; exists {
 			driver.Close(context.Background())
 			delete(cp.drivers, oldBoltAddress)
-			log.Printf("Invalidated connection for pod %s: IP changed from %s to %s", podName, existingIP, newIP)
+			logger.Debug("invalidated connection for pod %s: IP changed from %s to %s", podName, existingIP, newIP)
 		}
 	}
 
@@ -127,7 +125,7 @@ func (cp *ConnectionPool) InvalidatePodConnection(podName string) {
 		if driver, exists := cp.drivers[boltAddress]; exists {
 			driver.Close(context.Background())
 			delete(cp.drivers, boltAddress)
-			log.Printf("Invalidated connection for pod %s (IP: %s)", podName, ip)
+			logger.Debug("invalidated connection for pod %s: IP changed from %s to %s", podName, ip)
 		}
 	}
 }
@@ -143,7 +141,7 @@ func (cp *ConnectionPool) Close(ctx context.Context) {
 
 	for boltAddress, driver := range cp.drivers {
 		driver.Close(ctx)
-		log.Printf("Closed driver for %s", boltAddress)
+		logger.Debug("closed driver for %s", "bolt_address", boltAddress)
 	}
 	cp.drivers = make(map[string]neo4j.DriverWithContext)
 	cp.podIPs = make(map[string]string)
@@ -176,8 +174,7 @@ func WithRetry(ctx context.Context, operation func() error, retryConfig RetryCon
 			delay = retryConfig.MaxDelay
 		}
 
-		log.Printf("Operation failed (attempt %d/%d): %v. Retrying in %v",
-			attempt+1, retryConfig.MaxRetries+1, err, delay)
+		logger.Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
 
 		select {
 		case <-ctx.Done():
@@ -215,7 +212,7 @@ func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfi
 		if strings.Contains(err.Error(), "ConnectivityError") || strings.Contains(err.Error(), "i/o timeout") {
 			if refreshFunc != nil {
 				if refreshErr := refreshFunc(); refreshErr != nil {
-					log.Printf("Failed to refresh pod info: %v", refreshErr)
+					logger.Warn("failed to refresh pod info", "error", refreshErr)
 				}
 			}
 		}
@@ -226,8 +223,7 @@ func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfi
 			delay = retryConfig.MaxDelay
 		}
 
-		log.Printf("Operation failed (attempt %d/%d): %v. Retrying in %v",
-			attempt+1, retryConfig.MaxRetries+1, err, delay)
+		logger.Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
 
 		select {
 		case <-ctx.Done():

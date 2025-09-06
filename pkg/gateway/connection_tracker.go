@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"fmt"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -19,21 +18,21 @@ type ConnectionTracker struct {
 
 // ProxySession represents a single client connection and its proxy state
 type ProxySession struct {
-	ID           string
-	ClientConn   net.Conn
-	ClientAddr   string
-	BackendConn  net.Conn
-	StartTime    time.Time
-	LastActivity time.Time
-	BytesSent    int64
+	ID            string
+	ClientConn    net.Conn
+	ClientAddr    string
+	BackendConn   net.Conn
+	StartTime     time.Time
+	LastActivity  time.Time
+	BytesSent     int64
 	BytesReceived int64
-	
+
 	// Connection state
-	isActive     bool
-	mu           sync.RWMutex
-	
+	isActive bool
+	mu       sync.RWMutex
+
 	// Enhanced metrics
-	MaxBytesLimit int64
+	MaxBytesLimit    int64
 	ConnectionErrors int64
 }
 
@@ -41,7 +40,7 @@ type ProxySession struct {
 func NewConnectionTracker(maxConnections int) *ConnectionTracker {
 	return &ConnectionTracker{
 		maxConnections: maxConnections,
-		sessions:      make(map[string]*ProxySession),
+		sessions:       make(map[string]*ProxySession),
 	}
 }
 
@@ -56,21 +55,21 @@ func (ct *ConnectionTracker) CanAccept() bool {
 func (ct *ConnectionTracker) Track(clientConn net.Conn) *ProxySession {
 	sessionID := ct.generateSessionID()
 	now := time.Now()
-	
+
 	session := &ProxySession{
-		ID:           sessionID,
-		ClientConn:   clientConn,
-		ClientAddr:   clientConn.RemoteAddr().String(),
-		StartTime:    now,
-		LastActivity: now,
-		isActive:     true,
+		ID:            sessionID,
+		ClientConn:    clientConn,
+		ClientAddr:    clientConn.RemoteAddr().String(),
+		StartTime:     now,
+		LastActivity:  now,
+		isActive:      true,
 		MaxBytesLimit: 1048576000, // 1GB default, will be configured later
 	}
-	
+
 	ct.mu.Lock()
 	ct.sessions[sessionID] = session
 	ct.mu.Unlock()
-	
+
 	return session
 }
 
@@ -78,7 +77,7 @@ func (ct *ConnectionTracker) Track(clientConn net.Conn) *ProxySession {
 func (ct *ConnectionTracker) Untrack(sessionID string) {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-	
+
 	if session, exists := ct.sessions[sessionID]; exists {
 		session.Close()
 		delete(ct.sessions, sessionID)
@@ -89,7 +88,7 @@ func (ct *ConnectionTracker) Untrack(sessionID string) {
 func (ct *ConnectionTracker) GetSession(sessionID string) (*ProxySession, bool) {
 	ct.mu.RLock()
 	defer ct.mu.RUnlock()
-	
+
 	session, exists := ct.sessions[sessionID]
 	return session, exists
 }
@@ -98,7 +97,7 @@ func (ct *ConnectionTracker) GetSession(sessionID string) (*ProxySession, bool) 
 func (ct *ConnectionTracker) GetAllSessions() []*ProxySession {
 	ct.mu.RLock()
 	defer ct.mu.RUnlock()
-	
+
 	sessions := make([]*ProxySession, 0, len(ct.sessions))
 	for _, session := range ct.sessions {
 		sessions = append(sessions, session)
@@ -117,7 +116,7 @@ func (ct *ConnectionTracker) GetCount() int {
 func (ct *ConnectionTracker) CloseAll() {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-	
+
 	for sessionID, session := range ct.sessions {
 		session.Close()
 		delete(ct.sessions, sessionID)
@@ -128,10 +127,10 @@ func (ct *ConnectionTracker) CloseAll() {
 func (ct *ConnectionTracker) CleanupStale(maxAge time.Duration) int {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-	
+
 	now := time.Now()
 	cleaned := 0
-	
+
 	for sessionID, session := range ct.sessions {
 		if !session.IsActive() && now.Sub(session.StartTime) > maxAge {
 			session.Close()
@@ -139,7 +138,7 @@ func (ct *ConnectionTracker) CleanupStale(maxAge time.Duration) int {
 			cleaned++
 		}
 	}
-	
+
 	return cleaned
 }
 
@@ -147,19 +146,19 @@ func (ct *ConnectionTracker) CleanupStale(maxAge time.Duration) int {
 func (ct *ConnectionTracker) CleanupIdle(idleTimeout time.Duration) int {
 	ct.mu.Lock()
 	defer ct.mu.Unlock()
-	
+
 	now := time.Now()
 	cleaned := 0
-	
+
 	for sessionID, session := range ct.sessions {
 		if session.IsActive() && now.Sub(session.GetLastActivity()) > idleTimeout {
-			log.Printf("Gateway: Closing idle session %s after %v", sessionID, now.Sub(session.GetLastActivity()))
+			logger.Info("closing idle session", "session_id", sessionID, "duration", now.Sub(session.GetLastActivity()))
 			session.Close()
 			delete(ct.sessions, sessionID)
 			cleaned++
 		}
 	}
-	
+
 	return cleaned
 }
 
@@ -167,14 +166,14 @@ func (ct *ConnectionTracker) CleanupIdle(idleTimeout time.Duration) int {
 func (ct *ConnectionTracker) GetTotalBytes() (int64, int64) {
 	ct.mu.RLock()
 	defer ct.mu.RUnlock()
-	
+
 	var totalSent, totalReceived int64
-	
+
 	for _, session := range ct.sessions {
 		totalSent += session.GetBytesSent()
 		totalReceived += session.GetBytesReceived()
 	}
-	
+
 	return totalSent, totalReceived
 }
 
@@ -273,17 +272,17 @@ func (ps *ProxySession) GetBytesReceived() int64 {
 func (ps *ProxySession) Close() {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
-	
+
 	if !ps.isActive {
 		return
 	}
-	
+
 	ps.isActive = false
-	
+
 	if ps.ClientConn != nil {
 		ps.ClientConn.Close()
 	}
-	
+
 	if ps.BackendConn != nil {
 		ps.BackendConn.Close()
 	}

@@ -1,7 +1,6 @@
 package controller
 
 import (
-	"log"
 	"os"
 
 	"k8s.io/client-go/rest"
@@ -10,7 +9,7 @@ import (
 
 func GetKubernetesConfig() (*rest.Config, error) {
 	if config, err := rest.InClusterConfig(); err == nil {
-		log.Println("Using in-cluster configuration")
+		logger.Info("using in-cluster configuration")
 		return config, nil
 	}
 
@@ -19,6 +18,6 @@ func GetKubernetesConfig() (*rest.Config, error) {
 		kubeconfig = os.Getenv("HOME") + "/.kube/config"
 	}
 
-	log.Printf("Using kubeconfig: %s", kubeconfig)
+	logger.Info("using kubeconfig", "kubeconfig", kubeconfig)
 	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }

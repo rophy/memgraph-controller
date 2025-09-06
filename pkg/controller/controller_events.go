@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"log"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -46,7 +45,7 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			c.isLeader = true
 			c.leaderMu.Unlock()
 
-			log.Println("🎯 Became leader - loading state and starting controller operations")
+			logger.Info("🎯 Became leader - loading state and starting controller operations")
 
 			// Load state to determine startup phase (BOOTSTRAP vs OPERATIONAL)
 			// State loading now handled via GetTargetMainIndex() calls
@@ -57,7 +56,7 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			c.isLeader = false
 			c.leaderMu.Unlock()
 
-			log.Println("⏹️  Lost leadership - stopping operations")
+			logger.Info("⏹️  Lost leadership - stopping operations")
 			// Stop reconciliation operations but keep the process running
 		},
 		func(identity string) {
@@ -67,7 +66,7 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 
 			// Only log if this is an actual leader change
 			if identity != c.lastKnownLeader {
-				log.Printf("👑 New leader elected: %s", identity)
+				logger.Info("👑 New leader elected", "identity", identity)
 				c.lastKnownLeader = identity
 			}
 		},
@@ -107,7 +106,7 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 			if currentMain == newPod.Name {
 				// This is the current main pod - check for immediate health issues
 				if c.isPodBecomeUnhealthy(oldPod, newPod) {
-					log.Printf("🚨 IMMEDIATE EVENT: Main pod %s became unhealthy, triggering failover check", newPod.Name)
+					logger.Info("🚨 IMMEDIATE EVENT: Main pod became unhealthy, triggering failover check", "pod_name", newPod.Name)
 
 					// Queue failover check event
 					c.enqueueFailoverCheckEvent("pod-update", "main-pod-unhealthy", newPod.Name)
@@ -119,8 +118,8 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 
 		// Log cluster state age for debugging
 		if lastState != nil {
-			log.Printf("🔍 Event analysis: cluster state age=%v, currentMain from target index=%s, eventPod=%s",
-				stateAge, c.config.GetPodName(targetMainIndex), newPod.Name)
+			logger.Info("🔍 Event analysis", 
+				"state_age", stateAge, "current_main", c.config.GetPodName(targetMainIndex), "event_pod", newPod.Name)
 		}
 	}
 
@@ -146,13 +145,13 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	currentMain := ""
 	if err != nil {
-		log.Printf("Could not get current main from target index: %v", err)
+		logger.Info("Could not get current main from target index", "error", err)
 	} else {
 		currentMain = c.config.GetPodName(targetMainIndex)
 	}
 
 	if currentMain != "" && pod.Name == currentMain {
-		log.Printf("🚨 MAIN POD DELETED: %s - triggering failover check", pod.Name)
+		logger.Info("🚨 MAIN POD DELETED - triggering failover check", "pod_name", pod.Name)
 
 		// Queue failover check event - only processed by leader
 		c.enqueueFailoverCheckEvent("pod-delete", "main-pod-deleted", pod.Name)

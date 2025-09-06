@@ -2,41 +2,50 @@ package main
 
 import (
 	"context"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
 	"time"
 
 	"memgraph-controller/pkg/controller"
+	"memgraph-controller/pkg/logging"
 
 	"k8s.io/client-go/kubernetes"
 )
 
 func main() {
-	log.Println("Starting Memgraph Controller with HA support...")
+	logger := logging.GetLogger()
+
+	logger.Info("Starting Memgraph Controller with HA support")
 
 	config := controller.LoadConfig()
-	log.Printf("Configuration: AppName=%s, Namespace=%s, ReconcileInterval=%s, HTTPPort=%s",
-		config.AppName, config.Namespace, config.ReconcileInterval, config.HTTPPort)
+	logger.Info("Configuration loaded",
+		"app_name", config.AppName,
+		"namespace", config.Namespace,
+		"reconcile_interval", config.ReconcileInterval,
+		"http_port", config.HTTPPort,
+	)
 
 	k8sConfig, err := controller.GetKubernetesConfig()
 	if err != nil {
-		log.Fatalf("Failed to get Kubernetes config: %v", err)
+		logger.Error("Failed to get Kubernetes config", "error", err)
+		os.Exit(1)
 	}
 
 	clientset, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
-		log.Fatalf("Failed to create Kubernetes client: %v", err)
+		logger.Error("Failed to create Kubernetes client", "error", err)
+		os.Exit(1)
 	}
 
 	ctrl := controller.NewMemgraphController(clientset, config)
 
 	if err := ctrl.TestConnection(); err != nil {
-		log.Fatalf("Failed to connect to Kubernetes API: %v", err)
+		logger.Error("Failed to connect to Kubernetes API", "error", err)
+		os.Exit(1)
 	}
 
-	log.Println("Memgraph Controller created successfully")
+	logger.Info("Memgraph Controller created successfully")
 
 	// Set up graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
@@ -48,16 +57,17 @@ func main() {
 
 	// Initialize all controller components
 	if err := ctrl.Initialize(ctx); err != nil {
-		log.Fatalf("Failed to initialize controller: %v", err)
+		logger.Error("Failed to initialize controller", "error", err)
+		os.Exit(1)
 	}
 
 	// Start reconciliation loop
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		log.Println("Starting reconciliation loop...")
+		logger.Info("Starting reconciliation loop")
 		if err := ctrl.Run(ctx); err != nil && err != context.Canceled {
-			log.Printf("Controller reconciliation loop failed: %v", err)
+			logger.Error("Controller reconciliation loop failed", "error", err)
 			cancel()
 		}
 	}()
@@ -65,20 +75,17 @@ func main() {
 	// Wait for shutdown signal
 	go func() {
 		<-sigChan
-		log.Println("Received shutdown signal, stopping controller...")
-		
+		logger.Info("Received shutdown signal, stopping controller")
+
 		// Stop all components gracefully
 		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer shutdownCancel()
-		
+
 		ctrl.Shutdown(shutdownCtx)
 		cancel()
 	}()
 
 	// Wait for reconciliation loop to finish
 	<-done
-	log.Println("Controller shutdown complete")
+	logger.Info("Controller shutdown complete")
 }
-
-
-

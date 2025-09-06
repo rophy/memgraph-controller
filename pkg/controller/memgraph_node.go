@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
@@ -105,7 +104,7 @@ func (node *MemgraphNode) GetReplicationRole(ctx context.Context) (string, error
 		if err != nil {
 			return "", fmt.Errorf("failed to query replication role for node %s: %w", node.name, err)
 		}
-		log.Printf("Pod %s has Memgraph role: %s", node.name, roleResp.Role)
+		logger.Info("memgraph role", "pod_name", node.name, "role", roleResp.Role)
 		node.memgraphRole = roleResp.Role
 	}
 	return node.memgraphRole, nil
@@ -125,7 +124,7 @@ func (node *MemgraphNode) GetReplicas(ctx context.Context) ([]ReplicaInfo, error
 		if err != nil {
 			return nil, fmt.Errorf("failed to query replicas for node %s: %w", node.name, err)
 		}
-		log.Printf("Pod %s has %d registered replicas", node.name, len(replicasResp.Replicas))
+		logger.Info("memgraph replicas", "pod_name", node.name, "replica_count", len(replicasResp.Replicas))
 		node.replicasInfo = replicasResp.Replicas
 		node.hasReplicasInfo = true
 	}
@@ -195,7 +194,7 @@ func (node *MemgraphNode) QueryStorageInfo(ctx context.Context) error {
 		return fmt.Errorf("failed to query storage info for node %s: %w", node.name, err)
 	}
 	node.storageInfo = storageInfo
-	log.Printf("Pod %s has storage info: vertices=%d, edges=%d", node.name, storageInfo.VertexCount, storageInfo.EdgeCount)
+	logger.Info("memgraph storage info", "pod_name", node.name, "vertices", storageInfo.VertexCount, "edges", storageInfo.EdgeCount)
 	return nil
 }
 

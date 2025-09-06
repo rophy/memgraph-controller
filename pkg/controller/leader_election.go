@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"log"
 	"os"
 	"time"
 
@@ -15,8 +14,8 @@ import (
 
 // LeaderElection handles Kubernetes leader election for HA controller
 type LeaderElection struct {
-	clientset    kubernetes.Interface
-	config       *Config
+	clientset        kubernetes.Interface
+	config           *Config
 	onStartedLeading func(ctx context.Context)
 	onStoppedLeading func()
 	onNewLeader      func(identity string)
@@ -49,7 +48,7 @@ func (le *LeaderElection) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to get pod identity: %w", err)
 	}
 
-	log.Printf("Starting leader election with identity: %s", identity)
+	logger.Info("starting leader election with identity", "identity", identity)
 
 	// Create resource lock for leader election
 	lock, err := le.createResourceLock(identity)
@@ -66,20 +65,20 @@ func (le *LeaderElection) Run(ctx context.Context) error {
 		ReleaseOnCancel: true,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
-				log.Printf("🎯 Started leading as %s", identity)
+				logger.Info("started leading as", "identity", identity)
 				if le.onStartedLeading != nil {
 					le.onStartedLeading(ctx)
 				}
 			},
 			OnStoppedLeading: func() {
-				log.Printf("⏹️  Stopped leading as %s", identity)
+				logger.Info("stopped leading as", "identity", identity)
 				if le.onStoppedLeading != nil {
 					le.onStoppedLeading()
 				}
 			},
 			OnNewLeader: func(currentLeader string) {
 				if currentLeader != identity {
-					log.Printf("👑 New leader elected: %s (I am %s)", currentLeader, identity)
+					logger.Info("new leader elected", "current_leader", currentLeader, "identity", identity)
 				}
 				if le.onNewLeader != nil {
 					le.onNewLeader(currentLeader)
@@ -107,7 +106,7 @@ func (le *LeaderElection) getPodIdentity() (string, error) {
 		return "", fmt.Errorf("failed to get hostname: %w", err)
 	}
 
-	log.Printf("Warning: POD_NAME env var not set, using hostname: %s", hostname)
+	logger.Warn("POD_NAME env var not set, using hostname", "hostname", hostname)
 	return hostname, nil
 }
 

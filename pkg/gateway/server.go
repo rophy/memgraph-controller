@@ -5,7 +5,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"io"
-	"log"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -70,7 +69,6 @@ type Server struct {
 
 	// Production features
 	rateLimiter         *RateLimiter
-	logger              *Logger
 	rateLimitRejections int64
 }
 
@@ -84,9 +82,6 @@ func NewServer(config *Config, mainProvider MainNodeProvider, bootstrapProvider 
 		config.RateLimitWindow,
 	)
 
-	// Create structured logger
-	logger := NewLogger(config.LogLevel, config.TraceEnabled)
-
 	return &Server{
 		config:            config,
 		connections:       NewConnectionTracker(config.MaxConnections),
@@ -95,7 +90,6 @@ func NewServer(config *Config, mainProvider MainNodeProvider, bootstrapProvider 
 		shutdownCh:        make(chan struct{}),
 		healthStatus:      "unknown",
 		rateLimiter:       rateLimiter,
-		logger:            logger,
 	}
 }
 
@@ -115,10 +109,6 @@ func (s *Server) GetCurrentMain() string {
 
 // Start starts the gateway server and begins accepting connections
 func (s *Server) Start(ctx context.Context) error {
-	if !s.config.Enabled {
-		log.Println("Gateway: Server disabled, skipping startup")
-		return nil
-	}
 
 	if err := s.config.Validate(); err != nil {
 		return fmt.Errorf("gateway configuration invalid: %w", err)
@@ -150,7 +140,7 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to listen with TLS on %s: %w", s.config.BindAddress, err)
 		}
 
-		s.logger.Info("Gateway server listening with TLS", map[string]interface{}{
+		logger.Info("Gateway server listening with TLS", map[string]interface{}{
 			"address":   s.config.BindAddress,
 			"cert_path": s.config.TLSCertPath,
 		})
@@ -161,7 +151,7 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to listen on %s: %w", s.config.BindAddress, err)
 		}
 
-		s.logger.Info("Gateway server listening", map[string]interface{}{
+		logger.Info("Gateway server listening", map[string]interface{}{
 			"address": s.config.BindAddress,
 			"tls":     false,
 		})
@@ -178,11 +168,10 @@ func (s *Server) Start(ctx context.Context) error {
 	return nil
 }
 
-
 // acceptConnections runs the main accept loop for incoming connections
 func (s *Server) acceptConnections() {
 	defer s.wg.Done()
-	defer log.Println("Gateway: Accept loop terminated")
+	defer logger.Info("accept loop terminated")
 
 	for {
 		select {
@@ -209,7 +198,7 @@ func (s *Server) acceptConnections() {
 				return
 			default:
 				atomic.AddInt64(&s.errors, 1)
-				log.Printf("Gateway: Error accepting connection: %v", err)
+				logger.Warn("error accepting connection", "error", err)
 				continue
 			}
 		}
@@ -219,7 +208,7 @@ func (s *Server) acceptConnections() {
 		// Check rate limiting
 		if !s.rateLimiter.Allow(clientIP) {
 			atomic.AddInt64(&s.rateLimitRejections, 1)
-			s.logger.Warn("Connection rate limited", map[string]interface{}{
+			logger.Warn("Connection rate limited", map[string]interface{}{
 				"client_ip":   clientIP,
 				"client_addr": conn.RemoteAddr().String(),
 			})
@@ -231,7 +220,7 @@ func (s *Server) acceptConnections() {
 		if !s.connections.CanAccept() {
 			atomic.AddInt64(&s.rejectedConnections, 1)
 			s.rateLimiter.Release(clientIP) // Release rate limit token
-			s.logger.Warn("Connection rejected - max connections reached", map[string]interface{}{
+			logger.Warn("Connection rejected - max connections reached", map[string]interface{}{
 				"client_addr":     conn.RemoteAddr().String(),
 				"max_connections": s.config.MaxConnections,
 			})
@@ -263,18 +252,13 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 
 	// Check bootstrap phase - reject connections during bootstrap per DESIGN.md line 58
 	if s.bootstrapProvider != nil && s.bootstrapProvider() {
-		s.logger.LogConnectionEvent("rejected-bootstrap", clientAddr, map[string]interface{}{
-			"client_ip": clientIP,
-			"reason":    "bootstrap-phase",
-		})
+		logger.Debug("rejected-bootstrap", "client_ip", clientIP, "reason", "bootstrap-phase")
 		atomic.AddInt64(&s.rejectedConnections, 1)
 		// Connection will be closed by defer above - implements DESIGN.md bootstrap rejection
 		return
 	}
 
-	s.logger.LogConnectionEvent("established", clientAddr, map[string]interface{}{
-		"client_ip": clientIP,
-	})
+	logger.Debug("established", "client_ip", clientIP)
 
 	// Track the connection
 	session := s.connections.Track(clientConn)
@@ -284,7 +268,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	// Get current main node with retries for edge cases
 	mainNode, err := s.getMainNodeWithRetry(3)
 	if err != nil {
-		s.logger.Error("Failed to get main node", map[string]interface{}{
+		logger.Error("Failed to get main node", map[string]interface{}{
 			"client_addr": clientAddr,
 			"error":       err.Error(),
 			"retries":     3,
@@ -295,11 +279,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 
 	// Check if main pod is ready per DESIGN.md requirement
 	if !mainNode.IsReady() {
-		s.logger.LogConnectionEvent("rejected-main-not-ready", clientAddr, map[string]interface{}{
-			"client_ip": clientIP,
-			"main_pod":  mainNode.Name,
-			"reason":    "main-pod-not-ready",
-		})
+		logger.Debug("rejected-main-not-ready", "client_ip", clientIP, "main_pod", mainNode.Name, "reason", "main-pod-not-ready")
 		atomic.AddInt64(&s.rejectedConnections, 1)
 		return
 	}
@@ -308,7 +288,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	mainEndpoint := mainNode.BoltAddress
 	backendConn, err := net.DialTimeout("tcp", mainEndpoint, s.config.ConnectionTimeout)
 	if err != nil {
-		s.logger.Error("Failed to connect to main", map[string]interface{}{
+		logger.Error("Failed to connect to main", map[string]interface{}{
 			"client_addr":   clientAddr,
 			"main_endpoint": mainEndpoint,
 			"error":         err.Error(),
@@ -328,7 +308,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	defer backendConn.Close()
 
 	session.SetBackendConnection(backendConn)
-	s.logger.Info("Connection established to main", map[string]interface{}{
+	logger.Info("Connection established to main", map[string]interface{}{
 		"client_addr":   clientAddr,
 		"main_endpoint": mainEndpoint,
 		"session_id":    session.ID,
@@ -355,7 +335,7 @@ func (s *Server) proxyConnections(clientConn, backendConn net.Conn, session *Pro
 		session.AddBytesSent(written)
 		clientToBackendErr = err
 		if err != nil && err != io.EOF {
-			log.Printf("Gateway: Error copying %s->%s: %v", clientAddr, backendAddr, err)
+			logger.Warn("error copying", "from", clientAddr, "to", backendAddr, "error", err)
 		}
 		// Close backend write side to signal EOF
 		if tcpConn, ok := backendConn.(*net.TCPConn); ok {
@@ -370,7 +350,7 @@ func (s *Server) proxyConnections(clientConn, backendConn net.Conn, session *Pro
 		session.AddBytesReceived(written)
 		backendToClientErr = err
 		if err != nil && err != io.EOF {
-			log.Printf("Gateway: Error copying %s->%s: %v", backendAddr, clientAddr, err)
+			logger.Warn("error copying", "from", backendAddr, "to", clientAddr, "error", err)
 		}
 		// Close client write side to signal EOF
 		if tcpConn, ok := clientConn.(*net.TCPConn); ok {
@@ -392,8 +372,11 @@ func (s *Server) proxyConnections(clientConn, backendConn net.Conn, session *Pro
 		atomic.AddInt64(&s.errors, 1)
 	}
 
-	log.Printf("Gateway: Proxy session completed %s->%s: %d bytes, %.2fs",
-		clientAddr, backendAddr, totalBytes, duration.Seconds())
+	logger.Info("proxy session completed",
+		"client_addr", clientAddr,
+		"backend_addr", backendAddr,
+		"total_bytes", totalBytes,
+		"duration", duration.Seconds())
 }
 
 // copyWithBuffer copies data using a buffer of configurable size
@@ -473,13 +456,8 @@ func (s *Server) getMainNodeWithRetry(maxRetries int) (*MemgraphNode, error) {
 			return mainNode, nil
 		}
 
-		// Log the error and retry if not the last attempt
-		if attempt < maxRetries {
-			log.Printf("Gateway: Main node lookup failed (attempt %d/%d): %v, retrying...", attempt, maxRetries, err)
-			time.Sleep(time.Duration(attempt) * time.Second) // Exponential backoff
-		} else {
-			log.Printf("Gateway: Main node lookup failed (final attempt %d/%d): %v", attempt, maxRetries, err)
-		}
+		logger.Warn("main node lookup failed", "attempt", attempt, "max_retries", maxRetries, "error", err)
+		time.Sleep(time.Duration(attempt) * time.Second) // Exponential backoff
 	}
 
 	return nil, fmt.Errorf("failed to get main node after %d attempts", maxRetries)
@@ -500,13 +478,13 @@ func (s *Server) periodicCleanup() {
 			// Clean up idle connections
 			idleCleanup := s.connections.CleanupIdle(s.config.IdleTimeout)
 			if idleCleanup > 0 {
-				log.Printf("Gateway: Cleaned up %d idle connections", idleCleanup)
+				logger.Info("cleaned up idle connections", "count", idleCleanup)
 			}
 
 			// Clean up stale connections (fallback)
 			staleCleanup := s.connections.CleanupStale(s.config.IdleTimeout * 2)
 			if staleCleanup > 0 {
-				log.Printf("Gateway: Cleaned up %d stale connections", staleCleanup)
+				logger.Info("cleaned up stale connections", "count", staleCleanup)
 			}
 
 			// Log connection statistics
@@ -514,8 +492,7 @@ func (s *Server) periodicCleanup() {
 			totalSent, totalReceived := s.connections.GetTotalBytes()
 
 			if activeCount > 0 {
-				log.Printf("Gateway: Active connections: %d, Total bytes: sent=%d, received=%d",
-					activeCount, totalSent, totalReceived)
+				logger.Info("connections", activeCount, "bytes_sent", totalSent, "bytes_received", totalReceived)
 			}
 		}
 	}
@@ -543,7 +520,7 @@ func (s *Server) periodicHealthCheck() {
 			s.healthMu.RUnlock()
 
 			if status != lastStatus {
-				log.Printf("Gateway: Health status changed: %s -> %s", lastStatus, status)
+				logger.Info("health status changed", "from", lastStatus, "to", status)
 			}
 		}
 	}
@@ -553,11 +530,11 @@ func (s *Server) periodicHealthCheck() {
 func (s *Server) DisconnectAll() {
 	activeConnections := s.connections.GetCount()
 	if activeConnections == 0 {
-		log.Println("Gateway: No active connections to disconnect")
+		logger.Info("no active connections to disconnect")
 		return
 	}
 
-	log.Printf("Gateway: Disconnecting all %d active connections...", activeConnections)
+	logger.Info("disconnecting all active connections", "count", activeConnections)
 
 	// Get all active sessions and close them
 	sessions := s.connections.GetAllSessions()
@@ -569,7 +546,6 @@ func (s *Server) DisconnectAll() {
 		disconnectedCount++
 	}
 
-	log.Printf("Gateway: Initiated disconnection of %d connections", disconnectedCount)
 }
 
 // GetStats returns current gateway statistics

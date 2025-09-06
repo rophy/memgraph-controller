@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"log"
 	"sync"
 	"time"
 )
@@ -49,7 +48,7 @@ func (c *MemgraphController) processReconcileQueue(rq *ReconcileQueue) {
 		case event := <-rq.events:
 			c.handleReconcileEvent(event)
 		case <-rq.ctx.Done():
-			log.Println("Reconcile queue processor stopped")
+			logger.Debug("reconcile queue processor stopped")
 			return
 		}
 	}
@@ -59,7 +58,7 @@ func (c *MemgraphController) processReconcileQueue(rq *ReconcileQueue) {
 func (c *MemgraphController) handleReconcileEvent(event ReconcileEvent) {
 	// Only leaders process reconciliation events
 	if !c.IsLeader() {
-		log.Printf("Non-leader ignoring reconcile event: %s", event.Reason)
+		logger.Debug("non-leader ignoring reconcile event", "reason", event.Reason)
 		return
 	}
 
@@ -71,22 +70,22 @@ func (c *MemgraphController) handleReconcileEvent(event ReconcileEvent) {
 	lastEventTime, exists := rq.dedup[dedupKey]
 	if exists && time.Since(lastEventTime) < 2*time.Second {
 		rq.dedupMu.Unlock()
-		log.Printf("Deduplicating reconcile event: %s (within 2s)", event.Reason)
+		logger.Debug("deduplicating reconcile event", "reason", event.Reason, "within", 2*time.Second)
 		return
 	}
 	rq.dedup[dedupKey] = event.Timestamp
 	rq.dedupMu.Unlock()
 
 	// Process the event immediately
-	log.Printf("🔄 Processing immediate reconcile event: %s", event.Reason)
+	logger.Info("processing immediate reconcile event", "reason", event.Reason)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	if err := c.performReconciliationActions(ctx); err != nil {
-		log.Printf("❌ Failed immediate reconciliation for event %s: %v", event.Reason, err)
+		logger.Error("failed immediate reconciliation", "reason", event.Reason, "error", err)
 	} else {
-		log.Printf("✅ Completed immediate reconciliation for event: %s", event.Reason)
+		logger.Info("completed immediate reconciliation", "reason", event.Reason)
 	}
 }
 
@@ -109,8 +108,8 @@ func (c *MemgraphController) enqueueReconcileEvent(eventType, reason, podName st
 	// Non-blocking send with overflow protection
 	select {
 	case c.reconcileQueue.events <- event:
-		log.Printf("📥 Enqueued reconcile event: %s (pod: %s)", reason, podName)
+		logger.Debug("enqueued reconcile event", "reason", reason, "pod", podName)
 	default:
-		log.Printf("⚠️ Reconcile queue full, dropping event: %s", reason)
+		logger.Debug("reconcile queue full, dropping event", "reason", reason)
 	}
 }

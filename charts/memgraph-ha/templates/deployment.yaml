@@ -11,6 +11,8 @@ metadata:
   {{- end }}
 spec:
   replicas: {{ .Values.controller.replicaCount }}
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app: {{ .Values.controller.labels.app }}

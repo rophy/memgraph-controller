@@ -49,17 +49,17 @@ memgraph:
   container:
     terminationGracePeriodSeconds: 1800
     readinessProbe:
-      tcpSocket:
-        port: 7687
-      failureThreshold: 20
+      exec:
+        command: ["/bin/sh", "-c", "echo 'RETURN 0;' | timeout 10s mgconsole --output-format csv --username=memgraph >/dev/null 2>&1"]
+      failureThreshold: 3
       timeoutSeconds: 10
-      periodSeconds: 5
+      periodSeconds: 30
     livenessProbe:
-      tcpSocket:
-        port: 7687
+      exec:
+        command: ["/bin/sh", "-c", "echo 'RETURN 0;' | timeout 10s mgconsole --output-format csv --username=memgraph >/dev/null 2>&1"]
       failureThreshold: 20
       timeoutSeconds: 10
-      periodSeconds: 5
+      periodSeconds: 30
     startupProbe:
       tcpSocket:
         port: 7687

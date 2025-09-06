@@ -24,18 +24,9 @@ clean: ## Remove build artifacts
 test: ## Run unit tests
 	go test -v ./...
 
-test-e2e: ## Run shell-based E2E tests (recommended)
+test-e2e: ## Run shell-based E2E tests
 	@echo "Running shell-based E2E tests..."
 	./tests/scripts/simple-e2e-tests.sh
-
-test-e2e-go: ## Run Go-based E2E tests as Kubernetes Job (legacy)
-	@echo "Running Go-based E2E tests as Kubernetes Job..."
-	skaffold run -p e2e-test
-	@echo "E2E tests completed. Check logs above for results."
-
-test-e2e-cleanup: ## Clean up E2E test resources
-	@echo "Cleaning up E2E test resources..."
-	skaffold delete -p e2e-test
 
 # Development targets
 up: ## Deploy memgraph cluster only (no controller)

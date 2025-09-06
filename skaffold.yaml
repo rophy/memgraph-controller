@@ -38,32 +38,4 @@ deploy:
     prefix: podAndContainer
 
 # Profiles for different deployment scenarios
-profiles:
-
-# Profile for E2E testing - builds test image and deploys test job
-- name: e2e-test
-  build:
-    artifacts:
-    - image: e2e-test
-      context: tests
-      docker:
-        dockerfile: Dockerfile
-  manifests:
-    rawYaml:
-    - "tests/k8s/serviceaccount.yaml"
-    - "tests/k8s/e2e-test-job.yaml"
-  deploy:
-    statusCheck: false
-    kubectl:
-      hooks:
-        before:
-        - host:
-            command: ["sh", "-c", "kubectl delete -n memgraph job e2e-test --ignore-not-found"]
-        after:
-        - host:
-            command: ["sh", "-c", "kubectl wait -n memgraph --for=condition=ready pod --selector=job-name=e2e-test --timeout=1m && kubectl logs -n memgraph -f job/e2e-test"]
-    # Override default helm to not deploy anything
-    helm:
-      releases: []
-    logs:
-      prefix: none
+profiles: []

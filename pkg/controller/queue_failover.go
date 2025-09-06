@@ -64,15 +64,15 @@ func (c *MemgraphController) handleFailoverCheckEvent(event FailoverCheckEvent) 
 		return
 	}
 
-	// Deduplication: ignore events for same pod within 5 seconds (longer than reconcile)
+	// Deduplication: ignore events for same pod within 2 seconds
 	dedupKey := fmt.Sprintf("failover:%s", event.PodName)
 
 	fq := c.failoverCheckQueue
 	fq.dedupMu.Lock()
 	lastEventTime, exists := fq.dedup[dedupKey]
-	if exists && time.Since(lastEventTime) < 5*time.Second {
+	if exists && time.Since(lastEventTime) < 2*time.Second {
 		fq.dedupMu.Unlock()
-		log.Printf("Deduplicating failover check event: %s (within 5s)", event.Reason)
+		log.Printf("Deduplicating failover check event: %s (within 2s)", event.Reason)
 		return
 	}
 	fq.dedup[dedupKey] = event.Timestamp

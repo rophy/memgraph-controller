@@ -43,15 +43,8 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 
 			// Check if ConfigMap is ready by trying to get the target main index
 			_, err := c.GetTargetMainIndex(ctx)
-			configMapReady := err == nil
-
-			if !configMapReady {
-				log.Println("ConfigMap not ready - performing discovery and creating ConfigMap...")
-
-				// Discover current pods and populate cluster state
-				if err := c.cluster.Refresh(ctx); err != nil {
-					return fmt.Errorf("failed to discover pods: %w", err)
-				}
+			if err != nil {
+				log.Println("ConfigMap not ready - performing discovery...")
 
 				// Use DESIGN.md compliant discovery logic to determine target main index
 				targetMainIndex, err := c.cluster.discoverClusterState(ctx)
@@ -80,10 +73,25 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 }
 
 func (c *MemgraphController) performReconciliationActions(ctx context.Context) error {
+	// Ensure only one reconciliation runs at a time
+	c.reconcileMu.Lock()
+	defer c.reconcileMu.Unlock()
+
+	// Skip reconciliation if TargetMainIndex is still not set.
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		log.Printf("Failed to get target main index: %v", err)
+		return nil // Retry on next tick
+	}
+	if targetMainIndex == -1 {
+		log.Printf("Target main index is not set, skipping reconciliation")
+		return nil // Retry on next tick
+	}
+
 	log.Println("Starting DESIGN.md compliant reconcile actions...")
 
 	// List all memgraph pods with kubernetes status
-	err := c.cluster.Refresh(ctx)
+	err = c.cluster.Refresh(ctx)
 	if err != nil {
 		log.Printf("Failed to refresh cluster state: %v", err)
 		return nil // Retry on next tick

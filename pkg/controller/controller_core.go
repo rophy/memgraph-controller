@@ -20,12 +20,18 @@ import (
 
 // generateStateConfigMapName creates a ConfigMap name based on the release name
 func generateStateConfigMapName() string {
+	configMapName := ""
 	releaseName := os.Getenv("RELEASE_NAME")
 	if releaseName == "" {
 		log.Printf("Warning: RELEASE_NAME env var not set, using default ConfigMap name")
-		return "memgraph-controller-state"
+		configMapName = "memgraph-controller-state"
 	}
-	return fmt.Sprintf("%s-controller-state", releaseName)
+	configMapName = fmt.Sprintf("%s-state", releaseName)
+	// Truncate to 63 characters
+	if len(configMapName) > 63 {
+		configMapName = configMapName[:63]
+	}
+	return configMapName
 }
 
 type MemgraphController struct {
@@ -48,6 +54,7 @@ type MemgraphController struct {
 
 	// Event-driven reconciliation
 	reconcileQueue     *ReconcileQueue
+	reconcileMu        sync.Mutex // Mutex to prevent concurrent reconciliations
 	failoverCheckQueue *FailoverCheckQueue
 	failoverMu         sync.Mutex // Mutex to prevent concurrent failover checks
 
@@ -613,7 +620,7 @@ func (c *MemgraphController) getControllerOwnerReference(ctx context.Context) (*
 			if err != nil {
 				continue // Try next owner reference
 			}
-			
+
 			// Find the Deployment owner of this ReplicaSet
 			for _, rsOwnerRef := range rs.OwnerReferences {
 				if rsOwnerRef.Kind == "Deployment" && rsOwnerRef.APIVersion == "apps/v1" {

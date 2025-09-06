@@ -17,9 +17,9 @@ TESTS_RUN=0
 TESTS_PASSED=0
 TESTS_FAILED=0
 
-log_info() { echo -e "${BLUE}[INFO]${NC} $*"; }
-log_success() { echo -e "${GREEN}[SUCCESS]${NC} $*"; }
-log_error() { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+log_info() { echo -e "${BLUE}[INFO]${NC} $(date -Iseconds) $*"; }
+log_success() { echo -e "${GREEN}[SUCCESS]${NC} $(date -Iseconds) $*"; }
+log_error() { echo -e "${RED}[ERROR]${NC} $(date -Iseconds) $*" >&2; }
 
 start_test() { 
     local test_name="$1"

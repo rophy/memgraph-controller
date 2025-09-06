@@ -436,6 +436,168 @@ test_failover() {
     pass_test "$test_name"
 }
 
+# Test 5: Rolling Restart of StatefulSet
+test_rolling_restart() {
+    local test_name="Rolling Restart Test"
+    start_test "$test_name"
+    
+    log_info "🔍 Step 1: Verify pre-restart cluster health"
+    
+    # Ensure cluster is healthy before rolling restart
+    if ! wait_for_cluster_convergence; then
+        fail_test "$test_name" "Cluster not healthy before rolling restart"
+        return 1
+    fi
+    
+    # Get test client pod for log monitoring
+    local test_client_pod
+    if ! test_client_pod=$(get_test_client_pod); then
+        fail_test "$test_name" "Failed to find test-client pod"
+        return 1
+    fi
+    
+    # Record initial successful write count
+    local pre_restart_logs
+    if ! pre_restart_logs=$(kubectl logs "$test_client_pod" -n "$MEMGRAPH_NS" --tail=30 2>/dev/null); then
+        fail_test "$test_name" "Failed to get pre-restart logs"
+        return 1
+    fi
+    
+    local pre_success_count
+    pre_success_count=$(echo "$pre_restart_logs" | grep -c "✓ Success" 2>/dev/null || echo "0")
+    pre_success_count=$(echo "$pre_success_count" | head -1 | tr -d '\n')
+    
+    log_info "✅ Pre-restart cluster healthy with $pre_success_count recent successes"
+    
+    # Get current StatefulSet generation
+    local initial_generation
+    if ! initial_generation=$(kubectl get statefulset memgraph-ha -n "$MEMGRAPH_NS" -o jsonpath='{.metadata.generation}' 2>/dev/null); then
+        fail_test "$test_name" "Failed to get StatefulSet generation"
+        return 1
+    fi
+    
+    log_info "📊 Initial StatefulSet generation: $initial_generation"
+    
+    # Step 2: Trigger rolling restart
+    log_info "🔄 Step 2: Triggering rolling restart of memgraph-ha StatefulSet"
+    
+    if ! kubectl rollout restart statefulset/memgraph-ha -n "$MEMGRAPH_NS" 2>/dev/null; then
+        fail_test "$test_name" "Failed to trigger rolling restart"
+        return 1
+    fi
+    
+    log_info "⏳ Rolling restart initiated, waiting for restart to begin..."
+    
+    # Wait for StatefulSet generation to change (indicating rolling restart started)
+    local max_wait=30
+    local elapsed=0
+    local new_generation="$initial_generation"
+    
+    while (( elapsed < max_wait )) && [[ "$new_generation" == "$initial_generation" ]]; do
+        sleep 2
+        elapsed=$((elapsed + 2))
+        new_generation=$(kubectl get statefulset memgraph-ha -n "$MEMGRAPH_NS" -o jsonpath='{.metadata.generation}' 2>/dev/null || echo "$initial_generation")
+    done
+    
+    if [[ "$new_generation" == "$initial_generation" ]]; then
+        fail_test "$test_name" "Rolling restart did not start within ${max_wait}s"
+        return 1
+    fi
+    
+    log_info "✅ Rolling restart started (generation: $initial_generation → $new_generation)"
+    
+    # Step 3: Wait for rolling restart to complete
+    log_info "⏳ Step 3: Waiting for rolling restart to complete..."
+    
+    # Wait for all pods to be ready with new generation
+    max_wait=180  # 3 minutes for rolling restart
+    elapsed=0
+    
+    while (( elapsed < max_wait )); do
+        local ready_replicas updated_replicas
+        ready_replicas=$(kubectl get statefulset memgraph-ha -n "$MEMGRAPH_NS" -o jsonpath='{.status.readyReplicas}' 2>/dev/null || echo "0")
+        updated_replicas=$(kubectl get statefulset memgraph-ha -n "$MEMGRAPH_NS" -o jsonpath='{.status.updatedReplicas}' 2>/dev/null || echo "0")
+        
+        if (( ready_replicas == 3 && updated_replicas == 3 )); then
+            log_info "✅ Rolling restart completed: all 3 replicas ready and updated"
+            break
+        fi
+        
+        log_info "⏳ Rolling restart in progress: ready=$ready_replicas/3, updated=$updated_replicas/3 (${elapsed}s/${max_wait}s)"
+        sleep 5
+        elapsed=$((elapsed + 5))
+    done
+    
+    if (( elapsed >= max_wait )); then
+        fail_test "$test_name" "Rolling restart did not complete within ${max_wait}s"
+        return 1
+    fi
+    
+    # Step 4: Analyze connection behavior during rolling restart
+    log_info "🔍 Step 4: Analyzing connection behavior during rolling restart"
+    
+    # Get logs from around the rolling restart period
+    local post_restart_logs
+    if ! post_restart_logs=$(kubectl logs "$test_client_pod" -n "$MEMGRAPH_NS" --tail=60 2>/dev/null); then
+        fail_test "$test_name" "Failed to get post-restart logs"
+        return 1
+    fi
+    
+    # Count errors during rolling restart
+    local error_count success_after_restart
+    error_count=$(echo "$post_restart_logs" | grep -c "✗ Failed" 2>/dev/null || echo "0")
+    error_count=$(echo "$error_count" | head -1 | tr -d '\n')
+    
+    # Check for recovery (recent successes)
+    success_after_restart=$(echo "$post_restart_logs" | tail -20 | grep -c "✓ Success" 2>/dev/null || echo "0")
+    success_after_restart=$(echo "$success_after_restart" | head -1 | tr -d '\n')
+    
+    # Validate rolling restart behavior
+    log_info "📊 Rolling restart impact: $error_count connection errors, $success_after_restart recent successes"
+    
+    if (( error_count <= 5 )) && (( success_after_restart >= 3 )); then
+        log_info "✅ Excellent rolling restart: minimal disruption with good recovery"
+    elif (( error_count <= 10 )) && (( success_after_restart >= 1 )); then
+        log_info "✅ Acceptable rolling restart: moderate disruption with recovery"
+    else
+        # This might still be acceptable for rolling restart - it's more disruptive than single pod failover
+        if (( success_after_restart >= 1 )); then
+            log_info "⚠️  Rolling restart caused significant disruption but service recovered"
+        else
+            fail_test "$test_name" "Rolling restart failed: $error_count errors with no recovery"
+            return 1
+        fi
+    fi
+    
+    # Step 5: Verify final cluster convergence
+    log_info "🔍 Step 5: Verifying post-restart cluster convergence"
+    
+    if ! wait_for_cluster_convergence; then
+        log_info "⚠️  Cluster convergence incomplete, checking if functional..."
+        
+        # Try to query basic status
+        local role_result
+        if role_result=$(query_via_client "SHOW REPLICATION ROLE;" 2>/dev/null); then
+            local main_role
+            main_role=$(echo "$role_result" | jq -r '.[0]["replication role"]' 2>/dev/null || echo "")
+            if [[ "$main_role" == "main" ]]; then
+                log_info "✅ Post-restart cluster is functional (main role confirmed)"
+            else
+                fail_test "$test_name" "Post-restart cluster not functional: role=$main_role"
+                return 1
+            fi
+        else
+            fail_test "$test_name" "Cannot query cluster after rolling restart"
+            return 1
+        fi
+    else
+        log_info "✅ Post-restart cluster fully converged to expected topology"
+    fi
+    
+    log_info "🎉 Rolling restart test completed successfully!"
+    pass_test "$test_name"
+}
+
 # Main execution
 main() {
     echo
@@ -464,6 +626,8 @@ main() {
     test_data_replication
     echo
     test_failover
+    echo
+    test_rolling_restart
     echo
     
     # Print results

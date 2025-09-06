@@ -239,9 +239,29 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 		pods = append(pods, podStatus)
 	}
 
+	// Get replica registrations from the main node
+	var replicaRegistrations []ReplicaRegistration
+	if targetMainIndex, err := c.GetTargetMainIndex(ctx); err == nil {
+		targetMainPodName := c.config.GetPodName(targetMainIndex)
+		if mainNode, exists := clusterState.MemgraphNodes[targetMainPodName]; exists {
+			if replicas, err := mainNode.GetReplicas(ctx); err == nil {
+				for _, replica := range replicas {
+					replicaRegistrations = append(replicaRegistrations, ReplicaRegistration{
+						Name:      replica.Name,
+						PodName:   replica.GetPodName(),
+						IPAddress: strings.Split(replica.SocketAddress, ":")[0],
+						SyncMode:  replica.SyncMode,
+						IsHealthy: replica.IsHealthy(),
+					})
+				}
+			}
+		}
+	}
+
 	// Add leader status and reconciliation metrics to cluster status
 	statusResponse.IsLeader = c.IsLeader()
 	statusResponse.ReconciliationMetrics = c.GetReconciliationMetrics()
+	statusResponse.ReplicaRegistrations = replicaRegistrations
 
 	response := &StatusResponse{
 		Timestamp:    time.Now(),

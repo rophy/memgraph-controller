@@ -21,8 +21,6 @@ type MemgraphNode struct {
 	replicasInfo    []ReplicaInfo // Detailed replica information
 	hasReplicasInfo bool          // True if ReplicasInfo has been populated
 
-	// Public field for test compatibility
-	IsSyncReplica bool // Indicates if this node is designated as the SYNC replica
 
 	// Memgraph client for database operations (shared connection pool underneath)
 	client *MemgraphClient

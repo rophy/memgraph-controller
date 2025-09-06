@@ -26,24 +26,33 @@ type ClusterStatus struct {
 
 // ClusterState represents the high-level cluster state
 type ClusterState struct {
-	CurrentMain        string `json:"current_main"`
-	CurrentSyncReplica string `json:"current_sync_replica"`
-	TotalPods          int    `json:"total_pods"`
-	HealthyPods        int    `json:"healthy_pods"`
-	UnhealthyPods      int    `json:"unhealthy_pods"`
-	SyncReplicaHealthy bool   `json:"sync_replica_healthy"`
+	CurrentMain           string                `json:"current_main"`
+	CurrentSyncReplica    string                `json:"current_sync_replica"`
+	TotalPods             int                   `json:"total_pods"`
+	HealthyPods           int                   `json:"healthy_pods"`
+	UnhealthyPods         int                   `json:"unhealthy_pods"`
+	SyncReplicaHealthy    bool                  `json:"sync_replica_healthy"`
+	IsLeader              bool                  `json:"is_leader"`
+	ReplicaRegistrations  []ReplicaRegistration `json:"replica_registrations"`
 }
 
 // PodInfo represents information about a single pod
 type PodInfo struct {
-	Name               string `json:"name"`
-	State              string `json:"state"`
-	MemgraphRole       string `json:"memgraph_role"`
-	BoltAddress        string `json:"bolt_address"`
-	ReplicationAddress string `json:"replication_address"`
-	Timestamp          string `json:"timestamp"`
-	Healthy            bool   `json:"healthy"`
-	IsSyncReplica      bool   `json:"is_sync_replica"`
+	Name         string `json:"name"`
+	State        string `json:"state"`
+	MemgraphRole string `json:"memgraph_role"`
+	IPAddress    string `json:"ip_address"`
+	Timestamp    string `json:"timestamp"`
+	Healthy      bool   `json:"healthy"`
+}
+
+// ReplicaRegistration represents a replica registration from the main node
+type ReplicaRegistration struct {
+	Name      string `json:"name"`       // Replica name (e.g., "memgraph_ha_0")
+	PodName   string `json:"pod_name"`   // Pod name (e.g., "memgraph-ha-0")
+	IPAddress string `json:"ip_address"` // IP address
+	SyncMode  string `json:"sync_mode"`  // "SYNC" or "ASYNC"
+	IsHealthy bool   `json:"is_healthy"` // Whether replica is healthy based on data_info
 }
 
 // GatewayInfo represents gateway status information
@@ -104,4 +113,24 @@ func getClusterStatus(ctx context.Context) (*ClusterStatus, error) {
 	}
 
 	return &status, nil
+}
+
+// isReplicaSyncMode checks if a pod is registered as a SYNC replica
+func isReplicaSyncMode(podName string, replicaRegistrations []ReplicaRegistration) bool {
+	for _, replica := range replicaRegistrations {
+		if replica.PodName == podName && replica.SyncMode == "SYNC" {
+			return true
+		}
+	}
+	return false
+}
+
+// isReplicaRegistered checks if a pod is registered as any type of replica
+func isReplicaRegistered(podName string, replicaRegistrations []ReplicaRegistration) bool {
+	for _, replica := range replicaRegistrations {
+		if replica.PodName == podName {
+			return true
+		}
+	}
+	return false
 }

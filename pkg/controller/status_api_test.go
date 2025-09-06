@@ -66,8 +66,8 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 		t.Errorf("Expected MemgraphRole 'main', got '%s'", status.MemgraphRole)
 	}
 
-	if status.IsSyncReplica {
-		t.Error("Expected main pod to not be a SYNC replica")
+	if status.IPAddress == "" {
+		t.Error("Expected main pod to have IP address")
 	}
 
 	if len(status.ReplicasRegistered) != 0 {
@@ -123,8 +123,6 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 	// Set cached replica info to avoid network calls
 	node.hasReplicasInfo = true
 	// node.State = REPLICA // State removed
-	node.IsSyncReplica = true
-
 	// Test SYNC replica conversion  
 	status := convertMemgraphNodeToStatus(node, true, pod)
 
@@ -138,10 +136,6 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 
 	if !status.Healthy {
 		t.Error("Expected pod to be healthy")
-	}
-
-	if !status.IsSyncReplica {
-		t.Error("Expected pod to be a SYNC replica")
 	}
 
 	if status.MemgraphRole != "replica" {
@@ -198,7 +192,7 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 	// Set cached replica info to avoid network calls
 	node2.hasReplicasInfo = true
 	// node2.State = REPLICA // State removed
-	node2.IsSyncReplica = true
+	// Remove IsSyncReplica assignment - this info is stored in replica registrations, not on nodes
 
 	clusterState.MemgraphNodes["memgraph-0"] = node1
 	clusterState.MemgraphNodes["memgraph-1"] = node2

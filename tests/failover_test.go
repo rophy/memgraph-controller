@@ -94,8 +94,9 @@ func TestE2E_DataReplicationVerification(t *testing.T) {
 	// Verify cluster state shows healthy replication topology
 	var mainCount, syncCount, asyncCount int
 	for _, pod := range status.Pods {
+		isSyncReplica := isReplicaSyncMode(pod.Name, status.ClusterState.ReplicaRegistrations)
 		t.Logf("Pod %s: MemgraphRole=%s, IsSyncReplica=%v, Healthy=%v", 
-			pod.Name, pod.MemgraphRole, pod.IsSyncReplica, pod.Healthy)
+			pod.Name, pod.MemgraphRole, isSyncReplica, pod.Healthy)
 		
 		if !pod.Healthy {
 			t.Logf("⚠ Pod %s is unhealthy", pod.Name)
@@ -106,7 +107,7 @@ func TestE2E_DataReplicationVerification(t *testing.T) {
 		case "main":
 			mainCount++
 		case "replica":
-			if pod.IsSyncReplica {
+			if isReplicaSyncMode(pod.Name, status.ClusterState.ReplicaRegistrations) {
 				syncCount++
 			} else {
 				asyncCount++
@@ -302,7 +303,7 @@ func tryValidateTopology(status *ClusterStatus) (main, sync string, valid bool) 
 			mainCount++
 			mainPod = pod.Name
 		case "replica":
-			if pod.IsSyncReplica {
+			if isReplicaSyncMode(pod.Name, status.ClusterState.ReplicaRegistrations) {
 				syncCount++
 				syncPod = pod.Name
 			}
@@ -330,7 +331,7 @@ func validateTopology(t *testing.T, status *ClusterStatus) (main, sync string) {
 			mainCount++
 			mainPod = pod.Name
 		case "replica":
-			if pod.IsSyncReplica {
+			if isReplicaSyncMode(pod.Name, status.ClusterState.ReplicaRegistrations) {
 				syncCount++
 				syncPod = pod.Name
 			} else {

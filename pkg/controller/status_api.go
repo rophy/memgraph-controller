@@ -24,6 +24,7 @@ type ClusterStatus struct {
 	SyncReplicaHealthy    bool                  `json:"sync_replica_healthy"`
 	IsLeader              bool                  `json:"is_leader"`
 	ReconciliationMetrics ReconciliationMetrics `json:"reconciliation_metrics"`
+	ReplicaRegistrations  []ReplicaRegistration `json:"replica_registrations"`
 }
 
 // PodStatus represents the status of a single pod for API response
@@ -34,7 +35,6 @@ type PodStatus struct {
 	IPAddress          string               `json:"ip_address"`
 	Timestamp          time.Time            `json:"timestamp"`
 	Healthy            bool                 `json:"healthy"`
-	IsSyncReplica      bool                 `json:"is_sync_replica"`
 	ReplicasRegistered []string             `json:"replicas_registered"`
 	Inconsistency      *StatusInconsistency `json:"inconsistency"`
 }
@@ -43,6 +43,15 @@ type PodStatus struct {
 type StatusInconsistency struct {
 	Description  string `json:"description"`
 	MemgraphRole string `json:"memgraph_role"`
+}
+
+// ReplicaRegistration represents a replica registration from the main node
+type ReplicaRegistration struct {
+	Name      string `json:"name"`       // Replica name (e.g., "memgraph_ha_0")
+	PodName   string `json:"pod_name"`   // Pod name (e.g., "memgraph-ha-0")
+	IPAddress string `json:"ip_address"` // IP address
+	SyncMode  string `json:"sync_mode"`  // "SYNC" or "ASYNC"
+	IsHealthy bool   `json:"is_healthy"` // Whether replica is healthy based on data_info
 }
 
 // convertMemgraphNodeToStatus converts internal MemgraphNode to API PodStatus
@@ -85,7 +94,6 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, _ *v1.Pod) Po
 		IPAddress:          node.GetIpAddress(),
 		Timestamp:          node.timestamp,
 		Healthy:            healthy,
-		IsSyncReplica:      node.IsSyncReplica,
 		ReplicasRegistered: replicasRegistered,
 		Inconsistency:      inconsistency,
 	}

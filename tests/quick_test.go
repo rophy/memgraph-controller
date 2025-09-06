@@ -34,14 +34,14 @@ func TestE2E_ClusterTopology(t *testing.T) {
 
 	for _, pod := range status.Pods {
 		assert.True(t, pod.Healthy, "Pod %s should be healthy", pod.Name)
-		assert.NotEmpty(t, pod.BoltAddress, "Pod %s should have Bolt address", pod.Name)
+		assert.NotEmpty(t, pod.IPAddress, "Pod %s should have IP address", pod.Name)
 
 		switch pod.MemgraphRole {
 		case "main":
 			mainCount++
 			mainPod = pod.Name
 		case "replica":
-			if pod.IsSyncReplica {
+			if isReplicaSyncMode(pod.Name, status.ClusterState.ReplicaRegistrations) {
 				syncCount++
 				syncPod = pod.Name
 			} else {
@@ -63,7 +63,7 @@ func TestE2E_ClusterTopology(t *testing.T) {
 	// Validate that pod-2 is always ASYNC (not eligible for main/SYNC roles) - CRITICAL
 	asyncPodName := ""
 	for _, pod := range status.Pods {
-		if pod.MemgraphRole == "replica" && !pod.IsSyncReplica {
+		if pod.MemgraphRole == "replica" && !isReplicaSyncMode(pod.Name, status.ClusterState.ReplicaRegistrations) {
 			asyncPodName = pod.Name
 			break
 		}

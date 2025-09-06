@@ -202,22 +202,14 @@ async function runOneShot(query) {
         });
         
         // Output records as JSON to stdout
-        console.log(JSON.stringify({
-            records: records,
-            summary: {
-                queryType: result.summary.queryType,
-                counters: result.summary.counters,
-                resultAvailableAfter: result.summary.resultAvailableAfter,
-                resultConsumedAfter: result.summary.resultConsumedAfter
-            }
-        }, null, 2));
+        console.log(records);
         
         await session.close();
         await driver.close();
         process.exit(0);
     } catch (error) {
         // Output error to stderr
-        console.error(`Query failed: ${error.message}`);
+        console.error(error);
         await driver.close();
         process.exit(1);
     }
@@ -229,7 +221,6 @@ async function main() {
     if (args.length > 0) {
         // One-shot mode: join all args as a single query
         const query = args.join(' ');
-        console.log(`Running one-shot query: ${query}`);
         await runOneShot(query);
         return;
     }

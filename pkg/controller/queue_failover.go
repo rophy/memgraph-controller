@@ -133,6 +133,39 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 		return fmt.Errorf("sync replica pod %s is not healthy for failover", targetSyncReplicaName)
 	}
 
+	// Latest known replication status must be "healthy" to sync replica.
+	targetMainNode, err := c.getTargetMainNode(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot get target main node: %w", err)
+	}
+	replicas, err := targetMainNode.GetReplicas(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot get replicas from target main node: %w", err)
+	}
+	var syncReplica *ReplicaInfo = nil
+	for _, replica := range replicas {
+		if replica.Name == targetSyncReplicaName {
+			syncReplica = &replica
+			break
+		}
+	}
+	if syncReplica == nil {
+		log.Printf("Failover check: %s not found in cached replicas list, unsafe to perform failover", targetSyncReplicaName)
+		return fmt.Errorf("%s not found in cached replicas list, unsafe to perform failover", targetSyncReplicaName)
+	}
+	if syncReplica.SyncMode != "sync" {
+		log.Printf("Failover check: Cached replica type of %s was not \"sync\", unsafe to perform failover", targetSyncReplicaName)
+		return fmt.Errorf("cached replica type of %s was not \"sync\", unsafe to perform failover", targetSyncReplicaName)
+	}
+	if syncReplica.ParsedDataInfo == nil {
+		log.Printf("Failover check: Cached replica data_info of %s was nil, unsafe to perform failover", targetSyncReplicaName)
+		return fmt.Errorf("cached replica data_info of %s was nil, unsafe to perform failover", targetSyncReplicaName)
+	}
+	if syncReplica.ParsedDataInfo.Status != "ready" {
+		log.Printf("Failover check: Cached replica status of %s was not \"ready\", unsafe to perform failover", targetSyncReplicaName)
+		return fmt.Errorf("cached replica status of %s was not \"ready\", unsafe to perform failover", targetSyncReplicaName)
+	}
+
 	// Target sync replica is healthy, proceed with failover
 
 	if role == "main" {

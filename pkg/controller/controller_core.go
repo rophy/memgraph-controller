@@ -241,6 +241,12 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 	c.targetMutex.Lock()
 	defer c.targetMutex.Unlock()
 
+	// Get owner reference to the controller pod for proper cleanup
+	ownerRef, err := c.getControllerOwnerReference(ctx)
+	if err != nil {
+		log.Printf("Warning: Failed to get controller owner reference: %v. ConfigMap will not be cleaned up automatically.", err)
+	}
+
 	// Update ConfigMap first
 	configMapData := map[string]string{
 		"targetMainIndex": fmt.Sprintf("%d", index),
@@ -254,7 +260,12 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 		Data: configMapData,
 	}
 
-	_, err := c.clientset.CoreV1().ConfigMaps(c.config.Namespace).Update(ctx, configMap, metav1.UpdateOptions{})
+	// Set owner reference if available
+	if ownerRef != nil {
+		configMap.ObjectMeta.OwnerReferences = []metav1.OwnerReference{*ownerRef}
+	}
+
+	_, err = c.clientset.CoreV1().ConfigMaps(c.config.Namespace).Update(ctx, configMap, metav1.UpdateOptions{})
 	if err != nil {
 		// Try to create if it doesn't exist
 		if errors.IsNotFound(err) {
@@ -577,4 +588,46 @@ func (c *MemgraphController) getPodFromCache(podName string) (*v1.Pod, error) {
 		return nil, fmt.Errorf("cached object for %s is not a Pod", podName)
 	}
 	return pod, nil
+}
+
+// getControllerOwnerReference creates an owner reference pointing to the controller deployment
+// This ensures ConfigMaps are cleaned up when the controller is uninstalled
+func (c *MemgraphController) getControllerOwnerReference(ctx context.Context) (*metav1.OwnerReference, error) {
+	// Get current pod name from environment (set by Kubernetes via fieldRef)
+	podName := os.Getenv("POD_NAME")
+	if podName == "" {
+		return nil, fmt.Errorf("POD_NAME environment variable not set")
+	}
+
+	// Get the controller pod to find its owner (the Deployment)
+	pod, err := c.clientset.CoreV1().Pods(c.config.Namespace).Get(ctx, podName, metav1.GetOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("failed to get controller pod %s: %w", podName, err)
+	}
+
+	// Find the Deployment owner reference
+	for _, ownerRef := range pod.OwnerReferences {
+		if ownerRef.Kind == "ReplicaSet" && ownerRef.APIVersion == "apps/v1" {
+			// Get the ReplicaSet to find its Deployment owner
+			rs, err := c.clientset.AppsV1().ReplicaSets(c.config.Namespace).Get(ctx, ownerRef.Name, metav1.GetOptions{})
+			if err != nil {
+				continue // Try next owner reference
+			}
+			
+			// Find the Deployment owner of this ReplicaSet
+			for _, rsOwnerRef := range rs.OwnerReferences {
+				if rsOwnerRef.Kind == "Deployment" && rsOwnerRef.APIVersion == "apps/v1" {
+					return &metav1.OwnerReference{
+						APIVersion: rsOwnerRef.APIVersion,
+						Kind:       rsOwnerRef.Kind,
+						Name:       rsOwnerRef.Name,
+						UID:        rsOwnerRef.UID,
+						Controller: &[]bool{true}[0], // Create a pointer to true
+					}, nil
+				}
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("could not find Deployment owner reference for pod %s", podName)
 }

@@ -18,27 +18,27 @@ type ReconcileEvent struct {
 
 // ReconcileQueue manages immediate reconciliation events
 type ReconcileQueue struct {
-	events    chan ReconcileEvent
-	dedup     map[string]time.Time // Deduplication map
-	dedupMu   sync.Mutex
-	ctx       context.Context
-	cancel    context.CancelFunc
+	events  chan ReconcileEvent
+	dedup   map[string]time.Time // Deduplication map
+	dedupMu sync.Mutex
+	ctx     context.Context
+	cancel  context.CancelFunc
 }
 
 // newReconcileQueue creates and starts a new reconcile event queue
 func (c *MemgraphController) newReconcileQueue() *ReconcileQueue {
 	ctx, cancel := context.WithCancel(context.Background())
-	
+
 	rq := &ReconcileQueue{
 		events: make(chan ReconcileEvent, 100), // Buffered channel for burst events
 		dedup:  make(map[string]time.Time),
 		ctx:    ctx,
 		cancel: cancel,
 	}
-	
+
 	// Start the queue processor goroutine
 	go c.processReconcileQueue(rq)
-	
+
 	return rq
 }
 
@@ -62,10 +62,10 @@ func (c *MemgraphController) handleReconcileEvent(event ReconcileEvent) {
 		log.Printf("Non-leader ignoring reconcile event: %s", event.Reason)
 		return
 	}
-	
+
 	// Deduplication: ignore events for same pod within 2 seconds
 	dedupKey := fmt.Sprintf("%s:%s", event.Type, event.PodName)
-	
+
 	rq := c.reconcileQueue
 	rq.dedupMu.Lock()
 	lastEventTime, exists := rq.dedup[dedupKey]
@@ -76,14 +76,14 @@ func (c *MemgraphController) handleReconcileEvent(event ReconcileEvent) {
 	}
 	rq.dedup[dedupKey] = event.Timestamp
 	rq.dedupMu.Unlock()
-	
+
 	// Process the event immediately
 	log.Printf("🔄 Processing immediate reconcile event: %s", event.Reason)
-	
+
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
-	
-	if err := c.executeReconcileActions(ctx); err != nil {
+
+	if err := c.performReconciliationActions(ctx); err != nil {
 		log.Printf("❌ Failed immediate reconciliation for event %s: %v", event.Reason, err)
 	} else {
 		log.Printf("✅ Completed immediate reconciliation for event: %s", event.Reason)
@@ -105,7 +105,7 @@ func (c *MemgraphController) enqueueReconcileEvent(eventType, reason, podName st
 		PodName:   podName,
 		Timestamp: time.Now(),
 	}
-	
+
 	// Non-blocking send with overflow protection
 	select {
 	case c.reconcileQueue.events <- event:

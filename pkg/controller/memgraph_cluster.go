@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"strings"
-	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
@@ -68,10 +67,8 @@ func (mc *MemgraphCluster) Refresh(ctx context.Context) error {
 			log.Printf("Discovered new pod: %s", podName)
 			node := NewMemgraphNode(&pod, mc.memgraphClient)
 			mc.MemgraphNodes[podName] = node
-			node.GetReplicationRole(ctx)
-			if role, _ := node.GetReplicationRole(ctx); role == "MAIN" {
-				node.GetReplicas(ctx)
-			}
+		} else {
+			mc.MemgraphNodes[podName].Refresh(&pod)
 		}
 	}
 
@@ -84,27 +81,6 @@ func (mc *MemgraphCluster) GetTargetMainPod(targetMainIndex int) string {
 		return ""
 	}
 	return mc.config.GetPodName(targetMainIndex)
-}
-
-// GetTargetSyncReplica returns the pod name of the target SYNC replica pod
-// Based on DESIGN.md two-pod authority: if main is pod-0, sync is pod-1; if main is pod-1, sync is pod-0
-func (mc *MemgraphCluster) GetTargetSyncReplica(targetMainIndex int) string {
-	if targetMainIndex < 0 {
-		return ""
-	}
-
-	// Two-pod authority: pod-0 and pod-1 form a pair
-	var syncReplicaIndex int
-	if targetMainIndex == 0 {
-		syncReplicaIndex = 1 // main=pod-0 → sync=pod-1
-	} else if targetMainIndex == 1 {
-		syncReplicaIndex = 0 // main=pod-1 → sync=pod-0
-	} else {
-		// Invalid target main index (should only be 0 or 1)
-		return ""
-	}
-
-	return mc.config.GetPodName(syncReplicaIndex)
 }
 
 // getPodsFromCache retrieves all memgraph pods from the informer cache
@@ -121,40 +97,6 @@ func (mc *MemgraphCluster) getPodsFromCache() []v1.Pod {
 	return pods
 }
 
-// GetMainPods returns a list of pod names that have the MAIN role
-func (mc *MemgraphCluster) GetMainPods() []string {
-	var mainPods []string
-	for podName, node := range mc.MemgraphNodes {
-		if role, _ := node.GetReplicationRole(context.Background()); role == "MAIN" {
-			mainPods = append(mainPods, podName)
-		}
-	}
-	return mainPods
-}
-
-// GetReplicaPods returns a list of pod names that have the REPLICA role
-func (mc *MemgraphCluster) GetReplicaPods() []string {
-	var replicaPods []string
-	for podName, node := range mc.MemgraphNodes {
-		if role, _ := node.GetReplicationRole(context.Background()); role == "REPLICA" {
-			replicaPods = append(replicaPods, podName)
-		}
-	}
-	return replicaPods
-}
-
-// LogMainSelectionDecision logs detailed main selection metrics
-func (mc *MemgraphCluster) LogMainSelectionDecision(metrics *MainSelectionMetrics) {
-	log.Printf("📊 MAIN SELECTION METRICS:")
-	log.Printf("  Timestamp: %s", metrics.Timestamp.Format(time.RFC3339))
-	log.Printf("  Selected Main: %s", metrics.SelectedMain)
-	log.Printf("  Selection Reason: %s", metrics.SelectionReason)
-	log.Printf("  Healthy Pods: %d", metrics.HealthyPodsCount)
-	log.Printf("  SYNC Replica Available: %t", metrics.SyncReplicaAvailable)
-	log.Printf("  Failover Detected: %t", metrics.FailoverDetected)
-	log.Printf("  Decision Factors: %v", metrics.DecisionFactors)
-}
-
 // discoverClusterState implements DESIGN.md "Discover Cluster State" section (steps 1-4)
 // Returns target main index based on current cluster state
 func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int, error) {
@@ -166,7 +108,7 @@ func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int, error
 
 	pod0Node, pod0Exists := mc.MemgraphNodes[pod0Name]
 	pod1Node, pod1Exists := mc.MemgraphNodes[pod1Name]
-	
+
 	pod0Obj, pod0CacheExists, pod0CacheErr := mc.podCacheStore.GetByKey(pod0Name)
 	pod1Obj, pod1CacheExists, pod1CacheErr := mc.podCacheStore.GetByKey(pod1Name)
 
@@ -240,7 +182,7 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 	// Step 2: Run command against pod-0 to set up sync replication
 	log.Printf("Step 2: Setting up SYNC replication from pod-0 to pod-1")
 	pod1ReplicaAddress := fmt.Sprintf("%s:10000", pod1Node.GetBoltAddress()[:strings.LastIndex(pod1Node.GetBoltAddress(), ":")])
-	if err := pod0Node.RegisterReplicaWithMode(ctx, pod1Node.GetReplicaName(), pod1ReplicaAddress, "SYNC"); err != nil {
+	if err := pod0Node.RegisterReplica(ctx, pod1Node.GetReplicaName(), pod1ReplicaAddress, "SYNC"); err != nil {
 		return fmt.Errorf("step 2 failed - register SYNC replica: %w", err)
 	}
 

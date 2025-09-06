@@ -27,17 +27,17 @@ type ReplicaInfo struct {
 	Name           string
 	SocketAddress  string
 	SyncMode       string
-	SystemInfo     string           // Raw system_info field from SHOW REPLICAS  
-	DataInfo       string           // Raw data_info field from SHOW REPLICAS
-	ParsedDataInfo *DataInfoStatus  // Parsed structure from data_info
+	SystemInfo     string          // Raw system_info field from SHOW REPLICAS
+	DataInfo       string          // Raw data_info field from SHOW REPLICAS
+	ParsedDataInfo *DataInfoStatus // Parsed structure from data_info
 }
 
 // DataInfoStatus represents parsed data_info content for replication health
 type DataInfoStatus struct {
-	Behind      int    `json:"behind"`      // Replication lag (-1 indicates error)
-	Status      string `json:"status"`      // "ready", "invalid", etc.
-	Timestamp   int    `json:"ts"`          // Sequence timestamp
-	IsHealthy   bool   `json:"is_healthy"`  // Computed health status
+	Behind      int    `json:"behind"`                 // Replication lag (-1 indicates error)
+	Status      string `json:"status"`                 // "ready", "invalid", etc.
+	Timestamp   int    `json:"ts"`                     // Sequence timestamp
+	IsHealthy   bool   `json:"is_healthy"`             // Computed health status
 	ErrorReason string `json:"error_reason,omitempty"` // Human-readable error description
 }
 
@@ -49,6 +49,11 @@ type ReplicasResponse struct {
 type StorageInfo struct {
 	VertexCount int64
 	EdgeCount   int64
+}
+
+// GetPodName returns the pod name converted from replica name (underscores to dashes)
+func (ri *ReplicaInfo) GetPodName() string {
+	return strings.ReplaceAll(ri.Name, "_", "-")
 }
 
 // IsHealthy returns true if the replica is in a healthy state based on data_info
@@ -75,12 +80,12 @@ func (ri *ReplicaInfo) RequiresRecovery() bool {
 	if ri.ParsedDataInfo == nil {
 		return false
 	}
-	
+
 	switch ri.ParsedDataInfo.Status {
 	case "invalid":
 		return true // Connection/registration failure - needs re-registration
 	case "empty":
-		return true // Connection establishment failure - needs investigation  
+		return true // Connection establishment failure - needs investigation
 	case "malformed", "parse_error":
 		return false // Parsing issue - not a replication failure
 	case "ready":
@@ -96,11 +101,11 @@ func (ri *ReplicaInfo) GetRecoveryAction() string {
 	if ri.IsHealthy() {
 		return "none"
 	}
-	
+
 	if ri.ParsedDataInfo == nil {
 		return "investigate"
 	}
-	
+
 	switch ri.ParsedDataInfo.Status {
 	case "invalid":
 		return "re-register" // Drop and re-register the replica
@@ -118,13 +123,13 @@ func (ri *ReplicaInfo) GetRecoveryAction() string {
 
 // parseDataInfo parses the data_info field from SHOW REPLICAS output using YAML
 // Expected formats (valid YAML flow syntax):
-// - Healthy ASYNC: "{memgraph: {behind: 0, status: \"ready\", ts: 2}}"  
+// - Healthy ASYNC: "{memgraph: {behind: 0, status: \"ready\", ts: 2}}"
 // - Unhealthy ASYNC: "{memgraph: {behind: -20, status: \"invalid\", ts: 0}}"
 // - SYNC replica: "{}" (empty)
 // - Missing/malformed: ""
 func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 	status := &DataInfoStatus{}
-	
+
 	// Handle empty or whitespace-only strings
 	dataInfoStr = strings.TrimSpace(dataInfoStr)
 	if dataInfoStr == "" {
@@ -134,7 +139,7 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 		status.ErrorReason = "Missing data_info field"
 		return status, nil
 	}
-	
+
 	// Handle empty YAML object (common for SYNC replicas)
 	if dataInfoStr == "{}" {
 		status.Status = "empty"
@@ -143,7 +148,7 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 		status.ErrorReason = "Empty data_info - possible connection failure"
 		return status, nil
 	}
-	
+
 	// Parse YAML flow syntax: {memgraph: {behind: 0, status: "ready", ts: 2}}
 	var yamlData map[string]interface{}
 	if err := yaml.Unmarshal([]byte(dataInfoStr), &yamlData); err != nil {
@@ -153,7 +158,7 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 		status.ErrorReason = fmt.Sprintf("Unable to parse data_info YAML: %v", err)
 		return status, nil
 	}
-	
+
 	// Extract memgraph object
 	memgraphData, exists := yamlData["memgraph"]
 	if !exists {
@@ -163,7 +168,7 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 		status.ErrorReason = "Missing 'memgraph' key in data_info"
 		return status, nil
 	}
-	
+
 	// Convert to map for field access
 	memgraphMap, ok := memgraphData.(map[string]interface{})
 	if !ok {
@@ -173,7 +178,7 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 		status.ErrorReason = "Invalid memgraph data structure"
 		return status, nil
 	}
-	
+
 	// Extract behind value
 	if behindVal, exists := memgraphMap["behind"]; exists {
 		if behind, ok := behindVal.(int); ok {
@@ -184,7 +189,7 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 	} else {
 		status.Behind = -1
 	}
-	
+
 	// Extract status value
 	if statusVal, exists := memgraphMap["status"]; exists {
 		if statusStr, ok := statusVal.(string); ok {
@@ -195,7 +200,7 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 	} else {
 		status.Status = "unknown"
 	}
-	
+
 	// Extract timestamp value
 	if tsVal, exists := memgraphMap["ts"]; exists {
 		if ts, ok := tsVal.(int); ok {
@@ -203,18 +208,18 @@ func parseDataInfo(dataInfoStr string) (*DataInfoStatus, error) {
 		}
 		// If timestamp is missing or invalid, leave as 0 (default)
 	}
-	
+
 	// Determine health status based on parsed values
 	status.IsHealthy, status.ErrorReason = assessReplicationHealth(status.Status, status.Behind)
-	
+
 	return status, nil
 }
 
-// parseDataInfoMap parses data_info when it's already a map[string]interface{} 
+// parseDataInfoMap parses data_info when it's already a map[string]interface{}
 // (Neo4j driver auto-parsed the YAML string)
 func parseDataInfoMap(dataInfoMap map[string]interface{}) (*DataInfoStatus, error) {
 	status := &DataInfoStatus{}
-	
+
 	// Navigate to memgraph sub-object: {memgraph: {behind: 0, status: "ready", ts: 13}}
 	memgraphVal, exists := dataInfoMap["memgraph"]
 	if !exists {
@@ -224,7 +229,7 @@ func parseDataInfoMap(dataInfoMap map[string]interface{}) (*DataInfoStatus, erro
 		status.ErrorReason = "Missing 'memgraph' key in data_info"
 		return status, nil
 	}
-	
+
 	memgraphMap, ok := memgraphVal.(map[string]interface{})
 	if !ok {
 		status.Status = "malformed"
@@ -233,7 +238,7 @@ func parseDataInfoMap(dataInfoMap map[string]interface{}) (*DataInfoStatus, erro
 		status.ErrorReason = "Invalid 'memgraph' value type in data_info"
 		return status, nil
 	}
-	
+
 	// Extract behind value
 	if behindVal, exists := memgraphMap["behind"]; exists {
 		switch v := behindVal.(type) {
@@ -253,8 +258,8 @@ func parseDataInfoMap(dataInfoMap map[string]interface{}) (*DataInfoStatus, erro
 	} else {
 		status.Behind = -1
 	}
-	
-	// Extract status value  
+
+	// Extract status value
 	if statusVal, exists := memgraphMap["status"]; exists {
 		if statusStr, ok := statusVal.(string); ok {
 			status.Status = statusStr
@@ -268,7 +273,7 @@ func parseDataInfoMap(dataInfoMap map[string]interface{}) (*DataInfoStatus, erro
 	} else {
 		status.Status = "unknown"
 	}
-	
+
 	// Extract timestamp value
 	if tsVal, exists := memgraphMap["ts"]; exists {
 		switch v := tsVal.(type) {
@@ -282,10 +287,10 @@ func parseDataInfoMap(dataInfoMap map[string]interface{}) (*DataInfoStatus, erro
 			// Leave as 0 if invalid type
 		}
 	}
-	
+
 	// Determine health status based on parsed values
 	status.IsHealthy, status.ErrorReason = assessReplicationHealth(status.Status, status.Behind)
-	
+
 	return status, nil
 }
 
@@ -297,7 +302,7 @@ func assessReplicationHealth(status string, behind int) (bool, string) {
 	case status == "invalid":
 		return false, "Replication status marked as invalid"
 	case behind < 0:
-		return false, fmt.Sprintf("Negative replication lag detected: %d", behind)  
+		return false, fmt.Sprintf("Negative replication lag detected: %d", behind)
 	case status == "empty":
 		return false, "Empty data_info indicates connection failure"
 	case status == "unknown" || status == "malformed":
@@ -376,7 +381,7 @@ func (mc *MemgraphClient) QueryReplicationRole(ctx context.Context, boltAddress 
 				return nil, fmt.Errorf("replication_role field not found in result")
 			}
 		}
-		
+
 		roleStr, ok := role.(string)
 		if !ok {
 			return nil, fmt.Errorf("replication_role is not a string: %T", role)
@@ -525,13 +530,13 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 					replica.SystemInfo = systemInfoStr
 				}
 			}
-			
+
 			// Extract and parse data_info field
 			if dataInfo, found := record.Get("data_info"); found {
 				if dataInfoStr, ok := dataInfo.(string); ok {
 					// Case 1: data_info is a string (as expected)
 					replica.DataInfo = dataInfoStr
-					
+
 					// Parse the data_info field for health assessment
 					if parsed, err := parseDataInfo(dataInfoStr); err != nil {
 						log.Printf("Warning: Failed to parse data_info for replica %s: %v", replica.Name, err)
@@ -547,14 +552,14 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 					}
 				} else if dataInfoMap, ok := dataInfo.(map[string]interface{}); ok {
 					// Case 2: data_info is a map (Neo4j driver auto-parsed the YAML)
-					
+
 					// Convert map back to JSON string for storage
 					if jsonBytes, err := json.Marshal(dataInfoMap); err == nil {
 						replica.DataInfo = string(jsonBytes)
 					} else {
 						replica.DataInfo = fmt.Sprintf("%+v", dataInfoMap)
 					}
-					
+
 					// Parse the map directly for health assessment
 					if parsed, err := parseDataInfoMap(dataInfoMap); err != nil {
 						log.Printf("Warning: Failed to parse data_info map for replica %s: %v", replica.Name, err)
@@ -730,8 +735,8 @@ func (mc *MemgraphClient) SetReplicationRoleToReplicaWithRetry(ctx context.Conte
 	return nil
 }
 
-// RegisterReplicaWithModeAndRetry registers a replica with the main using specified mode (SYNC or ASYNC)
-func (mc *MemgraphClient) RegisterReplicaWithModeAndRetry(ctx context.Context, mainBoltAddress, replicaName, replicaAddress, syncMode string) error {
+// RegisterReplica registers a replica with the main using specified mode (SYNC or ASYNC)
+func (mc *MemgraphClient) RegisterReplica(ctx context.Context, mainBoltAddress, replicaName, replicaAddress, syncMode string) error {
 	if mainBoltAddress == "" {
 		return fmt.Errorf("main bolt address is empty")
 	}
@@ -745,39 +750,24 @@ func (mc *MemgraphClient) RegisterReplicaWithModeAndRetry(ctx context.Context, m
 		return fmt.Errorf("invalid sync mode: %s (must be SYNC or ASYNC)", syncMode)
 	}
 
-	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, mainBoltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", mainBoltAddress, err)
-		}
-
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				log.Printf("Warning: failed to close session for %s: %v", mainBoltAddress, closeErr)
-			}
-		}()
-
-		// Use auto-commit mode for replication commands
-		query := fmt.Sprintf("REGISTER REPLICA %s %s TO \"%s\"", replicaName, syncMode, replicaAddress)
-		_, err = session.Run(ctx, query, nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute REGISTER REPLICA: %w", err)
-		}
-
-		return nil
-	}, mc.retryConfig)
-
+	driver, err := mc.connectionPool.GetDriver(ctx, mainBoltAddress)
 	if err != nil {
-		return fmt.Errorf("register replica %s (%s mode) with main at %s: %w", replicaName, syncMode, mainBoltAddress, err)
+		return fmt.Errorf("failed to get driver for %s: %w", mainBoltAddress, err)
 	}
+	session := driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer func() {
+		if closeErr := session.Close(ctx); closeErr != nil {
+			log.Printf("Warning: failed to close session for %s: %v", mainBoltAddress, closeErr)
+		}
+	}()
 
+	// Use auto-commit mode for replication commands
+	query := fmt.Sprintf("REGISTER REPLICA %s %s TO \"%s\"", replicaName, syncMode, replicaAddress)
+	_, err = session.Run(ctx, query, nil)
+	if err != nil {
+		return fmt.Errorf("failed to execute REGISTER REPLICA: %w", err)
+	}
 	return nil
-}
-
-// RegisterReplicaWithRetry registers a replica with the main using ASYNC mode (backward compatibility)
-func (mc *MemgraphClient) RegisterReplicaWithRetry(ctx context.Context, mainBoltAddress, replicaName, replicaAddress string) error {
-	return mc.RegisterReplicaWithModeAndRetry(ctx, mainBoltAddress, replicaName, replicaAddress, "ASYNC")
 }
 
 // DropReplicaWithRetry removes a replica registration from the main
@@ -821,7 +811,6 @@ func (mc *MemgraphClient) DropReplicaWithRetry(ctx context.Context, mainBoltAddr
 	return nil
 }
 
-
 // QueryStorageInfoWithRetry queries storage information with retry logic
 func (mc *MemgraphClient) QueryStorageInfoWithRetry(ctx context.Context, boltAddress string) (*StorageInfo, error) {
 	if boltAddress == "" {
@@ -851,7 +840,7 @@ func (mc *MemgraphClient) QueryStorageInfoWithRetry(ctx context.Context, boltAdd
 		storageInfo := &StorageInfo{}
 		for txResult.Next(ctx) {
 			record := txResult.Record()
-			
+
 			// Extract storage_info field which is typically a string representation
 			if storageInfoField, found := record.Get("storage info"); found {
 				if _, ok := storageInfoField.(string); ok {
@@ -859,12 +848,12 @@ func (mc *MemgraphClient) QueryStorageInfoWithRetry(ctx context.Context, boltAdd
 					// This is a simplified parser - in practice might need more robust parsing
 					storageInfo.VertexCount = 0 // Default to 0
 					storageInfo.EdgeCount = 0   // Default to 0
-					
+
 					// For now, assume empty storage (suitable for bootstrap check)
 					// TODO: Implement proper storage info parsing if needed
 				}
 			}
-			
+
 			// Alternative: look for specific vertex_count and edge_count fields
 			if vertexCount, found := record.Get("vertex_count"); found {
 				if count, ok := vertexCount.(int64); ok {
@@ -927,4 +916,3 @@ func (mc *MemgraphClient) ExecuteCommandWithRetry(ctx context.Context, boltAddre
 	log.Printf("Successfully executed command '%s' on %s", command, boltAddress)
 	return nil
 }
-

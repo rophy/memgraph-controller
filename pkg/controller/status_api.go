@@ -3,7 +3,7 @@ package controller
 import (
 	"context"
 	"time"
-	
+
 	v1 "k8s.io/api/core/v1"
 )
 
@@ -31,8 +31,7 @@ type PodStatus struct {
 	Name               string               `json:"name"`
 	State              string               `json:"state"`
 	MemgraphRole       string               `json:"memgraph_role"`
-	BoltAddress        string               `json:"bolt_address"`
-	ReplicationAddress string               `json:"replication_address"`
+	IPAddress          string               `json:"ip_address"`
 	Timestamp          time.Time            `json:"timestamp"`
 	Healthy            bool                 `json:"healthy"`
 	IsSyncReplica      bool                 `json:"is_sync_replica"`
@@ -47,7 +46,7 @@ type StatusInconsistency struct {
 }
 
 // convertMemgraphNodeToStatus converts internal MemgraphNode to API PodStatus
-func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, pod *v1.Pod) PodStatus {
+func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, _ *v1.Pod) PodStatus {
 	var inconsistency *StatusInconsistency
 
 	// Check for state inconsistencies (TODO: implement state inconsistency detection)
@@ -56,7 +55,7 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, pod *v1.Pod) 
 	//		Description:  stateInc.Description,
 	//		MemgraphRole: stateInc.MemgraphRole,
 	//	}
-	// } else 
+	// } else
 	if !healthy {
 		// If pod is unhealthy and no inconsistency detected, create one for unreachable pod
 		memgraphRole := "unknown"
@@ -83,8 +82,7 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, pod *v1.Pod) 
 		Name:               node.GetName(),
 		State:              "unknown", // TODO: implement proper state
 		MemgraphRole:       func() string { role, _ := node.GetReplicationRole(context.Background()); return role }(),
-		BoltAddress:        node.GetBoltAddress(),
-		ReplicationAddress: node.GetReplicationAddress(pod),
+		IPAddress:          node.GetIpAddress(),
 		Timestamp:          node.timestamp,
 		Healthy:            healthy,
 		IsSyncReplica:      node.IsSyncReplica,

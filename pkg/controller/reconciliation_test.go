@@ -100,48 +100,33 @@ func TestShouldReconcile(t *testing.T) {
 }
 
 func TestReconciliationMetrics(t *testing.T) {
+	// Test GetReconciliationMetrics with metrics initialized
 	controller := &MemgraphController{
-		metrics: &ReconciliationMetrics{},
+		metrics: &ReconciliationMetrics{
+			TotalReconciliations:      2,
+			SuccessfulReconciliations: 1,
+			FailedReconciliations:     1,
+			LastReconciliationReason:  "test-success",
+			LastReconciliationError:   "",
+		},
 	}
 
-	// Test successful reconciliation
-	controller.updateReconciliationMetrics("test-success", time.Millisecond*100, nil)
-
-	if controller.metrics.TotalReconciliations != 1 {
-		t.Errorf("TotalReconciliations = %d, want 1", controller.metrics.TotalReconciliations)
+	metrics := controller.GetReconciliationMetrics()
+	if metrics.TotalReconciliations != 2 {
+		t.Errorf("TotalReconciliations = %d, want 2", metrics.TotalReconciliations)
 	}
-	if controller.metrics.SuccessfulReconciliations != 1 {
-		t.Errorf("SuccessfulReconciliations = %d, want 1", controller.metrics.SuccessfulReconciliations)
+	if metrics.SuccessfulReconciliations != 1 {
+		t.Errorf("SuccessfulReconciliations = %d, want 1", metrics.SuccessfulReconciliations)
 	}
-	if controller.metrics.FailedReconciliations != 0 {
-		t.Errorf("FailedReconciliations = %d, want 0", controller.metrics.FailedReconciliations)
-	}
-	if controller.metrics.LastReconciliationReason != "test-success" {
-		t.Errorf("LastReconciliationReason = %s, want test-success", controller.metrics.LastReconciliationReason)
-	}
-	if controller.metrics.LastReconciliationError != "" {
-		t.Errorf("LastReconciliationError = %s, want empty", controller.metrics.LastReconciliationError)
+	if metrics.FailedReconciliations != 1 {
+		t.Errorf("FailedReconciliations = %d, want 1", metrics.FailedReconciliations)
 	}
 
-	// Test failed reconciliation
-	testErr := "test error"
-	controller.updateReconciliationMetrics("test-failure", time.Millisecond*50, 
-		&testError{msg: testErr})
-
-	if controller.metrics.TotalReconciliations != 2 {
-		t.Errorf("TotalReconciliations = %d, want 2", controller.metrics.TotalReconciliations)
-	}
-	if controller.metrics.SuccessfulReconciliations != 1 {
-		t.Errorf("SuccessfulReconciliations = %d, want 1", controller.metrics.SuccessfulReconciliations)
-	}
-	if controller.metrics.FailedReconciliations != 1 {
-		t.Errorf("FailedReconciliations = %d, want 1", controller.metrics.FailedReconciliations)
-	}
-	if controller.metrics.LastReconciliationReason != "test-failure" {
-		t.Errorf("LastReconciliationReason = %s, want test-failure", controller.metrics.LastReconciliationReason)
-	}
-	if controller.metrics.LastReconciliationError != testErr {
-		t.Errorf("LastReconciliationError = %s, want %s", controller.metrics.LastReconciliationError, testErr)
+	// Test GetReconciliationMetrics with nil metrics
+	controllerNil := &MemgraphController{metrics: nil}
+	metricsNil := controllerNil.GetReconciliationMetrics()
+	if metricsNil.TotalReconciliations != 0 {
+		t.Errorf("TotalReconciliations with nil metrics = %d, want 0", metricsNil.TotalReconciliations)
 	}
 }
 
@@ -173,51 +158,14 @@ func TestGetReconciliationMetrics(t *testing.T) {
 	}
 }
 
-func TestIsNonRetryableError(t *testing.T) {
+func TestControllerBasics(t *testing.T) {
+	// Test basic controller functionality that doesn't require complex setup
 	controller := &MemgraphController{}
 
-	tests := []struct {
-		name        string
-		err         error
-		nonRetryable bool
-	}{
-		{
-			name:        "manual_intervention_required",
-			err:         &testError{msg: "manual intervention required"},
-			nonRetryable: true,
-		},
-		{
-			name:        "ambiguous_cluster_state",
-			err:         &testError{msg: "ambiguous cluster state detected"},
-			nonRetryable: true,
-		},
-		{
-			name:        "regular_error",
-			err:         &testError{msg: "connection failed"},
-			nonRetryable: false,
-		},
-		{
-			name:        "timeout_error",
-			err:         &testError{msg: "timeout exceeded"},
-			nonRetryable: false,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			result := controller.isNonRetryableError(tt.err)
-			if result != tt.nonRetryable {
-				t.Errorf("isNonRetryableError() = %v, want %v", result, tt.nonRetryable)
-			}
-		})
+	// Test GetReconciliationMetrics with nil metrics
+	metrics := controller.GetReconciliationMetrics()
+	if metrics.TotalReconciliations != 0 {
+		t.Errorf("GetReconciliationMetrics with nil metrics should return zero values")
 	}
 }
 
-// testError is a simple error implementation for testing
-type testError struct {
-	msg string
-}
-
-func (e *testError) Error() string {
-	return e.msg
-}

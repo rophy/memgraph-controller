@@ -16,10 +16,13 @@ type MemgraphNode struct {
 	timestamp       time.Time     // Pod creation/restart time
 	memgraphRole    string        // Result of SHOW REPLICATION ROLE ("MAIN", "REPLICA")
 	storageInfo     *StorageInfo  // Result of querying storage info (vertex/edge count)
+	ipAddress       string        // Pod IP address
 	boltAddress     string        // Pod IP:7687 for Bolt connections
 	replicasInfo    []ReplicaInfo // Detailed replica information
 	hasReplicasInfo bool          // True if ReplicasInfo has been populated
-	IsSyncReplica   bool          // True if this node is configured as SYNC replica
+
+	// Public field for test compatibility
+	IsSyncReplica bool // Indicates if this node is designated as the SYNC replica
 
 	// Memgraph client for database operations (shared connection pool underneath)
 	client *MemgraphClient
@@ -31,29 +34,47 @@ func NewMemgraphNode(pod *v1.Pod, client *MemgraphClient) *MemgraphNode {
 		panic("MemgraphClient cannot be nil - all node methods require a valid client")
 	}
 
-	podName := pod.Name
-
-	// Extract timestamp (prefer status start time, fallback to creation time)
-	timestamp := pod.CreationTimestamp.Time
-	if pod.Status.StartTime != nil {
-		timestamp = pod.Status.StartTime.Time
-	}
-
-	// Build addresses
-	boltAddress := ""
-	if pod.Status.PodIP != "" {
-		boltAddress = pod.Status.PodIP + ":7687"
-	}
-
-	return &MemgraphNode{
-		name:            podName,
-		timestamp:       timestamp,
-		memgraphRole:    "", // Will be queried later
-		boltAddress:     boltAddress,
+	node := MemgraphNode{
+		name:            "",
+		timestamp:       time.Time{},
+		memgraphRole:    "",
+		ipAddress:       "",
+		boltAddress:     "",
 		replicasInfo:    []ReplicaInfo{},
 		hasReplicasInfo: false,
-		client:          client, // Required - all node methods depend on this
+		client:          client,
 	}
+	node.Refresh(pod)
+	return &node
+}
+
+// Refresh updates the node's basic info from the given pod
+func (node *MemgraphNode) Refresh(pod *v1.Pod) {
+	node.name = pod.Name
+
+	// Update timestamp (prefer status start time, fallback to creation time)
+	if pod.Status.StartTime != nil {
+		node.timestamp = pod.Status.StartTime.Time
+	} else {
+		node.timestamp = pod.CreationTimestamp.Time
+	}
+
+	node.ipAddress = pod.Status.PodIP
+
+	// Update bolt address if pod IP is available
+	if pod.Status.PodIP != "" {
+		node.boltAddress = pod.Status.PodIP + ":7687"
+	} else {
+		node.boltAddress = ""
+	}
+}
+
+// ClearCachedInfo clears cached memgraph info, forcing re-query on next access
+func (node *MemgraphNode) ClearCachedInfo() {
+	node.memgraphRole = ""
+	node.replicasInfo = []ReplicaInfo{}
+	node.hasReplicasInfo = false
+	node.storageInfo = nil
 }
 
 // convertPodNameForReplica converts pod name to replica name by replacing dashes with underscores
@@ -75,49 +96,9 @@ func (node *MemgraphNode) GetReplicaName() string {
 	return strings.ReplaceAll(node.name, "-", "_")
 }
 
-// GetReplicationAddress returns the replication address using pod IP for reliable connectivity
-func (node *MemgraphNode) GetReplicationAddress(pod *v1.Pod) string {
-	if pod != nil && pod.Status.PodIP != "" {
-		return pod.Status.PodIP + ":10000"
-	}
-	return "" // Pod IP not available
-}
-
-// IsReadyForReplication checks if pod is ready for replication (has IP and passes readiness checks)
-func (node *MemgraphNode) IsReadyForReplication(pod *v1.Pod) bool {
-	if pod == nil || pod.Status.PodIP == "" {
-		return false
-	}
-
-	// Check Kubernetes readiness conditions
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == v1.PodReady {
-			return condition.Status == v1.ConditionTrue
-		}
-	}
-
-	return false
-}
-
-// ShouldBecomeMain determines if this pod should be promoted to main
-func (node *MemgraphNode) ShouldBecomeMain(currentMainName string) bool {
-	// Pod should become main if:
-	// 1. It's currently selected as the main pod (by timestamp)
-	// 2. AND it's not already in MAIN state
-	return node.name == currentMainName && node.memgraphRole != "MAIN"
-}
-
-// ShouldBecomeReplica determines if this pod should be demoted to replica
-func (node *MemgraphNode) ShouldBecomeReplica(currentMainName string) bool {
-	// Pod should become replica if:
-	// 1. It's NOT the selected main pod
-	// 2. AND it's not already in REPLICA state
-	return node.name != currentMainName && node.memgraphRole != "REPLICA"
-}
-
-// NeedsReplicationConfiguration determines if this pod needs replication changes
-func (node *MemgraphNode) NeedsReplicationConfiguration(currentMainName string) bool {
-	return node.ShouldBecomeMain(currentMainName) || node.ShouldBecomeReplica(currentMainName)
+// GetIpAddress returns the pod IP address
+func (node *MemgraphNode) GetIpAddress() string {
+	return node.ipAddress
 }
 
 // GetReplicationRole returns the cached replication role, querying it if not already known
@@ -139,8 +120,8 @@ func (node *MemgraphNode) GetReplicas(ctx context.Context) ([]ReplicaInfo, error
 	if err != nil {
 		return nil, err
 	}
-	if role != "MAIN" {
-		return nil, fmt.Errorf("cannot get replicas from non-MAIN node %s", node.name)
+	if role != "main" {
+		return nil, fmt.Errorf("cannot get replicas from non-main node %s", node.name)
 	}
 	if !node.hasReplicasInfo {
 		replicasResp, err := node.client.QueryReplicasWithRetry(ctx, node.boltAddress)
@@ -165,17 +146,15 @@ func (node *MemgraphNode) SetToMainRole(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Update cached role after successful change
-	node.memgraphRole = "main"
+	// Clear cached role after successful change
+	node.memgraphRole = ""
+	node.hasReplicasInfo = false
 	return nil
 }
 
 // RegisterReplica registers a replica on this MAIN node
 func (node *MemgraphNode) RegisterReplica(ctx context.Context, replicaName, replicationAddress string, syncMode string) error {
-	if node.client == nil {
-		return fmt.Errorf("client not injected for node %s", node.name)
-	}
-	return node.client.RegisterReplicaWithModeAndRetry(ctx, node.boltAddress, replicaName, replicationAddress, syncMode)
+	return node.client.RegisterReplica(ctx, node.boltAddress, replicaName, replicationAddress, syncMode)
 }
 
 // SetToReplicaRole demotes this node to REPLICA role
@@ -187,8 +166,9 @@ func (node *MemgraphNode) SetToReplicaRole(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	// Update cached role after successful change
-	node.memgraphRole = "replica"
+	// Clear cached role after successful change
+	node.memgraphRole = ""
+	node.hasReplicasInfo = false
 	return nil
 }
 
@@ -233,18 +213,6 @@ func (node *MemgraphNode) DropReplica(ctx context.Context, replicaName string) e
 		}
 	}
 	return nil
-}
-
-// RegisterReplicaWithMode registers a replica with specified sync mode on this MAIN node
-func (node *MemgraphNode) RegisterReplicaWithMode(ctx context.Context, replicaName, replicationAddress, syncMode string) error {
-	role, err := node.GetReplicationRole(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to get role for node %s: %w", node.name, err)
-	}
-	if role != "MAIN" {
-		return fmt.Errorf("cannot register replica on non-MAIN node %s", node.name)
-	}
-	return node.client.RegisterReplicaWithModeAndRetry(ctx, node.boltAddress, replicaName, replicationAddress, syncMode)
 }
 
 // Gateway interface methods to satisfy gateway requirements

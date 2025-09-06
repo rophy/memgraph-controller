@@ -84,7 +84,7 @@ func (c *MemgraphController) handleFailoverCheckEvent(event FailoverCheckEvent) 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
 
-	err := c.executeFailoverCheck(ctx, event.PodName)
+	err := c.performFailoverCheck(ctx)
 	if err != nil {
 		log.Printf("❌ Failed failover check for event %s: %v", event.Reason, err)
 	} else {
@@ -103,151 +103,121 @@ func (c *MemgraphController) handleFailoverCheckEvent(event FailoverCheckEvent) 
 	}
 }
 
-// executeFailoverCheck implements the failover check logic
-func (c *MemgraphController) executeFailoverCheck(ctx context.Context, podName string) error {
-	// Step 1: Check if the pod is actually the current target main
+// performFailoverCheck implements the failover check logic
+func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
+
+	// mutex to prevent concurrent failover checks
+	c.failoverMu.Lock()
+	defer c.failoverMu.Unlock()
+
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {
-		return fmt.Errorf("failed to get target main index: %w", err)
+		return fmt.Errorf("cannot get target main index: %w", err)
+	}
+	targetMainPodName := c.config.GetPodName(targetMainIndex)
+	role, isHealthy := c.getHealthyRole(ctx, targetMainPodName)
+
+	if isHealthy && role == "main" {
+		log.Printf("Failover check: Current target main pod %s is healthy and in 'main' role, no failover needed", targetMainPodName)
+		return nil // No failover needed
 	}
 
-	expectedMainPodName := c.config.GetPodName(targetMainIndex)
-	if podName != expectedMainPodName {
-		log.Printf("Failover check: Pod %s is not the target main (%s), ignoring", podName, expectedMainPodName)
-		return nil
+	log.Printf("🚨 FAILOVER NEEDED: Target main pod %s is unhealthy or not in 'main' role (role: '%s', healthy: %v)",
+		targetMainPodName, role, isHealthy)
+
+	targetSyncReplicaIndex := 1 - targetMainIndex // Assuming 2 pods: 0 and 1
+	targetSyncReplicaName := c.config.GetPodName(targetSyncReplicaIndex)
+	role, isHealthy = c.getHealthyRole(ctx, targetSyncReplicaName)
+	if !isHealthy {
+		log.Printf("Failover check: Sync replica pod %s is not healthy, cannot perform failover", targetSyncReplicaName)
+		return fmt.Errorf("sync replica pod %s is not healthy for failover", targetSyncReplicaName)
 	}
 
-	log.Printf("Failover check: Verifying target main pod %s status", podName)
+	// Target sync replica is healthy, proceed with failover
 
-	// Step 2: Check if targetMain is functioning as main
-	// According to DESIGN.md: failover when "pod status of TargetMainPod is not ready"
-	// We need to check both Kubernetes pod readiness AND Memgraph functionality
-
-	var mainFunctioning bool
-
-	// First check if pod exists and is ready in Kubernetes (using informer cache)
-	pod, err := c.getPodFromCache(podName)
-	if err != nil {
-		log.Printf("Failover check: Target main pod %s not found in cache: %v", podName, err)
-		mainFunctioning = false
-	} else if !isPodReady(pod) {
-		log.Printf("Failover check: Target main pod %s exists but is not ready", podName)
-		mainFunctioning = false
+	if role == "main" {
+		log.Printf("Failover: Sync replica pod %s is already main, skipping promotion", targetSyncReplicaName)
 	} else {
-		// Pod is ready in Kubernetes, now check if Memgraph is functioning as main
-		targetMainNode, err := c.getTargetMainNode(ctx)
+		err := c.promoteSyncReplica(ctx)
 		if err != nil {
-			log.Printf("Failover check: Cannot get target main node %s from cluster state: %v", podName, err)
-			mainFunctioning = false
-		} else if targetMainNode.GetBoltAddress() == "" {
-			log.Printf("Failover check: Target main pod %s has no bolt address", podName)
-			mainFunctioning = false
-		} else {
-			// Try to query the replication role to confirm it's actually functioning as main
-			// QueryReplicationRole now uses auto-commit mode directly
-			role, err := c.memgraphClient.QueryReplicationRole(ctx, targetMainNode.GetBoltAddress())
-			if err != nil {
-				log.Printf("Failover check: Cannot query role from target main pod %s: %v", podName, err)
-				mainFunctioning = false
-			} else if role.Role != "main" {
-				log.Printf("Failover check: Target main pod %s has role '%s', not 'main'", podName, role.Role)
-				mainFunctioning = false
-			} else {
-				log.Printf("Failover check: Target main pod %s is functioning properly as main", podName)
-				mainFunctioning = true
-			}
+			return err
 		}
 	}
 
-	if mainFunctioning {
-		log.Printf("Failover check: Target main pod %s is functioning, no failover needed", podName)
-		return nil
-	}
-
-	// Step 3: Check if targetSyncReplica is ready and has replica role
-	targetSyncReplicaNode, err := c.getTargetSyncReplicaNode(ctx)
+	// Flip the target main index
+	err = c.SetTargetMainIndex(ctx, targetSyncReplicaIndex)
 	if err != nil {
-		return fmt.Errorf("failed to get target sync replica node: %w", err)
+		return fmt.Errorf("failed to update target main index: %w", err)
 	}
-
-	// Check if sync replica pod is ready (using informer cache)
-	syncReplicaPod, err := c.getPodFromCache(targetSyncReplicaNode.GetName())
-	if err != nil {
-		return fmt.Errorf("failed to get sync replica pod %s from cache: %w", targetSyncReplicaNode.GetName(), err)
-	}
-
-	if !isPodReady(syncReplicaPod) {
-		log.Printf("Failover check: Sync replica pod %s is not ready, cannot perform failover", targetSyncReplicaNode.GetName())
-		return fmt.Errorf("sync replica pod %s is not ready for failover", targetSyncReplicaNode.GetName())
-	}
-
-	// Check if sync replica actually has replica role
-	// Use WithRetry version which uses auto-commit mode (required for replication queries)
-	role, err := c.memgraphClient.QueryReplicationRole(ctx, targetSyncReplicaNode.GetBoltAddress())
-	if err != nil {
-		log.Printf("Failover check: Failed to query replication role for sync replica %s: %v", targetSyncReplicaNode.GetName(), err)
-		return fmt.Errorf("failed to query sync replica role: %w", err)
-	}
-
-	if role.Role != "replica" {
-		log.Printf("Failover check: Sync replica %s has role '%s', not 'replica' - cannot failover", targetSyncReplicaNode.GetName(), role.Role)
-		return fmt.Errorf("sync replica has role '%s', not 'replica'", role.Role)
-	}
-
-	// Step 4: All conditions met - perform failover
-	log.Printf("🔄 Failover conditions met: main pod %s down, sync replica %s ready with replica role", podName, targetSyncReplicaNode.GetName())
-
-	// Step 4a: Immediately terminate all gateway connections (DESIGN.md line 159)
-	log.Printf("🔌 Terminating all gateway connections for failover")
-	c.gatewayServer.DisconnectAll()
-
-	// Determine new target main index (swap to sync replica)
-	var newTargetMainIndex int
-	if targetMainIndex == 0 {
-		newTargetMainIndex = 1
-	} else {
-		newTargetMainIndex = 0
-	}
-	log.Printf("🔄 Performing failover: %s (index %d) -> %s (index %d)",
-		podName, targetMainIndex, targetSyncReplicaNode.GetName(), newTargetMainIndex)
-
-	// Step 4b: Promote sync replica to main role (DESIGN.md line 162)
-	if err := targetSyncReplicaNode.SetToMainRole(ctx); err != nil {
-		return fmt.Errorf("failed to set sync replica %s to main role: %w", targetSyncReplicaNode.GetName(), err)
-	}
-
-	// Update target main index to trigger failover
-	log.Printf("🔄 Updating target main index: %d → %d (reason: failover-from-%s)", targetMainIndex, newTargetMainIndex, podName)
-	if err := c.SetTargetMainIndex(ctx, newTargetMainIndex); err != nil {
-		return fmt.Errorf("failed to update target main index during failover: %w", err)
-	}
-
-	log.Printf("✅ Failover completed: new target main is %s (index %d)",
-		c.config.GetPodName(newTargetMainIndex), newTargetMainIndex)
+	log.Printf("Updated target main index to %d", targetSyncReplicaIndex)
 
 	return nil
 }
 
-// waitForFailoverCompletion queues a failover check and waits for it to complete
-func (c *MemgraphController) waitForFailoverCompletion(ctx context.Context, podName string, timeout time.Duration) error {
-	completionChan := make(chan error, 1)
+// promoteSyncReplica promotes sync replica to main
+func (c *MemgraphController) promoteSyncReplica(ctx context.Context) error {
+	log.Println("Executing failover procedure...")
 
-	// Queue the failover check with completion channel
-	c.enqueueFailoverCheckEventWithCompletion("reconcile-triggered", "target-main-unavailable", podName, completionChan)
-
-	// Wait for completion, context cancellation, or timeout
-	select {
-	case err := <-completionChan:
-		if err != nil {
-			return fmt.Errorf("failover check failed: %w", err)
-		}
-		log.Printf("✅ Failover completed successfully for pod %s", podName)
-		return nil
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled while waiting for failover: %w", ctx.Err())
-	case <-time.After(timeout):
-		return fmt.Errorf("failover timeout after %v for pod %s", timeout, podName)
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot get target main index: %w", err)
 	}
+	targetSyncReplicaIndex := 1 - targetMainIndex // Assuming 2 pods: 0 and 1
+	targetSyncReplicaName := c.config.GetPodName(targetSyncReplicaIndex)
+	log.Printf("Promoting sync replica pod %s to main...", targetSyncReplicaName)
+	targetSyncNode, exists := c.cluster.MemgraphNodes[targetSyncReplicaName]
+	if !exists {
+		return fmt.Errorf("sync replica node %s not found in cluster map", targetSyncReplicaName)
+	}
+	err = targetSyncNode.SetToMainRole(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to promote pod %s to main: %w", targetSyncReplicaName, err)
+	}
+	role, err := targetSyncNode.GetReplicationRole(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to verify new role of pod %s: %w", targetSyncReplicaName, err)
+	}
+	if role != "main" {
+		return fmt.Errorf("pod %s promotion to main did not take effect, current role: %s", targetSyncReplicaName, role)
+	}
+
+	log.Printf("Successfully promoted pod %s to main", targetSyncReplicaName)
+
+	return nil
+}
+
+// getHealthyRole check if node is helthy and get its role
+func (c *MemgraphController) getHealthyRole(ctx context.Context, podName string) (string, bool) {
+
+	pod, err := c.getPodFromCache(podName)
+	if err != nil {
+		log.Printf("getHealthyRole: pod %s does not exist: %v", podName, err)
+		return "", false
+	}
+	if pod.Status.PodIP == "" {
+		log.Printf("getHealthyRole: pod %s exists but has no IP", podName)
+		return "", false
+	}
+	if pod.ObjectMeta.DeletionTimestamp != nil {
+		log.Printf("getHealthyRole: pod %s is being deleted", podName)
+		return "", false
+	}
+	if !isPodReady(pod) {
+		log.Printf("getHealthyRole: pod %s is not ready", podName)
+		return "", false
+	}
+	// Pod is ready in Kubernetes, now check if Memgraph is functioning as main
+	node, exists := c.cluster.MemgraphNodes[podName]
+	if !exists {
+		log.Printf("getHealthyRole: pod %s is not in MemgraphNodes map", podName)
+		return "", false
+	}
+	role, err := node.GetReplicationRole(ctx)
+	if err != nil {
+		log.Printf("getHealthyRole: Cannot query role from pod %s: %v", podName, err)
+		return role, false
+	}
+	return role, true
 }
 
 // stopFailoverCheckQueue stops the failover check queue processor
@@ -259,17 +229,11 @@ func (c *MemgraphController) stopFailoverCheckQueue() {
 
 // enqueueFailoverCheckEvent adds a failover check event to the queue
 func (c *MemgraphController) enqueueFailoverCheckEvent(eventType, reason, podName string) {
-	c.enqueueFailoverCheckEventWithCompletion(eventType, reason, podName, nil)
-}
-
-// enqueueFailoverCheckEventWithCompletion adds a failover check event with optional completion notification
-func (c *MemgraphController) enqueueFailoverCheckEventWithCompletion(eventType, reason, podName string, completionChan chan error) {
 	event := FailoverCheckEvent{
-		Type:           eventType,
-		Reason:         reason,
-		PodName:        podName,
-		Timestamp:      time.Now(),
-		CompletionChan: completionChan,
+		Type:      eventType,
+		Reason:    reason,
+		PodName:   podName,
+		Timestamp: time.Now(),
 	}
 
 	// Non-blocking send with overflow protection
@@ -278,12 +242,6 @@ func (c *MemgraphController) enqueueFailoverCheckEventWithCompletion(eventType, 
 		log.Printf("🚨 Enqueued failover check event: %s (pod: %s)", reason, podName)
 	default:
 		log.Printf("⚠️ Failover check queue full, dropping event: %s", reason)
-		// If we have a completion channel, notify of the failure
-		if completionChan != nil {
-			select {
-			case completionChan <- fmt.Errorf("failover queue full"):
-			default:
-			}
-		}
 	}
+
 }

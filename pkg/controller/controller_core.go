@@ -49,6 +49,7 @@ type MemgraphController struct {
 	// Event-driven reconciliation
 	reconcileQueue     *ReconcileQueue
 	failoverCheckQueue *FailoverCheckQueue
+	failoverMu         sync.Mutex // Mutex to prevent concurrent failover checks
 
 	// Cluster operations
 	cluster *MemgraphCluster
@@ -118,7 +119,6 @@ func NewMemgraphController(clientset kubernetes.Interface, config *Config) *Memg
 	// Initialize state management with release-based ConfigMap name
 	controller.configMapName = generateStateConfigMapName()
 	controller.targetMainIndex = -1 // -1 indicates not yet loaded from ConfigMap
-
 
 	// Initialize event-driven reconciliation queue
 	controller.reconcileQueue = controller.newReconcileQueue()
@@ -577,18 +577,4 @@ func (c *MemgraphController) getPodFromCache(podName string) (*v1.Pod, error) {
 		return nil, fmt.Errorf("cached object for %s is not a Pod", podName)
 	}
 	return pod, nil
-}
-
-// getPodsFromCache retrieves all memgraph pods from the informer cache
-func (c *MemgraphController) getPodsFromCache() []v1.Pod {
-	objects := c.podInformer.GetStore().List()
-	pods := make([]v1.Pod, 0, len(objects))
-	
-	for _, obj := range objects {
-		if pod, ok := obj.(*v1.Pod); ok {
-			pods = append(pods, *pod)
-		}
-	}
-	
-	return pods
 }

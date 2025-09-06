@@ -24,9 +24,9 @@ type ReplicationRole struct {
 }
 
 type ReplicaInfo struct {
-	Name           string
-	SocketAddress  string
-	SyncMode       string
+	Name           string          // "memgraph_ha_0"
+	SocketAddress  string          // "ip:port"
+	SyncMode       string          // "sync" or "async"
 	SystemInfo     string          // Raw system_info field from SHOW REPLICAS
 	DataInfo       string          // Raw data_info field from SHOW REPLICAS
 	ParsedDataInfo *DataInfoStatus // Parsed structure from data_info

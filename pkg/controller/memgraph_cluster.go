@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strings"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
@@ -248,8 +247,7 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 
 	// Step 2: Run command against pod-0 to set up sync replication
 	log.Printf("Step 2: Setting up SYNC replication from pod-0 to pod-1")
-	pod1ReplicaAddress := fmt.Sprintf("%s:10000", pod1Node.GetBoltAddress()[:strings.LastIndex(pod1Node.GetBoltAddress(), ":")])
-	if err := pod0Node.RegisterReplica(ctx, pod1Node.GetReplicaName(), pod1ReplicaAddress, "SYNC"); err != nil {
+	if err := pod0Node.RegisterReplica(ctx, pod1Node.GetReplicaName(), pod1Node.ipAddress, "SYNC"); err != nil {
 		return fmt.Errorf("step 2 failed - register SYNC replica: %w", err)
 	}
 
@@ -263,7 +261,8 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 	// Check if replica shows as ready
 	found := false
 	for _, replica := range replicasResponse {
-		if replica.Name == pod1Node.GetReplicaName() && replica.SyncMode == "SYNC" {
+		log.Printf("Replica: %s, SyncMode: %s", replica.Name, replica.SyncMode)
+		if replica.Name == pod1Node.GetReplicaName() && replica.SyncMode == "sync" {
 			found = true
 			// Parse data_info to check if replica is ready
 			if replica.ParsedDataInfo != nil && replica.ParsedDataInfo.Status == "ready" && replica.ParsedDataInfo.Behind == 0 {

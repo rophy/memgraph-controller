@@ -21,7 +21,6 @@ type MemgraphNode struct {
 	replicasInfo    []ReplicaInfo // Detailed replica information
 	hasReplicasInfo bool          // True if ReplicasInfo has been populated
 
-
 	// Memgraph client for database operations (shared connection pool underneath)
 	client *MemgraphClient
 }
@@ -152,7 +151,13 @@ func (node *MemgraphNode) SetToMainRole(ctx context.Context) error {
 
 // RegisterReplica registers a replica on this MAIN node
 func (node *MemgraphNode) RegisterReplica(ctx context.Context, replicaName, replicationAddress string, syncMode string) error {
-	return node.client.RegisterReplica(ctx, node.boltAddress, replicaName, replicationAddress, syncMode)
+	err := node.client.RegisterReplica(ctx, node.boltAddress, replicaName, replicationAddress, syncMode)
+	if err != nil {
+		return err
+	}
+	// Clear cached replicas info after successful registration
+	node.hasReplicasInfo = false
+	return nil
 }
 
 // SetToReplicaRole demotes this node to REPLICA role

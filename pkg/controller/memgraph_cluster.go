@@ -53,7 +53,6 @@ func (mc *MemgraphCluster) Refresh(ctx context.Context) error {
 			if err := mc.MemgraphNodes[podName].InvalidateConnection(); err != nil {
 				log.Printf("Failed to invalidate connection for pod %s: %v", podName, err)
 			}
-			delete(mc.MemgraphNodes, podName)
 		}
 	}
 

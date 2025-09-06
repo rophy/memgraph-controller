@@ -175,7 +175,66 @@ class Neo4jClient {
     }
 }
 
+// One-shot query mode
+async function runOneShot(query) {
+    const uri = process.env.NEO4J_URI || 'bolt://localhost:7687';
+    const username = process.env.NEO4J_USERNAME || '';
+    const password = process.env.NEO4J_PASSWORD || '';
+    
+    const authConfig = username && password 
+        ? neo4j.auth.basic(username, password)
+        : undefined;
+        
+    const driver = neo4j.driver(uri, authConfig, {
+        maxConnectionPoolSize: 1,
+        connectionAcquisitionTimeout: 10000,
+        maxTransactionRetryTime: 10000
+    });
+    
+    try {
+        // Use session with auto-commit for replication commands
+        const session = driver.session();
+        const result = await session.run(query);
+        
+        // Convert result to simplified format
+        const records = result.records.map(record => {
+            return record.toObject();
+        });
+        
+        // Output records as JSON to stdout
+        console.log(JSON.stringify({
+            records: records,
+            summary: {
+                queryType: result.summary.queryType,
+                counters: result.summary.counters,
+                resultAvailableAfter: result.summary.resultAvailableAfter,
+                resultConsumedAfter: result.summary.resultConsumedAfter
+            }
+        }, null, 2));
+        
+        await session.close();
+        await driver.close();
+        process.exit(0);
+    } catch (error) {
+        // Output error to stderr
+        console.error(`Query failed: ${error.message}`);
+        await driver.close();
+        process.exit(1);
+    }
+}
+
 async function main() {
+    // Check if command line args are provided for one-shot mode
+    const args = process.argv.slice(2);
+    if (args.length > 0) {
+        // One-shot mode: join all args as a single query
+        const query = args.join(' ');
+        console.log(`Running one-shot query: ${query}`);
+        await runOneShot(query);
+        return;
+    }
+    
+    // Continuous mode (existing behavior)
     const uri = process.env.NEO4J_URI || 'bolt://localhost:7687';
     const username = process.env.NEO4J_USERNAME || '';
     const password = process.env.NEO4J_PASSWORD || '';

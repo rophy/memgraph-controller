@@ -29,7 +29,6 @@ start_test() {
 
 pass_test() {
     local test_name="$1" 
-    echo 'test'
     TESTS_PASSED=$((TESTS_PASSED + 1))
     log_success "✅ PASSED: $test_name"
 }
@@ -72,11 +71,11 @@ test_cluster_topology() {
     
     local pod_count
     pod_count=$(echo "$pods" | wc -l)
+    echo "pod_count: $pod_count"
     if (( pod_count != EXPECTED_POD_COUNT )); then
         fail_test "$test_name" "Expected $EXPECTED_POD_COUNT pods, got $pod_count"
         return 1
     fi
-
     
     # Check replication role
     local role_result
@@ -84,11 +83,10 @@ test_cluster_topology() {
         fail_test "$test_name" "Failed to get replication role"
         return 1
     fi
+    echo "SHOW REPLICATION ROLE: $role_result"
     
     local main_role
-    echo "$role_result"
-    main_role=$(echo "$role_result" | jq -r '.records[0]["replication role"]')
-    echo 'lalala'    
+    main_role=$(echo "$role_result" | jq -r '.[0]["replication role"]')
     if [[ "$main_role" != "main" ]]; then
         fail_test "$test_name" "Expected main role, got: $main_role"
         return 1
@@ -100,10 +98,12 @@ test_cluster_topology() {
         fail_test "$test_name" "Failed to get replicas"
         return 1
     fi
+    echo "SHOW REPLICAS: $replicas_result"
     
     local sync_count async_count
-    sync_count=$(echo "$replicas_result" | jq '.records | map(select(.sync_mode == "sync")) | length' 2>/dev/null)
-    async_count=$(echo "$replicas_result" | jq '.records | map(select(.sync_mode == "async")) | length' 2>/dev/null)
+    sync_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "sync")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
+    async_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "async")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
+    echo "sync_count: $sync_count, async_count: $async_count"
     
     if (( sync_count != 1 )) || (( async_count != 1 )); then
         fail_test "$test_name" "Expected 1 sync + 1 async replica, got sync=$sync_count async=$async_count"
@@ -127,7 +127,7 @@ test_data_write_gateway() {
     
     # Write data
     local write_query="CREATE (n:TestNode {id: '$test_id', value: '$test_value'}) RETURN n.id;"
-    if ! query_via_client "$write_query" > /dev/null; then
+    if ! query_via_client "$write_query"; then
         fail_test "$test_name" "Failed to write test data"
         return 1
     fi
@@ -142,8 +142,8 @@ test_data_write_gateway() {
     
     # Verify data
     local returned_id returned_value
-    returned_id=$(echo "$result" | jq -r '.records[0]["n.id"]' 2>/dev/null)
-    returned_value=$(echo "$result" | jq -r '.records[0]["n.value"]' 2>/dev/null)
+    returned_id=$(echo "$result" | jq -r '.[0]["n.id"]' 2>/dev/null)
+    returned_value=$(echo "$result" | jq -r '.[0]["n.value"]' 2>/dev/null)
     
     if [[ "$returned_id" != "$test_id" ]] || [[ "$returned_value" != "$test_value" ]]; then
         fail_test "$test_name" "Data mismatch"
@@ -167,7 +167,7 @@ test_data_replication() {
     fi
     
     local initial_count
-    initial_count=$(echo "$count_result" | jq -r '.records[0].node_count.low // .records[0].node_count' 2>/dev/null)
+    initial_count=$(echo "$count_result" | jq -r '.[0].node_count.low // .[0].node_count' 2>/dev/null)
     
     log_info "📊 Initial node count: $initial_count"
     
@@ -192,7 +192,7 @@ test_data_replication() {
     fi
     
     local returned_id
-    returned_id=$(echo "$result" | jq -r '.records[0]["n.id"]' 2>/dev/null)
+    returned_id=$(echo "$result" | jq -r '.[0]["n.id"]' 2>/dev/null)
     
     if [[ "$returned_id" != "$test_id" ]]; then
         fail_test "$test_name" "Replication data mismatch"
@@ -206,7 +206,7 @@ test_data_replication() {
     fi
     
     local final_count
-    final_count=$(echo "$count_result" | jq -r '.records[0].node_count.low // .records[0].node_count' 2>/dev/null)
+    final_count=$(echo "$count_result" | jq -r '.[0].node_count.low // .[0].node_count' 2>/dev/null)
     
     log_info "📊 Final node count: $final_count (increase: $((final_count - initial_count)))"
     
@@ -229,8 +229,8 @@ test_failover() {
     
     # Check we have exactly 1 sync + 1 async replica
     local sync_count async_count
-    sync_count=$(echo "$replicas_result" | jq '.records | map(select(.sync_mode == "sync")) | length' 2>/dev/null)
-    async_count=$(echo "$replicas_result" | jq '.records | map(select(.sync_mode == "async")) | length' 2>/dev/null)
+    sync_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "sync")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
+    async_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "async")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
     
     if (( sync_count != 1 )) || (( async_count != 1 )); then
         fail_test "$test_name" "Invalid cluster topology: sync=$sync_count async=$async_count (expected 1 sync + 1 async)"
@@ -239,7 +239,7 @@ test_failover() {
     
     # Check both replicas are healthy (have data_info)
     local unhealthy_replicas
-    unhealthy_replicas=$(echo "$replicas_result" | jq '.records | map(select(.data_info == null or (.data_info | length) == 0)) | length' 2>/dev/null)
+    unhealthy_replicas=$(echo "$replicas_result" | jq '. | map(select(.data_info == null)) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
     
     if (( unhealthy_replicas > 0 )); then
         fail_test "$test_name" "Found $unhealthy_replicas unhealthy replicas"
@@ -263,7 +263,9 @@ test_failover() {
     
     # Count recent successes in last 50 logs
     local recent_success_count
-    recent_success_count=$(echo "$recent_logs" | grep -c "✓ Success" || echo "0")
+    recent_success_count=$(echo "$recent_logs" | grep -c "✓ Success" 2>/dev/null || echo "0")
+    recent_success_count=$(echo "$recent_success_count" | head -1 | tr -d '\n')
+    echo "recent_success_count: $recent_success_count"
     
     if (( recent_success_count < 10 )); then
         fail_test "$test_name" "Insufficient recent writes: only $recent_success_count successes in last 50 logs"
@@ -323,7 +325,8 @@ test_failover() {
     
     # Count failures and successes in recent logs
     local error_count success_after_errors
-    error_count=$(echo "$post_failover_logs" | grep -c "✗ Failed" || echo "0")
+    error_count=$(echo "$post_failover_logs" | grep -c "✗ Failed" 2>/dev/null || echo "0")
+    error_count=$(echo "$error_count" | head -1 | tr -d '\n')
     
     # Look for success after errors (indicating recovery)
     local has_recovery=false
@@ -370,8 +373,8 @@ test_failover() {
     fi
     
     local post_sync_count post_async_count
-    post_sync_count=$(echo "$replicas_result" | jq '.records | map(select(.sync_mode == "sync")) | length' 2>/dev/null || echo "0")
-    post_async_count=$(echo "$replicas_result" | jq '.records | map(select(.sync_mode == "async")) | length' 2>/dev/null || echo "0")
+    post_sync_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "sync")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
+    post_async_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "async")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
     
     log_info "📊 Post-failover topology: $post_sync_count sync + $post_async_count async replicas"
     

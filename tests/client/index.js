@@ -202,7 +202,7 @@ async function runOneShot(query) {
         });
         
         // Output records as JSON to stdout
-        console.log(records);
+        console.log(JSON.stringify(records));
         
         await session.close();
         await driver.close();
@@ -227,7 +227,7 @@ async function main() {
     
     // Continuous mode (existing behavior)
     const uri = process.env.NEO4J_URI || 'bolt://localhost:7687';
-    const username = process.env.NEO4J_USERNAME || '';
+    const username = process.env.NEO4J_USERNAME || 'memgraph';
     const password = process.env.NEO4J_PASSWORD || '';
     
     const client = new Neo4jClient(uri, username, password);

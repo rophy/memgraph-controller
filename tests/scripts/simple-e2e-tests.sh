@@ -57,6 +57,61 @@ query_via_client() {
     kubectl exec "$test_client_pod" -n "$MEMGRAPH_NS" -- node index.js "$query"
 }
 
+# Wait for cluster to stabilize after failover or startup
+wait_for_cluster_convergence() {
+    local max_wait=30  # Maximum wait time in seconds
+    local wait_interval=2
+    local elapsed=0
+    
+    log_info "⏳ Waiting for cluster convergence..."
+    
+    while (( elapsed < max_wait )); do
+        # Check replication role
+        local role_result
+        if ! role_result=$(query_via_client "SHOW REPLICATION ROLE;" 2>/dev/null); then
+            log_info "⏳ Cannot query role yet, waiting... (${elapsed}s/${max_wait}s)"
+            sleep $wait_interval
+            elapsed=$((elapsed + wait_interval))
+            continue
+        fi
+        
+        local main_role
+        main_role=$(echo "$role_result" | jq -r '.[0]["replication role"]' 2>/dev/null || echo "")
+        
+        if [[ "$main_role" != "main" ]]; then
+            log_info "⏳ Role not main yet ($main_role), waiting... (${elapsed}s/${max_wait}s)"
+            sleep $wait_interval
+            elapsed=$((elapsed + wait_interval))
+            continue
+        fi
+        
+        # Check replicas
+        local replicas_result
+        if ! replicas_result=$(query_via_client "SHOW REPLICAS;" 2>/dev/null); then
+            log_info "⏳ Cannot query replicas yet, waiting... (${elapsed}s/${max_wait}s)"
+            sleep $wait_interval
+            elapsed=$((elapsed + wait_interval))
+            continue
+        fi
+        
+        local sync_count async_count
+        sync_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "sync")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
+        async_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "async")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
+        
+        if (( sync_count == 1 && async_count == 1 )); then
+            log_info "✅ Cluster converged after ${elapsed}s: 1 sync + 1 async replica"
+            return 0
+        fi
+        
+        log_info "⏳ Waiting for convergence... sync=$sync_count async=$async_count (${elapsed}s/${max_wait}s)"
+        sleep $wait_interval
+        elapsed=$((elapsed + wait_interval))
+    done
+    
+    log_error "❌ Cluster failed to converge within ${max_wait}s"
+    return 1
+}
+
 # Test 1: Cluster Topology
 test_cluster_topology() {
     local test_name="Cluster Topology"
@@ -77,38 +132,24 @@ test_cluster_topology() {
         return 1
     fi
     
-    # Check replication role
-    local role_result
-    if ! role_result=$(query_via_client "SHOW REPLICATION ROLE;"); then
-        fail_test "$test_name" "Failed to get replication role"
+    # Wait for cluster to converge with retry logic
+    if ! wait_for_cluster_convergence; then
+        fail_test "$test_name" "Cluster failed to converge to expected topology"
         return 1
     fi
+    
+    # Final verification - query current state for logging
+    local role_result replicas_result
+    role_result=$(query_via_client "SHOW REPLICATION ROLE;")
+    replicas_result=$(query_via_client "SHOW REPLICAS;")
+    
     echo "SHOW REPLICATION ROLE: $role_result"
-    
-    local main_role
-    main_role=$(echo "$role_result" | jq -r '.[0]["replication role"]')
-    if [[ "$main_role" != "main" ]]; then
-        fail_test "$test_name" "Expected main role, got: $main_role"
-        return 1
-    fi
-    
-    # Check replicas
-    local replicas_result
-    if ! replicas_result=$(query_via_client "SHOW REPLICAS;"); then
-        fail_test "$test_name" "Failed to get replicas"
-        return 1
-    fi
     echo "SHOW REPLICAS: $replicas_result"
     
     local sync_count async_count
     sync_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "sync")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
     async_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "async")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
     echo "sync_count: $sync_count, async_count: $async_count"
-    
-    if (( sync_count != 1 )) || (( async_count != 1 )); then
-        fail_test "$test_name" "Expected 1 sync + 1 async replica, got sync=$sync_count async=$async_count"
-        return 1
-    fi
     
     log_info "📊 Topology verified: Main role confirmed, $sync_count sync + $async_count async replicas"
     pass_test "$test_name"
@@ -360,31 +401,35 @@ test_failover() {
         return 1
     fi
     
-    # Verify cluster is healthy after failover
-    log_info "🔍 Verifying post-failover cluster health"
+    # Verify cluster converges to healthy state after failover
+    log_info "🔍 Step 4: Verifying post-failover cluster convergence"
     
-    # Wait a bit more for full stabilization
-    sleep 2
-    
-    # Check new cluster topology
-    if ! replicas_result=$(query_via_client "SHOW REPLICAS;" 2>/dev/null); then
-        fail_test "$test_name" "Failed to query post-failover cluster status"
-        return 1
-    fi
-    
-    local post_sync_count post_async_count
-    post_sync_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "sync")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
-    post_async_count=$(echo "$replicas_result" | jq '. | map(select(.sync_mode == "async")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
-    
-    log_info "📊 Post-failover topology: $post_sync_count sync + $post_async_count async replicas"
-    
-    if (( post_sync_count == 0 && post_async_count == 0 )); then
-        # Cluster might still be reorganizing, this is acceptable
-        log_info "⚠️  Cluster reorganizing: No replicas registered yet (expected during failover)"
-    elif (( post_sync_count >= 0 && post_async_count >= 0 && post_sync_count + post_async_count <= 2 )); then
-        log_info "✅ Post-failover cluster topology acceptable"
+    # Wait for cluster to converge with retry logic
+    if ! wait_for_cluster_convergence; then
+        log_info "⚠️  Cluster did not fully converge within 30s, but failover behavior was acceptable"
+        log_info "📊 This may indicate split-brain timing window - checking final state..."
+        
+        # Get final state for logging
+        local final_replicas_result
+        if final_replicas_result=$(query_via_client "SHOW REPLICAS;" 2>/dev/null); then
+            local final_sync_count final_async_count
+            final_sync_count=$(echo "$final_replicas_result" | jq '. | map(select(.sync_mode == "sync")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
+            final_async_count=$(echo "$final_replicas_result" | jq '. | map(select(.sync_mode == "async")) | length' 2>/dev/null | head -1 | tr -d '\n' || echo "0")
+            log_info "📊 Final topology: $final_sync_count sync + $final_async_count async replicas"
+            
+            # Accept if we have at least some replicas (cluster is functioning)
+            if (( final_sync_count + final_async_count >= 1 )); then
+                log_info "✅ Post-failover cluster is functional with partial replica registration"
+            else
+                fail_test "$test_name" "Post-failover cluster has no registered replicas"
+                return 1
+            fi
+        else
+            fail_test "$test_name" "Cannot query cluster status after failover"
+            return 1
+        fi
     else
-        log_info "⚠️  Unexpected post-failover topology, but failover behavior was correct"
+        log_info "✅ Post-failover cluster fully converged to expected topology"
     fi
     
     log_info "🎉 Failover test completed successfully!"

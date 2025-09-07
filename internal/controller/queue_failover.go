@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 )
@@ -144,10 +145,12 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("cannot get replicas from target main node: %w", err)
 	}
+	// Convert pod name to Memgraph replica name format (hyphens to underscores)
+	targetSyncReplicaMemgraphName := strings.ReplaceAll(targetSyncReplicaName, "-", "_")
 	var syncReplica *ReplicaInfo = nil
 	for _, replica := range replicas {
-		logger.Debug("failover check: checking replica", "replica_name", replica.Name, "target_sync_replica_name", targetSyncReplicaName)
-		if replica.Name == targetSyncReplicaName {
+		logger.Debug("failover check: checking replica", "replica_name", replica.Name, "target_sync_replica_memgraph_name", targetSyncReplicaMemgraphName)
+		if replica.Name == targetSyncReplicaMemgraphName {
 			syncReplica = &replica
 			break
 		}

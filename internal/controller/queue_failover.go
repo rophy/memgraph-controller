@@ -109,10 +109,6 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 		logger.Info("performFailoverCheck completed", "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
 	}()
 
-	// mutex to prevent concurrent failover checks
-	c.failoverMu.Lock()
-	defer c.failoverMu.Unlock()
-
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {
 		return fmt.Errorf("cannot get target main index: %w", err)
@@ -127,11 +123,29 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 
 	logger.Warn("🚨 FAILOVER NEEDED: Target main pod is unhealthy or not in 'main' role", "pod_name", targetMainPodName, "role", role, "healthy", isHealthy)
 
+	err = c.executeFailover(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to execute failover: %w", err)
+	}
+
+	return nil
+}
+
+// executeFailover executes the failover logic
+func (c *MemgraphController) executeFailover(ctx context.Context) error {
+	// mutex to prevent concurrent failover executions
+	c.failoverMu.Lock()
+	defer c.failoverMu.Unlock()
+
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return fmt.Errorf("cannot get target main index: %w", err)
+	}
 	targetSyncReplicaIndex := 1 - targetMainIndex // Assuming 2 pods: 0 and 1
 	targetSyncReplicaName := c.config.GetPodName(targetSyncReplicaIndex)
-	role, isHealthy = c.getHealthyRole(ctx, targetSyncReplicaName)
+	role, isHealthy := c.getHealthyRole(ctx, targetSyncReplicaName)
 	if !isHealthy {
-		logger.Error("failover check: sync replica pod is not healthy, cannot perform failover", "pod_name", targetSyncReplicaName)
+		logger.Error("failover: sync replica pod is not healthy, cannot perform failover", "pod_name", targetSyncReplicaName)
 		return fmt.Errorf("sync replica pod %s is not healthy for failover", targetSyncReplicaName)
 	}
 
@@ -152,33 +166,38 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 	targetSyncReplicaMemgraphName := syncReplicaNode.GetReplicaName()
 	var syncReplica *ReplicaInfo = nil
 	for _, replica := range replicas {
-		logger.Debug("failover check: checking replica", "replica_name", replica.Name, "target_sync_replica_memgraph_name", targetSyncReplicaMemgraphName)
+		logger.Debug("failover: checking replica", "replica_name", replica.Name, "target_sync_replica_memgraph_name", targetSyncReplicaMemgraphName)
 		if replica.Name == targetSyncReplicaMemgraphName {
 			syncReplica = &replica
 			break
 		}
 	}
 	if syncReplica == nil {
-		logger.Error("failover check: sync replica pod not found in cached replicas list, unsafe to perform failover", "pod_name", targetSyncReplicaName)
+		logger.Error("failover: sync replica pod not found in cached replicas list, unsafe to perform failover", "pod_name", targetSyncReplicaName)
 		return fmt.Errorf("%s not found in cached replicas list, unsafe to perform failover", targetSyncReplicaName)
 	}
 	if syncReplica.SyncMode != "sync" {
-		logger.Error("failover check: cached replica type of %s was not \"sync\", unsafe to perform failover", "pod_name", targetSyncReplicaName)
+		logger.Error("failover: cached replica type of %s was not \"sync\", unsafe to perform failover", "pod_name", targetSyncReplicaName)
 		return fmt.Errorf("cached replica type of %s was not \"sync\", unsafe to perform failover", targetSyncReplicaName)
 	}
 	if syncReplica.ParsedDataInfo == nil {
-		logger.Error("failover check: cached replica data_info of %s was nil, unsafe to perform failover", "pod_name", targetSyncReplicaName)
+		logger.Error("failover: cached replica data_info of %s was nil, unsafe to perform failover", "pod_name", targetSyncReplicaName)
 		return fmt.Errorf("cached replica data_info of %s was nil, unsafe to perform failover", targetSyncReplicaName)
 	}
 	if syncReplica.ParsedDataInfo.Status != "ready" {
-		logger.Error("failover check: cached replica status of %s was not \"ready\", unsafe to perform failover", "pod_name", targetSyncReplicaName)
+		logger.Error("failover: cached replica status of %s was not \"ready\", unsafe to perform failover", "pod_name", targetSyncReplicaName)
 		return fmt.Errorf("cached replica status of %s was not \"ready\", unsafe to perform failover", targetSyncReplicaName)
+	}
+	err = syncReplicaNode.Ping(ctx)
+	if err != nil {
+		logger.Error("failover: sync replica pod is not reachable, unsafe to perform failover", "pod_name", targetSyncReplicaName)
+		return fmt.Errorf("sync replica pod %s is not reachable, unsafe to perform failover", targetSyncReplicaName)
 	}
 
 	// Target sync replica is healthy, proceed with failover
 
 	if role == "main" {
-		logger.Warn("failover check: sync replica pod is already main, skipping promotion", "pod_name", targetSyncReplicaName)
+		logger.Warn("failover: sync replica pod is already main, skipping promotion", "pod_name", targetSyncReplicaName)
 	} else {
 		err := c.promoteSyncReplica(ctx)
 		if err != nil {

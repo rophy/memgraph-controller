@@ -52,9 +52,14 @@ spec:
           valueFrom:
             fieldRef:
               fieldPath: metadata.namespace
+        # Logger configuration
+        - name: LOG_LEVEL
+          value: {{ .Values.controller.env.logging.level | quote }}
+        - name: LOG_ADD_SOURCE
+          value: {{ .Values.controller.env.logging.addSource | quote }}
+        - name: LOG_FORMAT
+          value: {{ .Values.controller.env.logging.format | quote }}
         # Gateway configuration
-        - name: GATEWAY_ENABLED
-          value: {{ .Values.controller.env.gateway.enabled | quote }}
         - name: GATEWAY_BIND_ADDRESS
           value: {{ .Values.controller.env.gateway.bindAddress | quote }}
         - name: GATEWAY_MAX_CONNECTIONS
@@ -87,10 +92,6 @@ spec:
           value: {{ .Values.controller.env.gateway.rateLimit.burst | quote }}
         - name: GATEWAY_RATE_LIMIT_WINDOW
           value: {{ .Values.controller.env.gateway.rateLimit.window | quote }}
-        - name: GATEWAY_LOG_LEVEL
-          value: {{ .Values.controller.env.gateway.logging.level | quote }}
-        - name: GATEWAY_TRACE_ENABLED
-          value: {{ .Values.controller.env.gateway.logging.traceEnabled | quote }}
         ports:
         - name: http
           containerPort: 8080

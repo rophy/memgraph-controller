@@ -174,12 +174,9 @@ func (node *MemgraphNode) SetToReplicaRole(ctx context.Context) error {
 	return nil
 }
 
-// CheckConnectivity verifies that this node is reachable
-func (node *MemgraphNode) CheckConnectivity(ctx context.Context) error {
-	if node.client == nil {
-		return fmt.Errorf("client not injected for node %s", node.name)
-	}
-	return node.client.TestConnectionWithRetry(ctx, node.boltAddress)
+// Ping verifies that this node is reachable
+func (node *MemgraphNode) Ping(ctx context.Context) error {
+	return node.client.Ping(ctx, node.boltAddress)
 }
 
 // InvalidateConnection closes existing connections to this node

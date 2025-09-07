@@ -1,4 +1,11 @@
 const neo4j = require('neo4j-driver');
+const pino = require('pino');
+
+const logger = pino({
+    timestamp: pino.stdTimeFunctions.isoTime,
+});
+
+logger.info('Starting Neo4j client...');
 
 class MetricsTracker {
     constructor() {
@@ -50,7 +57,7 @@ class MetricsTracker {
 
 class Neo4jClient {
     constructor(uri, username = '', password = '') {
-        console.log(`Initializing Neo4j client for ${uri}`);
+        logger.info(`Initializing Neo4j client for ${uri}`);
         
         const authConfig = username && password 
             ? neo4j.auth.basic(username, password)
@@ -64,7 +71,7 @@ class Neo4jClient {
                 level: 'info',
                 logger: (level, message) => {
                     if (level === 'error') {
-                        console.error(`[Neo4j] ${message}`);
+                        logger.error(`[Neo4j] ${message}`);
                         // Count driver-level errors in metrics
                         this.metrics.recordError();
                     }
@@ -81,12 +88,11 @@ class Neo4jClient {
     async verifyConnection() {
         try {
             await this.driver.verifyConnectivity();
-            console.log('✓ Successfully connected to Neo4j');
+            logger.info('✓ Successfully connected to Neo4j');
             return true;
         } catch (error) {
             this.metrics.recordError();
-            const timestamp = new Date().toISOString();
-            console.error(`${timestamp} ✗ Connection failed: ${error.message} | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
+            logger.error(`✗ Connection failed: ${error.message} | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
             return false;
         }
     }
@@ -117,66 +123,68 @@ class Neo4jClient {
             const latency = Date.now() - startTime;
             this.metrics.recordSuccess(latency);
             
-            const timestamp = new Date().toISOString();
-            console.log(`${timestamp} ✓ Success | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
+            logger.info(`✓ Success | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
             
             return true;
         } catch (error) {
             this.metrics.recordError();
-            const timestamp = new Date().toISOString();
-            console.error(`${timestamp} ✗ Failed | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount} | Error: ${error.message}`);
+            logger.error(`✗ Failed | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount} | Error: ${error.message}`);
             return false;
         }
     }
 
     async start() {
-        console.log('Starting Neo4j client...');
-        console.log(`Configuration:`);
-        console.log(`  - Server: ${process.env.NEO4J_URI || 'bolt://localhost:7687'}`);
-        console.log(`  - Write Interval: ${this.writeInterval}ms`);
-        console.log(`  - Username: ${process.env.NEO4J_USERNAME || '(none)'}`);
+        logger.info({
+            server: process.env.NEO4J_URI || 'bolt://localhost:7687',
+            writeInterval: this.writeInterval,
+            username: process.env.NEO4J_USERNAME || '(none)',
+        }, `Starting Neo4j client`);
         
         const connected = await this.verifyConnection();
         if (!connected) {
-            const timestamp = new Date().toISOString();
-            console.error(`${timestamp} Cannot start without connection. Retrying in 5 seconds...`);
+            logger.error(`Cannot start without connection. Retrying in 5 seconds...`);
             setTimeout(() => this.start(), 5000);
             return;
         }
 
         this.running = true;
-        console.log('\n=== Starting write loop ===\n');
+        logger.info('Starting write loop');
         
         while (this.running) {
             if (!this.paused) {
                 await this.writeData();
             } else {
-                const timestamp = new Date().toISOString();
-            console.log(`${timestamp} ⏸️  Client paused - waiting for resume signal`);
+                console.info(`⏸️  Client paused - waiting for resume signal`);
             }
             await new Promise(resolve => setTimeout(resolve, this.writeInterval));
         }
     }
 
     pause() {
-        console.log('\n⏸️  === Pausing client ===');
+        logger.info('⏸️  Pausing client');
         this.paused = true;
     }
 
     resume() {
-        console.log('\n▶️  === Resuming client ===');
+        logger.info('▶️  Resuming client');
         this.paused = false;
     }
 
     async stop() {
-        console.log('\n=== Stopping client ===');
+        logger.info('Stopping client');
         this.running = false;
         
         const finalStats = this.metrics.getStats();
-        console.log(`📊 Final Stats | Total: ${finalStats.total}, Success: ${finalStats.success}, Errors: ${finalStats.errors} (${finalStats.errorRate}), Uptime: ${finalStats.uptime}`);
+        logger.info({
+            total: finalStats.total,
+            success: finalStats.success,
+            errors: finalStats.errors,
+            errorRate: finalStats.errorRate,
+            uptime: finalStats.uptime,
+        }, '📊 Final Stats');
         
         await this.driver.close();
-        console.log('✓ Client stopped');
+        logger.info('✓ Client stopped');
     }
 }
 
@@ -239,19 +247,19 @@ async function main() {
     
     // Graceful shutdown
     const shutdown = async (signal) => {
-        console.log(`\nReceived ${signal}, shutting down gracefully...`);
+        logger.info(`Received ${signal}, shutting down gracefully...`);
         await client.stop();
         process.exit(0);
     };
     
     // Pause/Resume handlers
     const pauseHandler = (signal) => {
-        console.log(`\nReceived ${signal}, pausing client...`);
+        logger.info(`Received ${signal}, pausing client...`);
         client.pause();
     };
     
     const resumeHandler = (signal) => {
-        console.log(`\nReceived ${signal}, resuming client...`);
+        logger.info(`Received ${signal}, resuming client...`);
         client.resume();
     };
     

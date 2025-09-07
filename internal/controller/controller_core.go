@@ -62,6 +62,9 @@ type MemgraphController struct {
 
 	// Reconciliation metrics
 	metrics *ReconciliationMetrics
+
+	// Health prober for blackbox monitoring
+	healthProber *HealthProber
 }
 
 func NewMemgraphController(clientset kubernetes.Interface, config *common.Config) *MemgraphController {
@@ -141,6 +144,10 @@ func NewMemgraphController(clientset kubernetes.Interface, config *common.Config
 	// Initialize cluster operations (after informers are set up)
 	controller.cluster = NewMemgraphCluster(controller.podInformer.GetStore(), config, controller.memgraphClient)
 
+	// Initialize health prober with default configuration
+	proberConfig := DefaultProberConfig()
+	controller.healthProber = NewHealthProber(controller, proberConfig)
+
 	return controller
 }
 
@@ -183,6 +190,12 @@ func (c *MemgraphController) Initialize(ctx context.Context) error {
 // Shutdown stops all controller components gracefully
 func (c *MemgraphController) Shutdown(ctx context.Context) error {
 	logger.Info("Shutting down all controller components...")
+
+	// Stop health prober
+	if c.healthProber != nil && c.healthProber.IsRunning() {
+		c.healthProber.Stop()
+		logger.Info("Health prober stopped")
+	}
 
 	// Stop HTTP server
 	if err := c.StopHTTPServer(ctx); err != nil {

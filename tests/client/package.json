@@ -10,7 +10,8 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "neo4j-driver": "^5.18.0"
+    "neo4j-driver": "^5.18.0",
+    "pino": "^9.9.4"
   },
   "engines": {
     "node": ">=18.0.0"

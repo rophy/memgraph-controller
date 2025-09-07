@@ -7,10 +7,11 @@ import (
 	"strings"
 	"time"
 
+	"memgraph-controller/internal/common"
+
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j/config"
 	"gopkg.in/yaml.v3"
-	"memgraph-controller/internal/common"
 )
 
 type MemgraphClient struct {
@@ -611,27 +612,28 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 	return result, nil
 }
 
-// TestConnectionWithRetry tests connection with retry logic and connection pooling
-func (mc *MemgraphClient) TestConnectionWithRetry(ctx context.Context, boltAddress string) error {
+// Ping verifies target bolt address is reachable
+func (mc *MemgraphClient) Ping(ctx context.Context, boltAddress string) error {
 	if boltAddress == "" {
 		return fmt.Errorf("bolt address is empty")
 	}
 
-	err := WithRetry(ctx, func() error {
-		_, err := mc.connectionPool.GetDriver(ctx, boltAddress)
-		if err != nil {
-			return err
-		}
-
-		// Driver verification is already done in GetDriver, so we just check if we got a driver
-		return nil
-	}, mc.retryConfig)
-
+	driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
 	if err != nil {
-		return fmt.Errorf("failed to connect to %s after retries: %w", boltAddress, err)
+		return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
 	}
 
-	logger.Info("Successfully connected to Memgraph", "bolt_address", boltAddress)
+	session := driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer func() {
+		if closeErr := session.Close(ctx); closeErr != nil {
+			logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+		}
+	}()
+
+	_, err = session.Run(ctx, "RETURN 1", nil)
+	if err != nil {
+		return fmt.Errorf("failed to execute RETURN 1: %w", err)
+	}
 	return nil
 }
 

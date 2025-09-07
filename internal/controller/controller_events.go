@@ -49,6 +49,12 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 
 			// Load state to determine startup phase (BOOTSTRAP vs OPERATIONAL)
 			// State loading now handled via GetTargetMainIndex() calls
+
+			// Start health prober for blackbox monitoring
+			if c.healthProber != nil {
+				logger.Info("Starting health prober for main pod monitoring")
+				c.healthProber.Start(ctx)
+			}
 		},
 		func() {
 			// OnStoppedLeading: This controller instance lost leadership
@@ -57,6 +63,13 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			c.leaderMu.Unlock()
 
 			logger.Info("⏹️  Lost leadership - stopping operations")
+			
+			// Stop health prober
+			if c.healthProber != nil {
+				logger.Info("Stopping health prober")
+				c.healthProber.Stop()
+			}
+			
 			// Stop reconciliation operations but keep the process running
 		},
 		func(identity string) {

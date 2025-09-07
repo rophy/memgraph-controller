@@ -85,7 +85,8 @@ class Neo4jClient {
             return true;
         } catch (error) {
             this.metrics.recordError();
-            console.error(`✗ Connection failed: ${error.message} | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
+            const timestamp = new Date().toISOString();
+            console.error(`${timestamp} ✗ Connection failed: ${error.message} | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
             return false;
         }
     }
@@ -116,12 +117,14 @@ class Neo4jClient {
             const latency = Date.now() - startTime;
             this.metrics.recordSuccess(latency);
             
-            console.log(`✓ Success | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
+            const timestamp = new Date().toISOString();
+            console.log(`${timestamp} ✓ Success | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount}`);
             
             return true;
         } catch (error) {
             this.metrics.recordError();
-            console.error(`✗ Failed | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount} | Error: ${error.message}`);
+            const timestamp = new Date().toISOString();
+            console.error(`${timestamp} ✗ Failed | Total: ${this.metrics.totalCount}, Success: ${this.metrics.successCount}, Errors: ${this.metrics.errorCount} | Error: ${error.message}`);
             return false;
         }
     }
@@ -135,7 +138,8 @@ class Neo4jClient {
         
         const connected = await this.verifyConnection();
         if (!connected) {
-            console.error('Cannot start without connection. Retrying in 5 seconds...');
+            const timestamp = new Date().toISOString();
+            console.error(`${timestamp} Cannot start without connection. Retrying in 5 seconds...`);
             setTimeout(() => this.start(), 5000);
             return;
         }
@@ -147,7 +151,8 @@ class Neo4jClient {
             if (!this.paused) {
                 await this.writeData();
             } else {
-                console.log('⏸️  Client paused - waiting for resume signal');
+                const timestamp = new Date().toISOString();
+            console.log(`${timestamp} ⏸️  Client paused - waiting for resume signal`);
             }
             await new Promise(resolve => setTimeout(resolve, this.writeInterval));
         }

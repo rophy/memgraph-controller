@@ -9,6 +9,7 @@ import subprocess
 import json
 import time
 import sys
+import re
 from typing import Tuple, Dict, Any, Optional, List
 
 
@@ -681,3 +682,94 @@ def check_prerequisites() -> None:
         raise E2ETestError(f"Cannot access namespace '{MEMGRAPH_NS}'")
     
     log_info("✅ Prerequisites checked")
+
+
+def parse_logfmt_line(line: str) -> Dict[str, str]:
+    """
+    Parse a single logfmt line into key-value pairs.
+    
+    Example:
+        'at=INFO msg="Starting client" uri=bolt://localhost:7687'
+        -> {'at': 'INFO', 'msg': 'Starting client', 'uri': 'bolt://localhost:7687'}
+    """
+    pairs = {}
+    
+    # Regex to match key=value pairs, handling quoted values
+    pattern = r'(\w+)=(?:"([^"]*)"|([^\s]+))'
+    
+    for match in re.finditer(pattern, line):
+        key = match.group(1)
+        # Use quoted value if present, otherwise unquoted value
+        value = match.group(2) if match.group(2) is not None else match.group(3)
+        pairs[key] = value
+    
+    return pairs
+
+
+def get_client_logs(pod_name: Optional[str] = None, tail: int = 100) -> List[str]:
+    """
+    Get logs from test-client pod.
+    
+    Args:
+        pod_name: Specific pod name, or None to auto-discover
+        tail: Number of recent lines to retrieve
+    
+    Returns:
+        List of log lines
+    """
+    if pod_name is None:
+        # Auto-discover test-client pod
+        try:
+            result = subprocess.run([
+                "kubectl", "get", "pods", "-n", MEMGRAPH_NS,
+                "-l", TEST_CLIENT_LABEL,
+                "-o", "jsonpath={.items[0].metadata.name}"
+            ], capture_output=True, text=True, check=True)
+            pod_name = result.stdout.strip()
+        except subprocess.CalledProcessError as e:
+            raise E2ETestError(f"Failed to find test-client pod: {e}")
+    
+    if not pod_name:
+        raise E2ETestError("No test-client pod found")
+    
+    try:
+        result = subprocess.run([
+            "kubectl", "logs", "-n", MEMGRAPH_NS,
+            pod_name, f"--tail={tail}"
+        ], capture_output=True, text=True, check=True)
+        
+        return result.stdout.strip().split('\n') if result.stdout.strip() else []
+        
+    except subprocess.CalledProcessError as e:
+        raise E2ETestError(f"Failed to get logs from pod {pod_name}: {e}")
+
+
+def parse_client_logs(pod_name: Optional[str] = None, filter_level: Optional[str] = None) -> List[Dict[str, str]]:
+    """
+    Parse test-client logs and return structured data.
+    
+    Args:
+        pod_name: Specific pod name, or None to auto-discover
+        filter_level: Only return logs of this level (INFO, ERROR, etc.)
+    
+    Returns:
+        List of parsed log entries as dictionaries
+    """
+    logs = get_client_logs(pod_name)
+    parsed_logs = []
+    
+    for line in logs:
+        if line.strip():
+            try:
+                parsed = parse_logfmt_line(line)
+                
+                # Apply level filter if specified
+                if filter_level and parsed.get('at', '').upper() != filter_level.upper():
+                    continue
+                    
+                parsed_logs.append(parsed)
+            except Exception as e:
+                # Skip lines that can't be parsed (might be startup logs, etc.)
+                continue
+    
+    return parsed_logs

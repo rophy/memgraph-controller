@@ -38,16 +38,16 @@ spec:
         livenessProbe:
           exec:
             command:
-            - node
-            - -e
-            - "process.exit(0)"
+            - python
+            - -c
+            - "import sys; sys.exit(0)"
           initialDelaySeconds: 10
           periodSeconds: 30
         readinessProbe:
           exec:
             command:
-            - node
-            - -e
-            - "process.exit(0)"
+            - python
+            - -c
+            - "import sys; sys.exit(0)"
           initialDelaySeconds: 5
           periodSeconds: 10

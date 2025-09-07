@@ -47,6 +47,203 @@ class E2ETestError(Exception):
     pass
 
 
+def get_controller_pod() -> str:
+    """Get the memgraph-controller pod name"""
+    try:
+        result = subprocess.run([
+            "kubectl", "get", "pods", "-n", MEMGRAPH_NS, 
+            "-l", "app=memgraph-controller", 
+            "-o", "jsonpath={.items[0].metadata.name}"
+        ], capture_output=True, text=True, check=True)
+        return result.stdout.strip()
+    except subprocess.CalledProcessError:
+        raise E2ETestError("Failed to find memgraph-controller pod")
+
+
+def get_controller_logs(tail_lines: int = 50) -> str:
+    """Get recent logs from memgraph-controller pod"""
+    try:
+        controller_pod = get_controller_pod()
+        cmd = ["kubectl", "logs", controller_pod, "-n", MEMGRAPH_NS, f"--tail={tail_lines}"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise E2ETestError(f"Failed to get controller logs: {result.stderr}")
+        
+        return result.stdout
+    except Exception as e:
+        raise E2ETestError(f"Failed to get controller logs: {e}")
+
+
+def get_controller_logs_since(since_time: str) -> str:
+    """Get controller logs since specified time"""
+    try:
+        controller_pod = get_controller_pod()
+        cmd = ["kubectl", "logs", controller_pod, "-n", MEMGRAPH_NS, f"--since-time={since_time}"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise E2ETestError(f"Failed to get controller logs since {since_time}: {result.stderr}")
+        
+        return result.stdout
+    except Exception as e:
+        raise E2ETestError(f"Failed to get controller logs since {since_time}: {e}")
+
+
+def detect_failover_in_controller_logs(logs: str) -> Dict[str, Any]:
+    """
+    Detect failover events in controller logs
+    
+    Returns:
+        dict with failover detection info
+    """
+    result = {
+        "failover_triggered": False,
+        "main_promotion_detected": False,
+        "failover_events": []
+    }
+    
+    # Look for failover-related log messages
+    failover_patterns = [
+        "promoting replica to main",
+        "main pod failed",
+        "updating replication topology", 
+        "cluster failover",
+        "main role changed",
+        "reconciling failover",
+        "setting main role"
+    ]
+    
+    lines = logs.strip().split('\n')
+    for line in lines:
+        line_lower = line.lower()
+        for pattern in failover_patterns:
+            if pattern in line_lower:
+                result["failover_events"].append(line.strip())
+                if "promoting" in line_lower or "main role" in line_lower or "setting main" in line_lower:
+                    result["main_promotion_detected"] = True
+                result["failover_triggered"] = True
+    
+    return result
+
+
+def monitor_main_pod_changes(initial_main: str, timeout: int = 30) -> Dict[str, Any]:
+    """
+    Monitor for main pod role changes by polling Memgraph directly
+    
+    Args:
+        initial_main: The original main pod name
+        timeout: Maximum seconds to monitor
+        
+    Returns:
+        dict with change detection info
+    """
+    import time
+    start_time = time.time()
+    
+    result = {
+        "main_changed": False,
+        "new_main": None,
+        "change_time": None,
+        "polling_count": 0
+    }
+    
+    while time.time() - start_time < timeout:
+        try:
+            current_main = find_main_pod_by_querying()
+            result["polling_count"] += 1
+            
+            if current_main != initial_main:
+                result["main_changed"] = True
+                result["new_main"] = current_main
+                result["change_time"] = time.time() - start_time
+                break
+                
+        except Exception:
+            # Continue polling even if individual queries fail
+            pass
+            
+        time.sleep(1)  # Poll every second
+    
+    return result
+
+
+def get_pod_age_seconds(pod_name: str) -> int:
+    """Get pod age in seconds"""
+    try:
+        result = subprocess.run([
+            "kubectl", "get", "pod", pod_name, "-n", MEMGRAPH_NS,
+            "-o", "jsonpath={.metadata.creationTimestamp}"
+        ], capture_output=True, text=True, check=True)
+        
+        from datetime import datetime
+        creation_time = datetime.fromisoformat(result.stdout.strip().replace('Z', '+00:00'))
+        current_time = datetime.now(creation_time.tzinfo)
+        age_seconds = int((current_time - creation_time).total_seconds())
+        return age_seconds
+    except Exception:
+        return -1
+
+
+def monitor_main_pod_changes_enhanced(initial_main: str, timeout: int = 30) -> Dict[str, Any]:
+    """
+    Enhanced monitoring for main pod role changes that also detects pod recreation.
+    
+    Args:
+        initial_main: The original main pod name
+        timeout: Maximum seconds to monitor
+        
+    Returns:
+        dict with enhanced change detection info
+    """
+    import time
+    start_time = time.time()
+    
+    # Get initial pod age to detect recreation
+    initial_age = get_pod_age_seconds(initial_main)
+    
+    result = {
+        "main_changed": False,
+        "new_main": None,
+        "change_time": None,
+        "polling_count": 0,
+        "pod_recreated": False,
+        "recreation_detected_at": None,
+        "initial_pod_age": initial_age
+    }
+    
+    while time.time() - start_time < timeout:
+        try:
+            current_main = find_main_pod_by_querying()
+            result["polling_count"] += 1
+            
+            # Check if main role moved to different pod
+            if current_main != initial_main:
+                result["main_changed"] = True
+                result["new_main"] = current_main
+                result["change_time"] = time.time() - start_time
+                break
+            
+            # Check if the same-named pod was recreated (StatefulSet behavior)
+            current_age = get_pod_age_seconds(initial_main)
+            if current_age >= 0 and initial_age >= 0 and current_age < (initial_age - 10):  # 10s buffer
+                result["pod_recreated"] = True
+                result["recreation_detected_at"] = time.time() - start_time
+                # In StatefulSet, recreation often means failover occurred then returned
+                result["main_changed"] = True
+                result["new_main"] = current_main  # Same name, but new pod
+                result["change_time"] = time.time() - start_time
+                break
+                
+        except Exception:
+            # Continue polling even if individual queries fail
+            pass
+            
+        time.sleep(1)  # Poll every second
+    
+    return result
+
+
 class KubectlError(E2ETestError):
     """kubectl command failed"""
     pass

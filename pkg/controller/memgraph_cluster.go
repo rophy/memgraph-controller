@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"time"
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
@@ -99,6 +100,10 @@ func (mc *MemgraphCluster) getPodsFromCache() []v1.Pod {
 // Returns (-1, nil) if cluster is not ready to be discovered
 // Returns (-1, error) if cluster is in an unknown state
 func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int, error) {
+	start := time.Now()
+	defer func() {
+		logger.Info("discoverClusterState completed", "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
+	}()
 
 	pod0Name := mc.config.GetPodName(0)
 	pod1Name := mc.config.GetPodName(1)
@@ -224,6 +229,11 @@ func (mc *MemgraphCluster) isNewCluster(ctx context.Context) (bool, error) {
 
 // initializeCluster implements DESIGN.md "Initialize Memgraph Cluster" section
 func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
+	start := time.Now()
+	defer func() {
+		logger.Info("initializeCluster completed", "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
+	}()
+	
 	logger.Info("initializing memgraph cluster")
 
 	pod0Name := mc.config.GetPodName(0)

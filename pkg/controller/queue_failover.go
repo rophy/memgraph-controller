@@ -104,6 +104,10 @@ func (c *MemgraphController) handleFailoverCheckEvent(event FailoverCheckEvent) 
 
 // performFailoverCheck implements the failover check logic
 func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
+	start := time.Now()
+	defer func() {
+		logger.Info("performFailoverCheck completed", "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
+	}()
 
 	// mutex to prevent concurrent failover checks
 	c.failoverMu.Lock()

@@ -2,14 +2,12 @@ package gateway
 
 import (
 	"fmt"
-	"memgraph-controller/pkg/logging"
 	"net"
 	"os"
 	"strconv"
 	"time"
 )
 
-var logger = logging.GetLogger()
 
 // Config holds the gateway configuration
 type Config struct {

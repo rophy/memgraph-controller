@@ -108,7 +108,7 @@ func (cp *ConnectionPool) UpdatePodIP(podName, newIP string) {
 		if driver, exists := cp.drivers[oldBoltAddress]; exists {
 			driver.Close(context.Background())
 			delete(cp.drivers, oldBoltAddress)
-			logger.Debug("invalidated connection for pod %s: IP changed from %s to %s", podName, existingIP, newIP)
+			logger.Debug("invalidated connection for pod", "pod", podName, "old_ip", existingIP, "new_ip", newIP)
 		}
 	}
 

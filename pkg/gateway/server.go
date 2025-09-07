@@ -11,7 +11,11 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	
+	"memgraph-controller/pkg/logging"
 )
+
+var logger = logging.GetLogger().WithFields(map[string]any{"component": "gateway"})
 
 // MemgraphNode represents a Memgraph node with pod information
 type MemgraphNode struct {
@@ -140,10 +144,7 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to listen with TLS on %s: %w", s.config.BindAddress, err)
 		}
 
-		logger.Info("Gateway server listening with TLS", map[string]interface{}{
-			"address":   s.config.BindAddress,
-			"cert_path": s.config.TLSCertPath,
-		})
+		logger.Info("Gateway server listening with TLS", "address", s.config.BindAddress, "cert_path", s.config.TLSCertPath)
 	} else {
 		listener, err = net.Listen("tcp", s.config.BindAddress)
 		if err != nil {
@@ -151,10 +152,7 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to listen on %s: %w", s.config.BindAddress, err)
 		}
 
-		logger.Info("Gateway server listening", map[string]interface{}{
-			"address": s.config.BindAddress,
-			"tls":     false,
-		})
+		logger.Info("Gateway server listening", "address", s.config.BindAddress, "tls", false)
 	}
 
 	s.listener = listener
@@ -208,10 +206,7 @@ func (s *Server) acceptConnections() {
 		// Check rate limiting
 		if !s.rateLimiter.Allow(clientIP) {
 			atomic.AddInt64(&s.rateLimitRejections, 1)
-			logger.Warn("Connection rate limited", map[string]interface{}{
-				"client_ip":   clientIP,
-				"client_addr": conn.RemoteAddr().String(),
-			})
+			logger.Warn("Connection rate limited", "client_ip", clientIP, "client_addr", conn.RemoteAddr().String())
 			conn.Close()
 			continue
 		}
@@ -220,10 +215,7 @@ func (s *Server) acceptConnections() {
 		if !s.connections.CanAccept() {
 			atomic.AddInt64(&s.rejectedConnections, 1)
 			s.rateLimiter.Release(clientIP) // Release rate limit token
-			logger.Warn("Connection rejected - max connections reached", map[string]interface{}{
-				"client_addr":     conn.RemoteAddr().String(),
-				"max_connections": s.config.MaxConnections,
-			})
+			logger.Warn("Connection rejected - max connections reached", "client_addr", conn.RemoteAddr().String(), "max_connections", s.config.MaxConnections)
 			conn.Close()
 			continue
 		}
@@ -268,11 +260,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	// Get current main node with retries for edge cases
 	mainNode, err := s.getMainNodeWithRetry(3)
 	if err != nil {
-		logger.Error("Failed to get main node", map[string]interface{}{
-			"client_addr": clientAddr,
-			"error":       err.Error(),
-			"retries":     3,
-		})
+		logger.Error("Failed to get main node", "client_addr", clientAddr, "error", err.Error(), "retries", 3)
 		atomic.AddInt64(&s.rejectedConnections, 1)
 		return
 	}
@@ -288,12 +276,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	mainEndpoint := mainNode.BoltAddress
 	backendConn, err := net.DialTimeout("tcp", mainEndpoint, s.config.ConnectionTimeout)
 	if err != nil {
-		logger.Error("Failed to connect to main", map[string]interface{}{
-			"client_addr":   clientAddr,
-			"main_endpoint": mainEndpoint,
-			"error":         err.Error(),
-			"timeout":       s.config.ConnectionTimeout,
-		})
+		logger.Error("Failed to connect to main", "client_addr", clientAddr, "main_endpoint", mainEndpoint, "error", err.Error(), "timeout", s.config.ConnectionTimeout)
 		atomic.AddInt64(&s.errors, 1)
 		session.AddConnectionError()
 
@@ -308,11 +291,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	defer backendConn.Close()
 
 	session.SetBackendConnection(backendConn)
-	logger.Info("Connection established to main", map[string]interface{}{
-		"client_addr":   clientAddr,
-		"main_endpoint": mainEndpoint,
-		"session_id":    session.ID,
-	})
+	logger.Info("Connection established to main", "client_addr", clientAddr, "main_endpoint", mainEndpoint, "session_id", session.ID)
 
 	// Start bidirectional proxy
 	s.proxyConnections(clientConn, backendConn, session)
@@ -492,7 +471,7 @@ func (s *Server) periodicCleanup() {
 			totalSent, totalReceived := s.connections.GetTotalBytes()
 
 			if activeCount > 0 {
-				logger.Info("connections", activeCount, "bytes_sent", totalSent, "bytes_received", totalReceived)
+				logger.Info("connections", "active_count", activeCount, "bytes_sent", totalSent, "bytes_received", totalReceived)
 			}
 		}
 	}

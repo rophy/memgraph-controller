@@ -72,6 +72,11 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 }
 
 func (c *MemgraphController) performReconciliationActions(ctx context.Context) error {
+	start := time.Now()
+	defer func() {
+		logger.Info("performReconciliationActions completed", "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
+	}()
+	
 	// Ensure only one reconciliation runs at a time
 	c.reconcileMu.Lock()
 	defer c.reconcileMu.Unlock()

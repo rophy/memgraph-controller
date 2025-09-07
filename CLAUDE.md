@@ -87,10 +87,10 @@ kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --outp
 
 # DESIGN COMPLIANCE FRAMEWORK
 
-> **CRITICAL**: All code MUST implement specific parts of [DESIGN.md](./DESIGN.md)  
-> **CRITICAL**: All code MUST NOT contradict any part of [DESIGN.md](./DESIGN.md)  
+> **CRITICAL**: All code MUST implement specific parts of [design/MEMGRAPH_HA.md](./design/MEMGRAPH_HA.md)  
+> **CRITICAL**: All code MUST NOT contradict any part of [design/MEMGRAPH_HA.md](./design/MEMGRAPH_HA.md)  
 > **CRITICAL**: Before making code changes, identify which design section is being implemented  
-> **CRITICAL**: All code changes MUST comply with [DESIGN.md](./DESIGN.md)
+> **CRITICAL**: All code changes MUST comply with [design/MEMGRAPH_HA.md](./design/MEMGRAPH_HA.md)
 
 ## Mandatory Design Compliance Process
 
@@ -98,31 +98,31 @@ kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --outp
 
 **STEP 1: Read Design Section**
 ```bash
-# ALWAYS identify which DESIGN.md section you're implementing
-# Example: "Implementing DESIGN.md section 'Actions for Reconciliation' steps 1-3"
+# ALWAYS identify which design/MEMGRAPH_HA.md section you're implementing
+# Example: "Implementing design/MEMGRAPH_HA.md section 'Actions for Reconciliation' steps 1-3"
 ```
 
 **STEP 2: Quote Exact Requirements** 
 ```
-DESIGN.md says: "[exact quote from design document]"
+design/MEMGRAPH_HA.md says: "[exact quote from design document]"
 My code will implement: "[specific implementation approach]"
 ```
 
 **STEP 3: Check for Contradictions**
-- MUST verify implementation doesn't contradict ANY part of DESIGN.md
+- MUST verify implementation doesn't contradict ANY part of design/MEMGRAPH_HA.md
 - If ANY contradiction found: STOP and request human review
 - NO exceptions - design consistency is mandatory
 
 ### Implementation Rules
 
 #### ✅ ALLOWED Code Patterns
-- Code that directly implements a specific DESIGN.md section
+- Code that directly implements a specific design/MEMGRAPH_HA.md section
 - Code that references which design requirement it fulfills  
 - Simple implementations that follow design steps exactly
 
 #### ❌ FORBIDDEN Code Patterns
 - "Discovery-based" logic not specified in design
-- Complex algorithms not mentioned in DESIGN.md
+- Complex algorithms not mentioned in design/MEMGRAPH_HA.md
 - "Smart" logic that tries to handle edge cases beyond design scope
 - Any code that contradicts or works around design specifications
 
@@ -130,7 +130,7 @@ My code will implement: "[specific implementation approach]"
 
 #### ✅ CORRECT Implementation
 ```go
-// Implements DESIGN.md "Actions for Reconciliation" Step 2
+// Implements design/MEMGRAPH_HA.md "Actions for Reconciliation" Step 2
 func (c *Controller) showReplicas(ctx context.Context, mainPod string) error {
     // Run `SHOW REPLICAS` to main pod to check replication status
     return c.memgraphClient.QueryReplicasWithRetry(ctx, mainPodAddress)
@@ -139,7 +139,7 @@ func (c *Controller) showReplicas(ctx context.Context, mainPod string) error {
 
 #### ❌ INCORRECT Implementation  
 ```go
-// FORBIDDEN: Discovery-based logic not in DESIGN.md
+// FORBIDDEN: Discovery-based logic not in design/MEMGRAPH_HA.md
 func (c *Controller) findCurrentMain(clusterState *ClusterState) string {
     // Try to discover which pod is currently main...
     for podName, podInfo := range clusterState.Pods {
@@ -157,11 +157,11 @@ func (c *Controller) findCurrentMain(clusterState *ClusterState) string {
 1. **IMMEDIATE STOP**: Halt implementation 
 2. **FLAG FOR HUMAN**: Report exact contradiction found
 3. **DESIGN REVIEW**: Work with human to resolve design vs implementation conflict
-4. **UPDATE DESIGN FIRST**: Fix DESIGN.md before continuing with code
+4. **UPDATE DESIGN FIRST**: Fix design/MEMGRAPH_HA.md before continuing with code
 
 ### Design Update Process
 
-1. **Human Approval**: All DESIGN.md changes require human review
+1. **Human Approval**: All design/MEMGRAPH_HA.md changes require human review
 2. **Consistency Check**: Verify change doesn't break other design sections  
 3. **Code Update**: Only implement after design is updated and approved
 
@@ -172,11 +172,11 @@ func (c *Controller) findCurrentMain(clusterState *ClusterState) string {
 1. **Reference Requirement**: Every function/method MUST reference which design section it implements
 2. **No Contradiction**: Code MUST NOT implement logic that contradicts this design
 3. **Complete Coverage**: All design sections marked as "IMPLEMENTATION REQUIREMENT" MUST have corresponding code
-4. **Single Source**: DESIGN.md is the authoritative design source - README.md is user documentation only
+4. **Single Source**: design/MEMGRAPH_HA.md is the authoritative design source - README.md is user documentation only
 
 ### For Modifications
 
-1. **Design First**: Design changes MUST be approved in DESIGN.md before code implementation
+1. **Design First**: Design changes MUST be approved in design/MEMGRAPH_HA.md before code implementation
 2. **Consistency Check**: Any design change MUST be verified against all existing sections for conflicts
 3. **Human Review**: Design contradictions MUST be resolved with human review before proceeding
 
@@ -190,14 +190,14 @@ func (c *Controller) findCurrentMain(clusterState *ClusterState) string {
 
 ### Pre-Commit Checklist
 
-- [ ] Code implements specific DESIGN.md section (documented in code)
-- [ ] No contradictions with ANY part of DESIGN.md
+- [ ] Code implements specific design/MEMGRAPH_HA.md section (documented in code)
+- [ ] No contradictions with ANY part of design/MEMGRAPH_HA.md
 - [ ] Design section quoted in commit message
 - [ ] Implementation approach explained and justified
 
 ### Code Review Focus Areas
 
-1. **Design Mapping**: Which exact DESIGN.md section does this implement?
+1. **Design Mapping**: Which exact design/MEMGRAPH_HA.md section does this implement?
 2. **Contradiction Check**: Does this contradict any design principle?
 3. **Simplicity**: Is this the simplest possible implementation of the design?
 4. **Completeness**: Are ALL design requirements for this section implemented?
@@ -207,12 +207,12 @@ func (c *Controller) findCurrentMain(clusterState *ClusterState) string {
 ### If You Catch Claude Violating Design
 
 **STOP IMMEDIATELY** and say:
-> "DESIGN VIOLATION: This contradicts DESIGN.md section [X]. Please quote the exact design requirement and explain how your code implements it."
+> "DESIGN VIOLATION: This contradicts design/MEMGRAPH_HA.md section [X]. Please quote the exact design requirement and explain how your code implements it."
 
 ### If Design Seems Wrong or Incomplete
 
 **DO NOT work around it in code**. Instead:
-> "DESIGN ISSUE: The design doesn't cover [scenario]. Should we update DESIGN.md to specify the correct behavior?"
+> "DESIGN ISSUE: The design doesn't cover [scenario]. Should we update design/MEMGRAPH_HA.md to specify the correct behavior?"
 
 # Known Issues Documentation
 

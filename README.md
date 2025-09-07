@@ -2,7 +2,7 @@
 
 A Kubernetes controller that manages Memgraph clusters with built-in TCP gateway for transparent failover.
 
-> **📋 Design Reference**: See [DESIGN.md](./DESIGN.md) for detailed architecture and implementation specifications.
+> **📋 Design Reference**: See [design/MEMGRAPH_HA.md](./design/MEMGRAPH_HA.md) for detailed architecture and implementation specifications.
 
 ## Features
 

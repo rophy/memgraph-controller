@@ -11,7 +11,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
-	
+
 	"memgraph-controller/internal/common"
 )
 
@@ -40,24 +40,18 @@ func (node *MemgraphNode) IsReady() bool {
 	return false
 }
 
-// MainNodeProvider is a function that returns the current main node
-type MainNodeProvider func(ctx context.Context) (*MemgraphNode, error)
-
-// BootstrapPhaseProvider is a function that returns true if gateway should reject connections (bootstrap phase)
-type BootstrapPhaseProvider func() bool
-
 // Server represents the gateway server that proxies Bolt protocol connections
 type Server struct {
-	config            *Config
-	listener          net.Listener
-	connections       *ConnectionTracker
-	mainProvider      MainNodeProvider
-	bootstrapProvider BootstrapPhaseProvider
+	config      *Config
+	listener    net.Listener
+	connections *ConnectionTracker
 
 	// Server state
-	isRunning  int32 // atomic boolean
-	shutdownCh chan struct{}
-	wg         sync.WaitGroup
+	isRunning         int32  // atomic boolean
+	upstreamAddress   string // The address of the upstream Memgraph node (e.g. main pod)
+	upstreamAddressMu sync.RWMutex
+	shutdownCh        chan struct{}
+	wg                sync.WaitGroup
 
 	// Metrics
 	totalConnections    int64
@@ -77,7 +71,7 @@ type Server struct {
 }
 
 // NewServer creates a new gateway server with the given configuration
-func NewServer(config *Config, mainProvider MainNodeProvider, bootstrapProvider BootstrapPhaseProvider) *Server {
+func NewServer(config *Config) *Server {
 	// Create rate limiter
 	rateLimiter := NewRateLimiter(
 		config.RateLimitEnabled,
@@ -87,28 +81,13 @@ func NewServer(config *Config, mainProvider MainNodeProvider, bootstrapProvider 
 	)
 
 	return &Server{
-		config:            config,
-		connections:       NewConnectionTracker(config.MaxConnections),
-		mainProvider:      mainProvider,
-		bootstrapProvider: bootstrapProvider,
-		shutdownCh:        make(chan struct{}),
-		healthStatus:      "unknown",
-		rateLimiter:       rateLimiter,
+		config:          config,
+		connections:     NewConnectionTracker(config.MaxConnections),
+		upstreamAddress: "",
+		shutdownCh:      make(chan struct{}),
+		healthStatus:    "unknown",
+		rateLimiter:     rateLimiter,
 	}
-}
-
-// terminateAllConnections removed - unused method
-
-// GetCurrentMain returns the current main endpoint (dynamically retrieved)
-func (s *Server) GetCurrentMain() string {
-	ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeout)
-	defer cancel()
-
-	mainNode, err := s.mainProvider(ctx)
-	if err != nil || mainNode == nil {
-		return ""
-	}
-	return mainNode.BoltAddress
 }
 
 // Start starts the gateway server and begins accepting connections
@@ -161,9 +140,29 @@ func (s *Server) Start(ctx context.Context) error {
 	s.wg.Add(3)
 	go s.acceptConnections()
 	go s.periodicCleanup()
-	go s.periodicHealthCheck()
 
 	return nil
+}
+
+// GetUpstreamAddress returns the upstream address
+func (s *Server) GetUpstreamAddress() string {
+	s.upstreamAddressMu.RLock()
+	defer s.upstreamAddressMu.RUnlock()
+	return s.upstreamAddress
+}
+
+func (s *Server) SetUpstreamAddress(address string) {
+	oldAddress := s.GetUpstreamAddress()
+	if oldAddress == address {
+		return
+	}
+
+	s.upstreamAddressMu.Lock()
+	defer s.upstreamAddressMu.Unlock()
+	logger.Info("Setting upstream address", "old_address", oldAddress, "new_address", address)
+	// Updating upstream address implies disconnecting all existing connections.
+	s.DisconnectAll()
+	s.upstreamAddress = address
 }
 
 // acceptConnections runs the main accept loop for incoming connections
@@ -202,6 +201,14 @@ func (s *Server) acceptConnections() {
 		}
 
 		clientIP := extractClientIP(conn)
+
+		// Reject connection if upstream address is not set
+		if s.GetUpstreamAddress() == "" {
+			atomic.AddInt64(&s.rejectedConnections, 1)
+			logger.Warn("Connection rejected - upstream address not set", "client_ip", clientIP, "client_addr", conn.RemoteAddr().String())
+			conn.Close()
+			continue
+		}
 
 		// Check rate limiting
 		if !s.rateLimiter.Allow(clientIP) {
@@ -242,14 +249,6 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	atomic.AddInt64(&s.activeConnections, 1)
 	defer atomic.AddInt64(&s.activeConnections, -1)
 
-	// Check bootstrap phase - reject connections during bootstrap per DESIGN.md line 58
-	if s.bootstrapProvider != nil && s.bootstrapProvider() {
-		logger.Debug("rejected-bootstrap", "client_ip", clientIP, "reason", "bootstrap-phase")
-		atomic.AddInt64(&s.rejectedConnections, 1)
-		// Connection will be closed by defer above - implements DESIGN.md bootstrap rejection
-		return
-	}
-
 	logger.Debug("established", "client_ip", clientIP)
 
 	// Track the connection
@@ -257,30 +256,19 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	session.SetMaxBytesLimit(s.config.MaxBytesPerConnection)
 	defer s.connections.Untrack(session.ID)
 
-	// Get current main node with retries for edge cases
-	mainNode, err := s.getMainNodeWithRetry(3)
+	upstreamAddress := s.GetUpstreamAddress()
+	backendConn, err := net.DialTimeout("tcp", upstreamAddress, s.config.ConnectionTimeout)
 	if err != nil {
-		logger.Error("Failed to get main node", "client_addr", clientAddr, "error", err.Error(), "retries", 3)
-		atomic.AddInt64(&s.rejectedConnections, 1)
-		return
-	}
+		logger.Error("Failed to connect to upstream",
+			"client_addr", clientAddr,
+			"upstream_address", upstreamAddress,
+			"error", err.Error(),
+			"timeout", s.config.ConnectionTimeout)
 
-	// Check if main pod is ready per DESIGN.md requirement
-	if !mainNode.IsReady() {
-		logger.Debug("rejected-main-not-ready", "client_ip", clientIP, "main_pod", mainNode.Name, "reason", "main-pod-not-ready")
-		atomic.AddInt64(&s.rejectedConnections, 1)
-		return
-	}
-
-	// Connect to main with timeout
-	mainEndpoint := mainNode.BoltAddress
-	backendConn, err := net.DialTimeout("tcp", mainEndpoint, s.config.ConnectionTimeout)
-	if err != nil {
-		logger.Error("Failed to connect to main", "client_addr", clientAddr, "main_endpoint", mainEndpoint, "error", err.Error(), "timeout", s.config.ConnectionTimeout)
 		atomic.AddInt64(&s.errors, 1)
 		session.AddConnectionError()
 
-		// If connection to main fails, update health status
+		// If connection to upstream fails, update health status
 		s.healthMu.Lock()
 		s.healthStatus = fmt.Sprintf("main-connection-failed: %v", err)
 		s.lastHealthCheck = time.Now()
@@ -291,7 +279,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	defer backendConn.Close()
 
 	session.SetBackendConnection(backendConn)
-	logger.Info("Connection established to main", "client_addr", clientAddr, "main_endpoint", mainEndpoint, "session_id", session.ID)
+	logger.Info("Connection established to main", "client_addr", clientAddr, "session_id", session.ID)
 
 	// Start bidirectional proxy
 	s.proxyConnections(clientConn, backendConn, session)
@@ -365,83 +353,6 @@ func (s *Server) copyWithBuffer(dst, src net.Conn) (int64, error) {
 	return written, err
 }
 
-// CheckHealth performs a basic health check of the gateway and main connectivity
-func (s *Server) CheckHealth(ctx context.Context) string {
-	s.healthMu.Lock()
-	defer s.healthMu.Unlock()
-
-	s.lastHealthCheck = time.Now()
-
-	// Check if server is running
-	if atomic.LoadInt32(&s.isRunning) == 0 {
-		s.healthStatus = "stopped"
-		return s.healthStatus
-	}
-
-	// Check if main provider is working
-	if s.mainProvider == nil {
-		s.healthStatus = "no-main-provider"
-		return s.healthStatus
-	}
-
-	// Try to get current main node
-	mainNode, err := s.mainProvider(ctx)
-	if err != nil {
-		s.healthStatus = fmt.Sprintf("main-unavailable: %v", err)
-		return s.healthStatus
-	}
-
-	if mainNode == nil {
-		s.healthStatus = "main-node-null"
-		return s.healthStatus
-	}
-
-	// Check if main pod is ready
-	if !mainNode.IsReady() {
-		s.healthStatus = fmt.Sprintf("main-pod-not-ready: %s", mainNode.Name)
-		return s.healthStatus
-	}
-
-	// Quick connectivity test to main
-	endpoint := mainNode.BoltAddress
-	conn, err := net.DialTimeout("tcp", endpoint, s.config.ConnectionTimeout)
-	if err != nil {
-		s.healthStatus = fmt.Sprintf("main-unreachable: %s (%v)", endpoint, err)
-		return s.healthStatus
-	}
-	conn.Close()
-
-	// Check error rate (if > 50% of recent connections are errors, mark as unhealthy)
-	totalConns := atomic.LoadInt64(&s.totalConnections)
-	errors := atomic.LoadInt64(&s.errors)
-	if totalConns > 10 && float64(errors)/float64(totalConns) > 0.5 {
-		s.healthStatus = "high-error-rate"
-		return s.healthStatus
-	}
-
-	s.healthStatus = "healthy"
-	return s.healthStatus
-}
-
-// getMainNodeWithRetry attempts to get main node with retries for edge cases
-func (s *Server) getMainNodeWithRetry(maxRetries int) (*MemgraphNode, error) {
-	for attempt := 1; attempt <= maxRetries; attempt++ {
-		ctx, cancel := context.WithTimeout(context.Background(), s.config.Timeout)
-
-		mainNode, err := s.mainProvider(ctx)
-		cancel()
-
-		if err == nil && mainNode != nil {
-			return mainNode, nil
-		}
-
-		logger.Warn("main node lookup failed", "attempt", attempt, "max_retries", maxRetries, "error", err)
-		time.Sleep(time.Duration(attempt) * time.Second) // Exponential backoff
-	}
-
-	return nil, fmt.Errorf("failed to get main node after %d attempts", maxRetries)
-}
-
 // periodicCleanup runs periodic cleanup tasks for connections
 func (s *Server) periodicCleanup() {
 	defer s.wg.Done()
@@ -472,34 +383,6 @@ func (s *Server) periodicCleanup() {
 
 			if activeCount > 0 {
 				logger.Info("connections", "active_count", activeCount, "bytes_sent", totalSent, "bytes_received", totalReceived)
-			}
-		}
-	}
-}
-
-// periodicHealthCheck runs periodic health checks
-func (s *Server) periodicHealthCheck() {
-	defer s.wg.Done()
-
-	ticker := time.NewTicker(s.config.HealthCheckInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-s.shutdownCh:
-			return
-		case <-ticker.C:
-			ctx, cancel := context.WithTimeout(context.Background(), s.config.ConnectionTimeout)
-			status := s.CheckHealth(ctx)
-			cancel()
-
-			// Log health status changes
-			s.healthMu.RLock()
-			lastStatus := s.healthStatus
-			s.healthMu.RUnlock()
-
-			if status != lastStatus {
-				logger.Info("health status changed", "from", lastStatus, "to", status)
 			}
 		}
 	}

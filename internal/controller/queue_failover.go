@@ -196,6 +196,9 @@ func (c *MemgraphController) executeFailover(ctx context.Context) error {
 
 	// Target sync replica is healthy, proceed with failover
 
+	// Disconnect all client connections and stop accepting new ones
+	c.gatewayServer.SetUpstreamAddress("")
+
 	if role == "main" {
 		logger.Warn("failover: sync replica pod is already main, skipping promotion", "pod_name", targetSyncReplicaName)
 	} else {
@@ -211,6 +214,9 @@ func (c *MemgraphController) executeFailover(ctx context.Context) error {
 		return fmt.Errorf("failed to update target main index: %w", err)
 	}
 	logger.Info("failover check: updated target main index", "target_main_index", targetSyncReplicaIndex)
+
+	// Set the new upstream address
+	c.gatewayServer.SetUpstreamAddress(syncReplicaNode.GetBoltAddress())
 
 	return nil
 }

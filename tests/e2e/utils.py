@@ -416,6 +416,246 @@ def get_pod_replication_role(pod: str) -> str:
 
 
 
+def get_test_client_logs(tail_lines: int = 50) -> str:
+    """Get recent logs from test client pod"""
+    try:
+        pod = get_test_client_pod()
+        cmd = ["kubectl", "logs", pod, "-n", MEMGRAPH_NS, f"--tail={tail_lines}"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise KubectlError(f"Failed to get logs: {result.stderr}")
+        
+        return result.stdout
+    except Exception as e:
+        raise E2ETestError(f"Failed to get test client logs: {e}")
+
+
+def get_test_client_logs_since(since_time: str) -> str:
+    """
+    Get test client logs since a specific time
+    
+    Args:
+        since_time: Time in RFC3339 format (e.g., "2025-09-07T11:07:00Z")
+        
+    Returns:
+        Log output as string
+    """
+    try:
+        pod = get_test_client_pod()
+        cmd = ["kubectl", "logs", pod, "-n", MEMGRAPH_NS, f"--since-time={since_time}"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise KubectlError(f"Failed to get logs since {since_time}: {result.stderr}")
+        
+        return result.stdout
+    except Exception as e:
+        raise E2ETestError(f"Failed to get test client logs since {since_time}: {e}")
+
+
+def count_log_patterns(logs: str, success_pattern: str = "✓ Success", 
+                      failure_pattern: str = "✗ Failed") -> Dict[str, int]:
+    """Count success and failure patterns in logs"""
+    success_count = logs.count(success_pattern)
+    failure_count = logs.count(failure_pattern)
+    
+    return {
+        'success': success_count,
+        'failure': failure_count
+    }
+
+
+def find_main_pod_by_querying() -> str:
+    """Find main pod by querying each pod directly for replication role"""
+    try:
+        # Get all memgraph pods
+        cmd = ["kubectl", "get", "pods", "-n", MEMGRAPH_NS, "-l", "app.kubernetes.io/name=memgraph", "-o", "json"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise KubectlError(f"kubectl get failed: {result.stderr}")
+        
+        pods_data = json.loads(result.stdout)
+        
+        for item in pods_data.get('items', []):
+            pod_name = item['metadata']['name']
+            phase = item.get('status', {}).get('phase', 'Unknown')
+            
+            if phase == 'Running':
+                try:
+                    # Query this pod directly for replication role
+                    role_output = memgraph_query_direct(pod_name, "SHOW REPLICATION ROLE;")
+                    lines = role_output.strip().split('\n')
+                    if len(lines) >= 2 and '"main"' in lines[1]:
+                        return pod_name
+                except MemgraphQueryError:
+                    # Pod might not be ready for queries yet
+                    continue
+        
+        raise E2ETestError("No main pod found")
+        
+    except (json.JSONDecodeError, subprocess.SubprocessError) as e:
+        raise E2ETestError(f"Failed to find main pod: {e}")
+
+
+def delete_pod_forcefully(pod_name: str) -> None:
+    """Delete a pod forcefully with no grace period"""
+    try:
+        cmd = ["kubectl", "delete", "pod", pod_name, "-n", MEMGRAPH_NS, "--force", "--grace-period=0"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise KubectlError(f"Failed to delete pod: {result.stderr}")
+            
+        log_info(f"💥 Deleted pod {pod_name}")
+        
+    except subprocess.SubprocessError as e:
+        raise E2ETestError(f"Failed to delete pod {pod_name}: {e}")
+
+
+def wait_for_failover_recovery(timeout: int = 30) -> bool:
+    """
+    Wait for failover recovery by monitoring test client logs
+    
+    Returns True if recovery detected, False if timeout
+    """
+    start_time = time.time()
+    log_info("⏳ Waiting for failover recovery...")
+    
+    # Get baseline logs before waiting
+    baseline_logs = get_test_client_logs(tail_lines=20)
+    baseline_patterns = count_log_patterns(baseline_logs)
+    
+    while time.time() - start_time < timeout:
+        try:
+            # Wait a bit for new activity
+            time.sleep(3)
+            
+            # Get recent logs 
+            current_logs = get_test_client_logs(tail_lines=10)
+            
+            # Look for success pattern in recent logs
+            if "✓ Success" in current_logs:
+                elapsed = int(time.time() - start_time)
+                log_info(f"✅ Recovery detected after {elapsed}s")
+                return True
+                
+            elapsed = int(time.time() - start_time)
+            log_info(f"⏳ Still waiting for recovery... ({elapsed}s/{timeout}s)")
+            
+        except E2ETestError:
+            # Continue waiting even if log retrieval fails
+            pass
+    
+    log_info(f"❌ No recovery detected within {timeout}s")
+    return False
+
+
+def get_statefulset_status(name: str = "memgraph-ha") -> Dict[str, Any]:
+    """Get StatefulSet status information"""
+    try:
+        cmd = ["kubectl", "get", "statefulset", name, "-n", MEMGRAPH_NS, "-o", "json"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise KubectlError(f"Failed to get StatefulSet: {result.stderr}")
+        
+        sts_data = json.loads(result.stdout)
+        status = sts_data.get('status', {})
+        
+        return {
+            'replicas': status.get('replicas', 0),
+            'ready_replicas': status.get('readyReplicas', 0),
+            'updated_replicas': status.get('updatedReplicas', 0),
+            'current_replicas': status.get('currentReplicas', 0),
+            'generation': sts_data.get('metadata', {}).get('generation', 0),
+            'observed_generation': status.get('observedGeneration', 0)
+        }
+        
+    except (json.JSONDecodeError, subprocess.SubprocessError) as e:
+        raise E2ETestError(f"Failed to get StatefulSet status: {e}")
+
+
+def trigger_rolling_restart(name: str = "memgraph-ha") -> int:
+    """
+    Trigger rolling restart of StatefulSet
+    
+    Returns the new generation number
+    """
+    try:
+        # Get current generation
+        current_status = get_statefulset_status(name)
+        initial_generation = current_status['generation']
+        
+        # Trigger rolling restart
+        cmd = ["kubectl", "rollout", "restart", f"statefulset/{name}", "-n", MEMGRAPH_NS]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise KubectlError(f"Failed to trigger rolling restart: {result.stderr}")
+        
+        log_info(f"🔄 Triggered rolling restart for {name}")
+        
+        # Wait for generation to change
+        max_wait = 30
+        elapsed = 0
+        while elapsed < max_wait:
+            time.sleep(2)
+            elapsed += 2
+            
+            new_status = get_statefulset_status(name)
+            new_generation = new_status['generation']
+            
+            if new_generation > initial_generation:
+                log_info(f"✅ Rolling restart started (generation: {initial_generation} → {new_generation})")
+                return new_generation
+        
+        raise E2ETestError(f"Rolling restart did not start within {max_wait}s")
+        
+    except subprocess.SubprocessError as e:
+        raise E2ETestError(f"Failed to trigger rolling restart: {e}")
+
+
+def wait_for_rolling_restart_complete(name: str = "memgraph-ha", timeout: int = 180) -> bool:
+    """
+    Wait for rolling restart to complete
+    
+    Args:
+        name: StatefulSet name
+        timeout: Maximum wait time in seconds
+        
+    Returns:
+        True if completed successfully
+    """
+    start_time = time.time()
+    log_info(f"⏳ Waiting for rolling restart of {name} to complete...")
+    
+    while time.time() - start_time < timeout:
+        try:
+            status = get_statefulset_status(name)
+            
+            replicas = status['replicas']
+            ready_replicas = status['ready_replicas']
+            updated_replicas = status['updated_replicas']
+            
+            if ready_replicas == replicas and updated_replicas == replicas:
+                elapsed = int(time.time() - start_time)
+                log_info(f"✅ Rolling restart completed after {elapsed}s: all {replicas} replicas ready and updated")
+                return True
+            
+            elapsed = int(time.time() - start_time)
+            log_info(f"⏳ Rolling restart in progress: ready={ready_replicas}/{replicas}, updated={updated_replicas}/{replicas} ({elapsed}s/{timeout}s)")
+            
+        except E2ETestError:
+            # Continue waiting even if status check fails
+            pass
+        
+        time.sleep(5)
+    
+    raise E2ETestError(f"Rolling restart did not complete within {timeout}s")
+
+
 def check_prerequisites() -> None:
     """Check that required tools are available"""
     required_tools = ["kubectl", "jq"]

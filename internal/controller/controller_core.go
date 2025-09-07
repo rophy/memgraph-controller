@@ -80,35 +80,9 @@ func NewMemgraphController(clientset kubernetes.Interface, config *common.Config
 
 	// Initialize gateway server (always enabled)
 	gatewayConfig := gateway.LoadGatewayConfig()
-	gatewayConfig.Enabled = true
 	gatewayConfig.BindAddress = config.GatewayBindAddress
 
-	// Create bootstrap phase provider
-	bootstrapProvider := func() bool {
-		return !controller.isLeader || controller.targetMainIndex == -1
-	}
-
-	// Create main node provider that converts controller.MemgraphNode to gateway.MemgraphNode
-	mainNodeProvider := func(ctx context.Context) (*gateway.MemgraphNode, error) {
-		controllerNode, err := controller.GetCurrentMainNode(ctx)
-		if err != nil {
-			return nil, err
-		}
-		if controllerNode == nil {
-			return nil, fmt.Errorf("no main node available")
-		}
-		pod, err := controller.getPodFromCache(controllerNode.GetName())
-		if err != nil {
-			return nil, fmt.Errorf("failed to get pod %s from cache: %w", controllerNode.GetName(), err)
-		}
-		return &gateway.MemgraphNode{
-			Name:        controllerNode.GetName(),
-			BoltAddress: controllerNode.GetBoltAddress(),
-			Pod:         pod,
-		}, nil
-	}
-
-	controller.gatewayServer = gateway.NewServer(gatewayConfig, mainNodeProvider, bootstrapProvider)
+	controller.gatewayServer = gateway.NewServer(gatewayConfig)
 
 	// Initialize leader election
 	controller.leaderElection = NewLeaderElection(clientset, config)

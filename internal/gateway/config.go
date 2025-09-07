@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"time"
 )
+
 // Config holds the gateway configuration
 type Config struct {
-	Enabled        bool
 	BindAddress    string
 	MaxConnections int
 	Timeout        time.Duration
@@ -36,7 +36,6 @@ type Config struct {
 
 // LoadGatewayConfig loads gateway configuration from environment variables
 func LoadGatewayConfig() *Config {
-	enabled := getEnvOrDefaultBool("GATEWAY_ENABLED", false)
 	maxConnections := getEnvOrDefaultInt("GATEWAY_MAX_CONNECTIONS", 1000)
 
 	timeout, err := time.ParseDuration(getEnvOrDefault("GATEWAY_TIMEOUT", "30s"))
@@ -81,7 +80,6 @@ func LoadGatewayConfig() *Config {
 	traceEnabled := getEnvOrDefaultBool("GATEWAY_TRACE_ENABLED", false)
 
 	return &Config{
-		Enabled:               enabled,
 		BindAddress:           getEnvOrDefault("GATEWAY_BIND_ADDRESS", "0.0.0.0:7687"),
 		MaxConnections:        maxConnections,
 		Timeout:               timeout,
@@ -105,9 +103,6 @@ func LoadGatewayConfig() *Config {
 
 // Validate checks if the gateway configuration is valid
 func (c *Config) Validate() error {
-	if !c.Enabled {
-		return nil // Skip validation if disabled
-	}
 
 	// Validate bind address
 	host, port, err := net.SplitHostPort(c.BindAddress)

@@ -65,6 +65,13 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				logger.Info("✅ Cluster discovered with target main index", "index", targetMainIndex)
 			}
 
+			// Enable gateway connections.
+			if targetMainNode, err := c.getTargetMainNode(ctx); err == nil {
+				c.gatewayServer.SetUpstreamAddress(targetMainNode.GetBoltAddress())
+			} else {
+				logger.Error("Failed to get target main node", "error", err)
+			}
+
 			if err := c.performReconciliationActions(ctx); err != nil {
 				logger.Error("Error during reconciliation", "error", err)
 				// Retry on next tick
@@ -78,7 +85,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	defer func() {
 		logger.Info("performReconciliationActions completed", "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
 	}()
-	
+
 	// Ensure only one reconciliation runs at a time
 	c.reconcileMu.Lock()
 	defer c.reconcileMu.Unlock()
@@ -114,6 +121,10 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		logger.Info("Failed to get target main node", "error", err)
 		return nil // Retry on next tick
 	}
+
+	// SetUpstreamAddress() reconiles on changes, just pass latest address.
+	mainBoltAddress := targetMainNode.GetBoltAddress()
+	c.gatewayServer.SetUpstreamAddress(mainBoltAddress)
 
 	// Run SHOW REPLICA to TargetMainPod
 	replicas, err := targetMainNode.GetReplicas(ctx)
@@ -296,7 +307,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*httpapi.Sta
 		Pods:         pods,
 	}
 
-	logger.Info("Generated cluster status", 
+	logger.Info("Generated cluster status",
 		"pod_count", len(pods), "current_main", currentMain, "healthy_pods", healthyCount, "total_pods", statusResponse.TotalPods)
 
 	return response, nil

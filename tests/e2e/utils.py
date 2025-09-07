@@ -10,6 +10,8 @@ import json
 import time
 import sys
 import re
+from io import StringIO
+import logfmt
 from typing import Tuple, Dict, Any, Optional, List
 
 
@@ -17,6 +19,27 @@ from typing import Tuple, Dict, Any, Optional, List
 MEMGRAPH_NS = "memgraph"
 TEST_CLIENT_LABEL = "app=neo4j-client"
 EXPECTED_POD_COUNT = 3
+
+
+def parse_logfmt(log_line: str) -> Dict[str, Any]:
+    """
+    Parse logfmt formatted log line into a dictionary using the logfmt library.
+    
+    Example input: ts=2025-09-07T12:58:34.055123+00:00 at=INFO msg="Success" total=1
+    Returns: {"ts": "2025-09-07T12:58:34.055123+00:00", "at": "INFO", "msg": "Success", "total": 1}
+    """
+    try:
+        # Use logfmt library to parse the line
+        input_stream = StringIO(log_line.strip())
+        parsed_lines = list(logfmt.parse(input_stream))
+        if parsed_lines:
+            return parsed_lines[0]
+        else:
+            return {"msg": log_line.strip()}
+    except Exception as e:
+        print(f"Error parsing logfmt line: {log_line}, error: {e}", file=sys.stderr)
+        # Fallback: return basic parsing
+        return {"msg": log_line.strip()}
 
 
 class E2ETestError(Exception):
@@ -123,7 +146,7 @@ def memgraph_query_via_client(query: str) -> Dict[str, Any]:
         JSON response from Memgraph
     """
     pod = get_test_client_pod()
-    stdout, stderr, code = kubectl_exec(pod, MEMGRAPH_NS, ["node", "index.js", query])
+    stdout, stderr, code = kubectl_exec(pod, MEMGRAPH_NS, ["python", "client.py", query])
     
     if code != 0:
         raise MemgraphQueryError(f"Query via client failed: {stderr}")

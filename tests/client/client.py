@@ -18,10 +18,18 @@ from neo4j import GraphDatabase, Driver
 import logging
 from logfmter import Logfmter
 
-# Initialize logfmt logger
+class LogFormatter(Logfmter):
+    def format(self, record):
+        record.ts = datetime.now().astimezone().isoformat()
+        return super().format(record)
+
+# Initialize logfmt logger with ts first, then level
 logger = logging.getLogger('neo4j-client')
 handler = logging.StreamHandler()
-formatter = Logfmter()
+formatter = LogFormatter(
+    keys=["ts", "at"],
+    mapping={"ts": "ts", "at": "levelname"}
+)
 handler.setFormatter(formatter)
 logger.addHandler(handler)
 logger.setLevel(logging.INFO)
@@ -89,9 +97,10 @@ class Neo4jClient:
         self.driver = GraphDatabase.driver(
             uri, 
             auth=auth,
-            max_connection_pool_size=10,
-            connection_acquisition_timeout=30,
-            max_transaction_retry_time=30
+            max_connection_pool_size=1,
+            connection_acquisition_timeout=3,
+            max_transaction_retry_time=2,
+            connection_timeout=3
         )
         
         self.metrics = MetricsTracker()
@@ -228,8 +237,9 @@ def run_one_shot(query: str):
         uri,
         auth=auth,
         max_connection_pool_size=1,
-        connection_acquisition_timeout=10,
-        max_transaction_retry_time=10
+        connection_acquisition_timeout=3,
+        max_transaction_retry_time=2,
+        connection_timeout=3
     )
     
     try:

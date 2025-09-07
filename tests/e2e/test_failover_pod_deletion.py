@@ -15,35 +15,36 @@ from utils import (
     get_test_client_logs_since,
     find_main_pod_by_querying,
     delete_pod_forcefully,
-    log_info
+    log_info,
+    parse_logfmt
 )
 
 
 def parse_log_entry(log_line: str) -> tuple:
     """
-    Parse JSON log entry from test-client
-    Expected format: {"level":30,"time":"2025-09-07T11:03:08.338Z","msg":"✓ Success | Total: 2898..."}
+    Parse logfmt log entry from test-client
+    Expected format: ts=2025-09-07T12:58:34.055123+00:00 at=INFO msg="Success" total=1
     
     Returns:
         (timestamp, message, is_success, is_failure)
     """
     try:
-        log_data = json.loads(log_line)
-        timestamp_str = log_data.get('time', '')
+        log_data = parse_logfmt(log_line)
+        timestamp_str = log_data.get('ts', '')
         message = log_data.get('msg', '')
         
         # Parse timestamp and convert to naive datetime for comparison
-        timestamp = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).replace(tzinfo=None)
+        timestamp = datetime.fromisoformat(timestamp_str).replace(tzinfo=None)
         
-        # Determine if success or failure
-        is_success = '✓ Success' in message
-        is_failure = ('✗ Failed' in message or 
-                      ('error' in message.lower() and log_data.get('level', 30) >= 50))
+        # Determine if success or failure based on message content
+        is_success = 'Success' in message
+        is_failure = ('Failed' in message or 
+                      log_data.get('at', '').upper() == 'ERROR')
         
         return timestamp, message, is_success, is_failure
         
-    except (json.JSONDecodeError, ValueError, KeyError):
-        # Fallback for non-JSON logs or parsing errors
+    except (ValueError, KeyError, TypeError):
+        # Fallback for logfmt parsing errors
         return datetime.fromtimestamp(0), log_line, False, False
 
 
@@ -200,9 +201,9 @@ class TestFailoverPodDeletion:
         print(f"  Recent log timestamps:")
         for i, line in enumerate(lines[-3:]):
             try:
-                log_data = json.loads(line)
-                timestamp_str = log_data.get('time', '')
-                timestamp_naive = datetime.fromisoformat(timestamp_str.replace('Z', '+00:00')).replace(tzinfo=None)
+                log_data = parse_logfmt(line)
+                timestamp_str = log_data.get('ts', '')
+                timestamp_naive = datetime.fromisoformat(timestamp_str).replace(tzinfo=None)
                 print(f"    Log {i+1}: {timestamp_naive}")
             except:
                 pass

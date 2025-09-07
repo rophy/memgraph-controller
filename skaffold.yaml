@@ -14,7 +14,7 @@ build:
   - image: neo4j-client
     context: tests/client
     docker:
-      dockerfile: Dockerfile.python
+      dockerfile: Dockerfile
 
 # Default deploy configuration (memgraph + controller + test client)
 deploy:

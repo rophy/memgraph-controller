@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"os"
 	"time"
 
 	"memgraph-controller/internal/common"
@@ -40,6 +41,11 @@ func NewHTTPServer(controller ControllerInterface, config *common.Config) *HTTPS
 	mux.HandleFunc("/livez", httpServer.handleLiveness)
 	mux.HandleFunc("/readyz", httpServer.handleReadiness)
 	mux.HandleFunc("/", httpServer.handleRoot)
+
+	// Admin endpoints (only enabled if ENABLE_ADMIN_API=true)
+	if os.Getenv("ENABLE_ADMIN_API") == "true" {
+		mux.HandleFunc("/api/v1/admin/reset-connections", httpServer.handleResetConnections)
+	}
 
 	return httpServer
 }
@@ -258,4 +264,47 @@ func (h *HTTPServer) handleReadiness(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	w.Write([]byte("OK"))
+}
+
+// handleResetConnections handles POST /api/v1/admin/reset-connections requests
+func (h *HTTPServer) handleResetConnections(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	logger := common.GetLogger()
+	logger.Info("Admin API: Resetting all Memgraph connections")
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Reset connections
+	closedCount, err := h.controller.ResetAllConnections(ctx)
+	if err != nil {
+		logger.Info("Failed to reset connections", "error", err)
+		http.Error(w, fmt.Sprintf("Failed to reset connections: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Prepare response
+	response := map[string]interface{}{
+		"status":           "success",
+		"connections_reset": closedCount,
+		"timestamp":        time.Now(),
+		"message":          fmt.Sprintf("Successfully reset %d connections", closedCount),
+	}
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	// Encode and send response
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger.Info("Failed to encode reset connections response", "error", err)
+		return
+	}
+
+	logger.Info("Admin API: Successfully reset connections", "count", closedCount)
 }

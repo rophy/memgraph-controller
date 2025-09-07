@@ -26,6 +26,8 @@ deploy:
       namespace: memgraph
       createNamespace: true
       wait: false
+      setValues:
+        controller.env.enableAdminAPI: "true"
     - name: test-client
       chartPath: tests/client/charts/test-client
       namespace: memgraph

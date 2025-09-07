@@ -646,3 +646,34 @@ func (c *MemgraphController) getControllerOwnerReference(ctx context.Context) (*
 
 	return nil, fmt.Errorf("could not find Deployment owner reference for pod %s", podName)
 }
+
+// ResetAllConnections closes all existing Neo4j connections and clears the connection pool
+func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, error) {
+	logger.Info("Admin API: Resetting all Memgraph connections")
+
+	totalConnections := 0
+
+	// Reset controller's internal connection pool
+	if c.memgraphClient != nil && c.memgraphClient.connectionPool != nil {
+		c.memgraphClient.connectionPool.mutex.RLock()
+		controllerConnections := len(c.memgraphClient.connectionPool.drivers)
+		c.memgraphClient.connectionPool.mutex.RUnlock()
+
+		c.memgraphClient.connectionPool.Close(ctx)
+		totalConnections += controllerConnections
+		logger.Info("Admin API: Reset controller connections", "count", controllerConnections)
+	} else {
+		logger.Warn("Admin API: No controller connection pool to reset")
+	}
+
+	// Reset gateway connections
+	if c.gatewayServer != nil {
+		c.gatewayServer.DisconnectAll()
+		logger.Info("Admin API: Reset gateway connections")
+	} else {
+		logger.Warn("Admin API: No gateway server to reset")
+	}
+
+	logger.Info("Admin API: Successfully reset all connections", "total_count", totalConnections)
+	return totalConnections, nil
+}

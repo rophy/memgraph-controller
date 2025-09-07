@@ -49,6 +49,11 @@ func (m *MockController) IsRunning() bool {
 	return m.isRunning
 }
 
+func (m *MockController) ResetAllConnections(ctx context.Context) (int, error) {
+	// Mock implementation - just return a fake count
+	return 3, nil
+}
+
 // MockLeaderElection implements LeaderElectionInterface for testing
 type MockLeaderElection struct{}
 

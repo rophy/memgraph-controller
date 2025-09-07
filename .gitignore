@@ -47,6 +47,6 @@ tests/memgraph-sandbox/charts/
 
 # Test outputs
 logs/
-__pycache__
 venv/
-
+.pytest_cache/
+__pycache__/

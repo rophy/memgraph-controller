@@ -4,12 +4,14 @@ set -euo pipefail
 # Python E2E Test Wrapper Script
 # Checks prerequisites and runs Python-based e2e tests
 
+
 # Colors for output
 readonly GREEN='\033[0;32m'
 readonly RED='\033[0;31m'
 readonly BLUE='\033[0;34m'
 readonly YELLOW='\033[1;33m'
 readonly NC='\033[0m'
+
 
 log_info() { 
     echo -e "${BLUE}[INFO]${NC} $(date -Iseconds) $*"; 
@@ -151,6 +153,14 @@ main() {
     echo
     
     # Check prerequisites first
+    venv_dir=$(dirname "$0")/../../venv
+    if [ ! -d "$venv_dir" ]; then
+        log_error "Virtual environment not found at $venv_dir"
+        log_error "Please run 'tests/scripts/init-e2e-tests.sh' to create it"
+        exit 1
+    fi
+    source $venv_dir/bin/activate
+    
     check_prerequisites
     echo
     

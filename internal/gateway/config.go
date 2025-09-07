@@ -7,8 +7,6 @@ import (
 	"strconv"
 	"time"
 )
-
-
 // Config holds the gateway configuration
 type Config struct {
 	Enabled        bool

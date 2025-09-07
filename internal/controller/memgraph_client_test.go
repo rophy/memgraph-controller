@@ -1,10 +1,9 @@
 package controller
-
-import "memgraph-controller/pkg/common"
-
 import (
 	"context"
 	"testing"
+
+	"memgraph-controller/internal/common"
 )
 
 func TestMemgraphClient_QueryReplicationRole_EmptyAddress(t *testing.T) {
@@ -36,8 +35,6 @@ func TestMemgraphClient_TestConnection_EmptyAddress(t *testing.T) {
 		t.Errorf("Error message = %s, want %s", err.Error(), expectedMsg)
 	}
 }
-
-
 func TestNewMemgraphClient(t *testing.T) {
 	config := &common.Config{
 		BoltPort: "7687",

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	"memgraph-controller/pkg/common"
+	"memgraph-controller/internal/common"
 )
 
 // HTTPServer manages the status API HTTP server

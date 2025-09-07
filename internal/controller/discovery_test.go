@@ -1,7 +1,4 @@
 package controller
-
-import "memgraph-controller/pkg/common"
-
 import (
 	"testing"
 	"time"
@@ -9,6 +6,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes/fake"
+	"memgraph-controller/internal/common"
 )
 
 // mockPodStore implements cache.Store for testing
@@ -33,8 +31,6 @@ func (m *mockPodStore) List() []interface{} {
 }
 
 func (m *mockPodStore) ListKeys() []string { return nil }
-
-
 func TestMemgraphController_DiscoverPods(t *testing.T) {
 	now := time.Now()
 
@@ -135,11 +131,7 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 
 	// CurrentMain field has been removed - target main is now tracked via controller's target main index
 }
-
-
 // Tests for main controller discovery functions
-
-
 // TestMemgraphController_ApplyDeterministicRoles was removed since the method was simplified
 // and integrated into the discoverClusterState logic
 

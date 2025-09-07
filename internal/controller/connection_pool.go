@@ -8,7 +8,7 @@ import (
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
-	"memgraph-controller/pkg/common"
+	"memgraph-controller/internal/common"
 )
 
 type ConnectionPool struct {

@@ -1,7 +1,4 @@
 package controller
-
-import "memgraph-controller/pkg/common"
-
 import (
 	"encoding/json"
 	"net/http"
@@ -11,6 +8,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"memgraph-controller/internal/common"
 )
 
 func TestConvertMemgraphNodeToStatus(t *testing.T) {

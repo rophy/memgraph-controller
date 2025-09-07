@@ -7,7 +7,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
-	"memgraph-controller/pkg/common"
+	"memgraph-controller/internal/common"
 )
 
 // MemgraphCluster handles all Memgraph cluster-specific operations and represents the cluster state

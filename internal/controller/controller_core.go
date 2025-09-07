@@ -14,8 +14,8 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
-	"memgraph-controller/pkg/common"
-	"memgraph-controller/pkg/gateway"
+	"memgraph-controller/internal/common"
+	"memgraph-controller/internal/gateway"
 )
 
 var logger = common.GetLogger()

@@ -12,7 +12,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	
-	"memgraph-controller/pkg/common"
+	"memgraph-controller/internal/common"
 )
 
 var logger = common.GetLogger()

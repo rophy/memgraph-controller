@@ -10,7 +10,7 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j/config"
 	"gopkg.in/yaml.v3"
-	"memgraph-controller/pkg/common"
+	"memgraph-controller/internal/common"
 )
 
 type MemgraphClient struct {

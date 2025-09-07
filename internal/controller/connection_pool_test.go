@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"memgraph-controller/pkg/common"
+	"memgraph-controller/internal/common"
 )
 
 func TestNewConnectionPool(t *testing.T) {
@@ -46,8 +46,6 @@ func TestConnectionPool_GetDriver_EmptyAddress(t *testing.T) {
 		t.Errorf("Error message = %s, want %s", err.Error(), expectedMsg)
 	}
 }
-
-
 func TestConnectionPool_Close(t *testing.T) {
 	config := &common.Config{}
 	pool := NewConnectionPool(config)

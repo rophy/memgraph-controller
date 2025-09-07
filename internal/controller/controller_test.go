@@ -1,11 +1,10 @@
 package controller
 
-import "memgraph-controller/pkg/common"
-
 import (
 	"testing"
 
 	"k8s.io/client-go/kubernetes/fake"
+	"memgraph-controller/internal/common"
 )
 
 func TestMemgraphController_TestConnection(t *testing.T) {

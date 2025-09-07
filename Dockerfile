@@ -11,7 +11,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 
 # Copy source code
-COPY pkg/ ./pkg/
+COPY internal/ ./internal/
 COPY cmd/ ./cmd/
 
 # Build the controller binary

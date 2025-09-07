@@ -7,8 +7,8 @@ import (
 	"syscall"
 	"time"
 
-	"memgraph-controller/pkg/common"
-	"memgraph-controller/pkg/controller"
+	"memgraph-controller/internal/common"
+	"memgraph-controller/internal/controller"
 
 	"k8s.io/client-go/kubernetes"
 )

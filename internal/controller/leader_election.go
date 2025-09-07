@@ -10,7 +10,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
-	"memgraph-controller/pkg/common"
+	"memgraph-controller/internal/common"
 )
 
 // LeaderElection handles Kubernetes leader election for HA controller

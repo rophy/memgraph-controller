@@ -24,9 +24,9 @@ clean: ## Remove build artifacts
 test: ## Run unit tests
 	go test -v ./...
 
-test-e2e: ## Run shell-based E2E tests
-	@echo "Running shell-based E2E tests..."
-	./tests/scripts/simple-e2e-tests.sh
+test-e2e: ## Run E2E tests
+	@echo "Running E2E tests..."
+	./tests/scripts/run-e2e-tests.sh
 
 
 run: ## Deploy full memgraph-ha cluster with controller (background)

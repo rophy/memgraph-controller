@@ -1,0 +1,4 @@
+# Python dependencies for Memgraph E2E tests
+
+# Testing framework
+pytest>=7.0.0

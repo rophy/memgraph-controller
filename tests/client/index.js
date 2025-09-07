@@ -5,7 +5,6 @@ const logger = pino({
     timestamp: pino.stdTimeFunctions.isoTime,
 });
 
-logger.info('Starting Neo4j client...');
 
 class MetricsTracker {
     constructor() {

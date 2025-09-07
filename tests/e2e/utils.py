@@ -1,0 +1,443 @@
+"""
+E2E Test Utilities
+
+Simple utilities for running Memgraph e2e tests using kubectl exec approach.
+Keeps the same reliable pattern as shell scripts but with better Python tooling.
+"""
+
+import subprocess
+import json
+import time
+import sys
+from typing import Tuple, Dict, Any, Optional, List
+
+
+# Configuration
+MEMGRAPH_NS = "memgraph"
+TEST_CLIENT_LABEL = "app=neo4j-client"
+EXPECTED_POD_COUNT = 3
+
+
+class E2ETestError(Exception):
+    """Base exception for e2e test errors"""
+    pass
+
+
+class KubectlError(E2ETestError):
+    """kubectl command failed"""
+    pass
+
+
+class MemgraphQueryError(E2ETestError):
+    """Memgraph query failed"""
+    pass
+
+
+def log_info(message: str) -> None:
+    """Log info message with timestamp"""
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    print(f"\033[0;34m[INFO]\033[0m {timestamp} {message}")
+
+
+def log_success(message: str) -> None:
+    """Log success message with timestamp"""
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    print(f"\033[0;32m[SUCCESS]\033[0m {timestamp} {message}")
+
+
+def log_error(message: str) -> None:
+    """Log error message with timestamp"""
+    timestamp = time.strftime("%Y-%m-%dT%H:%M:%S")
+    print(f"\033[0;31m[ERROR]\033[0m {timestamp} {message}", file=sys.stderr)
+
+
+def kubectl_exec(pod: str, namespace: str, command: List[str], container: str = None) -> Tuple[str, str, int]:
+    """
+    Execute command in pod via kubectl exec
+    
+    Args:
+        pod: Pod name
+        namespace: Kubernetes namespace
+        command: Command to execute
+        container: Optional container name
+    
+    Returns:
+        Tuple of (stdout, stderr, return_code)
+    """
+    cmd = ["kubectl", "exec", pod, "-n", namespace]
+    if container:
+        cmd.extend(["-c", container])
+    cmd.extend(["--"] + command)
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    return result.stdout, result.stderr, result.returncode
+
+
+def kubectl_get(resource: str, namespace: str = None, selector: str = None, 
+                output: str = None) -> str:
+    """
+    Execute kubectl get command
+    
+    Returns:
+        stdout of kubectl command
+    """
+    cmd = ["kubectl", "get", resource]
+    if namespace:
+        cmd.extend(["-n", namespace])
+    if selector:
+        cmd.extend(["-l", selector])
+    if output:
+        cmd.extend(["-o", output])
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        raise KubectlError(f"kubectl get failed: {result.stderr}")
+    
+    return result.stdout.strip()
+
+
+def get_test_client_pod() -> str:
+    """Get the name of the test client pod"""
+    try:
+        pod_name = kubectl_get(
+            "pods", 
+            namespace=MEMGRAPH_NS,
+            selector=TEST_CLIENT_LABEL,
+            output="jsonpath={.items[0].metadata.name}"
+        )
+        if not pod_name:
+            raise E2ETestError("Test client pod not found")
+        return pod_name
+    except KubectlError as e:
+        raise E2ETestError(f"Failed to get test client pod: {e}")
+
+
+def memgraph_query_via_client(query: str) -> Dict[str, Any]:
+    """
+    Execute Cypher query via test client pod (goes through gateway/service)
+    
+    Args:
+        query: Cypher query string
+        
+    Returns:
+        JSON response from Memgraph
+    """
+    pod = get_test_client_pod()
+    stdout, stderr, code = kubectl_exec(pod, MEMGRAPH_NS, ["node", "index.js", query])
+    
+    if code != 0:
+        raise MemgraphQueryError(f"Query via client failed: {stderr}")
+    
+    try:
+        result = json.loads(stdout)
+        # If result is a list, wrap in records format for consistency
+        if isinstance(result, list):
+            return {"records": result}
+        return result
+    except json.JSONDecodeError as e:
+        raise MemgraphQueryError(f"Invalid JSON response: {e}\nResponse: {stdout}")
+
+
+def memgraph_query_direct(pod: str, query: str) -> str:
+    """
+    Execute Cypher query directly on a specific memgraph pod using mgconsole
+    
+    Args:
+        pod: Name of the memgraph pod
+        query: Cypher query string
+        
+    Returns:
+        Raw CSV output from mgconsole
+    """
+    command = ["bash", "-c", f"echo '{query}' | mgconsole --output-format csv --username=memgraph"]
+    stdout, stderr, code = kubectl_exec(pod, MEMGRAPH_NS, command, container="memgraph")
+    
+    if code != 0:
+        raise MemgraphQueryError(f"Direct query to {pod} failed: {stderr}")
+    
+    return stdout.strip()
+
+
+
+
+def get_memgraph_pods() -> List[Dict[str, str]]:
+    """Get list of memgraph pods with their status"""
+    try:
+        cmd = ["kubectl", "get", "pods", "-n", MEMGRAPH_NS, "-l", "app.kubernetes.io/name=memgraph", "-o", "json"]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise KubectlError(f"kubectl get failed: {result.stderr}")
+        
+        pods_data = json.loads(result.stdout)
+        pods = []
+        
+        for item in pods_data.get('items', []):
+            name = item['metadata']['name']
+            # Check if container is ready
+            ready = False
+            container_statuses = item.get('status', {}).get('containerStatuses', [])
+            if container_statuses and container_statuses[0].get('ready'):
+                ready = True
+            
+            ip = item.get('status', {}).get('podIP', 'unknown')
+            
+            pods.append({
+                'name': name,
+                'ready': ready,
+                'ip': ip
+            })
+        
+        return pods
+    except (subprocess.SubprocessError, json.JSONDecodeError, KeyError) as e:
+        raise E2ETestError(f"Failed to get memgraph pods: {e}")
+
+
+def wait_for_cluster_ready(timeout: int = 60) -> bool:
+    """
+    Wait for memgraph cluster to be ready
+    
+    Args:
+        timeout: Maximum wait time in seconds
+        
+    Returns:
+        True if cluster is ready, raises exception on timeout
+    """
+    start_time = time.time()
+    log_info(f"⏳ Waiting for cluster to be ready (timeout: {timeout}s)...")
+    
+    while time.time() - start_time < timeout:
+        try:
+            pods = get_memgraph_pods()
+            
+            if len(pods) == EXPECTED_POD_COUNT:
+                all_ready = all(pod['ready'] for pod in pods)
+                if all_ready:
+                    log_success(f"✅ All {EXPECTED_POD_COUNT} pods are ready")
+                    return True
+            
+            ready_count = sum(1 for pod in pods if pod['ready'])
+            log_info(f"Waiting for pods (current: {ready_count}/{EXPECTED_POD_COUNT} ready)...")
+            
+        except E2ETestError:
+            log_info("Failed to get pods, retrying...")
+        
+        time.sleep(2)
+    
+    raise E2ETestError(f"Timeout waiting for cluster to be ready after {timeout}s")
+
+
+def wait_for_cluster_convergence(timeout: int = 60) -> bool:
+    """
+    Wait for cluster to converge to main-sync-async topology by checking pods directly
+    Uses the same approach as scripts/check.sh
+    
+    Args:
+        timeout: Maximum wait time in seconds
+        
+    Returns:
+        True if converged, raises exception on timeout
+    """
+    start_time = time.time()
+    log_info("⏳ Waiting for cluster convergence...")
+    
+    while time.time() - start_time < timeout:
+        try:
+            # Get all memgraph pods using JSON
+            cmd = ["kubectl", "get", "pods", "-n", MEMGRAPH_NS, "-l", "app.kubernetes.io/name=memgraph", "-o", "json"]
+            result = subprocess.run(cmd, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                raise KubectlError(f"kubectl get failed: {result.stderr}")
+            
+            pods_data = json.loads(result.stdout)
+            items = pods_data.get('items', [])
+            
+            if not items:
+                elapsed = int(time.time() - start_time)
+                log_info(f"⏳ No pods found yet, waiting... ({elapsed}s/{timeout}s)")
+                time.sleep(2)
+                continue
+            
+            # Check pod status and roles
+            running_pods = []
+            main_pod = None
+            
+            for item in items:
+                pod_name = item['metadata']['name']
+                phase = item.get('status', {}).get('phase', 'Unknown')
+                
+                if phase == 'Running':
+                    running_pods.append(pod_name)
+                    
+                    # Check replication role of this pod
+                    try:
+                        role_output = memgraph_query_direct(pod_name, "SHOW REPLICATION ROLE;")
+                        # Parse CSV output: first line is header, second line has the role
+                        lines = role_output.strip().split('\n')
+                        if len(lines) >= 2 and '"main"' in lines[1]:
+                            main_pod = pod_name
+                    except MemgraphQueryError:
+                        # Pod might not be ready for queries yet
+                        continue
+            
+            if len(running_pods) != EXPECTED_POD_COUNT:
+                elapsed = int(time.time() - start_time)
+                log_info(f"⏳ Only {len(running_pods)}/{EXPECTED_POD_COUNT} pods running, waiting... ({elapsed}s/{timeout}s)")
+                time.sleep(2)
+                continue
+            
+            if not main_pod:
+                elapsed = int(time.time() - start_time)
+                log_info(f"⏳ No main pod found yet, waiting... ({elapsed}s/{timeout}s)")
+                time.sleep(2)
+                continue
+            
+            # Check replicas from main pod
+            try:
+                replicas_output = memgraph_query_direct(main_pod, "SHOW REPLICAS;")
+                lines = replicas_output.strip().split('\n')
+                
+                if len(lines) < 2:  # No replicas registered yet
+                    elapsed = int(time.time() - start_time)
+                    log_info(f"⏳ No replicas registered on main pod {main_pod}, waiting... ({elapsed}s/{timeout}s)")
+                    time.sleep(2)
+                    continue
+                
+                # Count sync and async replicas from CSV output
+                sync_count = 0
+                async_count = 0
+                for line in lines[1:]:  # Skip header
+                    if '"sync"' in line:
+                        sync_count += 1
+                    elif '"async"' in line:
+                        async_count += 1
+                
+                if sync_count == 1 and async_count == 1:
+                    elapsed = int(time.time() - start_time)
+                    log_info(f"✅ Cluster converged after {elapsed}s: main={main_pod}, 1 sync + 1 async replica")
+                    return True
+                else:
+                    elapsed = int(time.time() - start_time)
+                    log_info(f"⏳ Waiting for proper topology... main={main_pod}, sync={sync_count}, async={async_count} ({elapsed}s/{timeout}s)")
+                    
+            except MemgraphQueryError as e:
+                elapsed = int(time.time() - start_time)
+                log_info(f"⏳ Cannot query replicas on {main_pod}: {str(e)[:50]}, waiting... ({elapsed}s/{timeout}s)")
+            
+        except (KubectlError, E2ETestError, json.JSONDecodeError, subprocess.SubprocessError) as e:
+            elapsed = int(time.time() - start_time)
+            log_info(f"⏳ Cluster not ready: {str(e)[:50]}, waiting... ({elapsed}s/{timeout}s)")
+        
+        time.sleep(2)
+    
+    raise E2ETestError(f"Cluster failed to converge within {timeout}s")
+
+
+def write_test_data(test_id: str, test_value: str) -> bool:
+    """Write test data to memgraph via client"""
+    try:
+        query = f"CREATE (n:TestNode {{id: '{test_id}', value: '{test_value}', timestamp: datetime()}}) RETURN n.id;"
+        memgraph_query_via_client(query)
+        return True
+    except MemgraphQueryError:
+        return False
+
+
+def read_test_data(test_id: str) -> Optional[Dict[str, Any]]:
+    """Read test data from memgraph via client"""
+    try:
+        query = f"MATCH (n:TestNode {{id: '{test_id}'}}) RETURN n.id, n.value;"
+        result = memgraph_query_via_client(query)
+        if result['records']:
+            return result['records'][0]
+        return None
+    except MemgraphQueryError:
+        return None
+
+
+def count_nodes() -> int:
+    """Count total nodes in memgraph via client"""
+    try:
+        query = "MATCH (n) RETURN count(n) as node_count;"
+        result = memgraph_query_via_client(query)
+        
+        # Handle different count response formats
+        count_data = result['records'][0]['node_count']
+        if isinstance(count_data, dict) and 'low' in count_data:
+            return count_data['low']
+        return int(count_data)
+    except (MemgraphQueryError, KeyError, ValueError, TypeError):
+        raise E2ETestError("Failed to count nodes")
+
+
+def generate_test_id(prefix: str = "test") -> str:
+    """Generate unique test ID with timestamp"""
+    import os
+    timestamp = int(time.time())
+    pid = os.getpid()
+    return f"{prefix}_{timestamp}_{pid}"
+
+
+
+
+def get_pod_replication_role(pod: str) -> str:
+    """
+    Get replication role of a specific memgraph pod
+    
+    Args:
+        pod: Name of the memgraph pod
+        
+    Returns:
+        Replication role (main, replica, etc.)
+    """
+    try:
+        result = memgraph_query_direct(pod, "SHOW REPLICATION ROLE;")
+        # Parse CSV output to extract role
+        lines = result.strip().split('\n')
+        if len(lines) >= 2:  # Header + data
+            # Extract role from CSV (usually second column in quotes)
+            data_line = lines[1]
+            if '"main"' in data_line:
+                return "main"
+            elif '"replica"' in data_line:
+                return "replica"
+        
+        # Fallback: look for role keywords in output
+        if '"main"' in result:
+            return "main"
+        elif '"replica"' in result:
+            return "replica"
+        
+        return "unknown"
+        
+    except MemgraphQueryError as e:
+        raise E2ETestError(f"Failed to get replication role for {pod}: {e}")
+
+
+
+
+def check_prerequisites() -> None:
+    """Check that required tools are available"""
+    required_tools = ["kubectl", "jq"]
+    
+    for tool in required_tools:
+        try:
+            subprocess.run([tool, "--version"], capture_output=True, check=True)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            raise E2ETestError(f"{tool} is required but not available")
+    
+    # Check kubernetes connectivity
+    try:
+        subprocess.run(["kubectl", "cluster-info"], capture_output=True, check=True)
+    except subprocess.CalledProcessError:
+        raise E2ETestError("Cannot connect to Kubernetes cluster")
+    
+    # Check namespace exists
+    try:
+        kubectl_get("namespace", output=f"jsonpath='{{.metadata.name}}'")
+        if MEMGRAPH_NS not in kubectl_get("namespaces", output="jsonpath='{.items[*].metadata.name}'"):
+            raise E2ETestError(f"Namespace '{MEMGRAPH_NS}' does not exist")
+    except KubectlError:
+        raise E2ETestError(f"Cannot access namespace '{MEMGRAPH_NS}'")
+    
+    log_info("✅ Prerequisites checked")

@@ -1,4 +1,4 @@
-package controller
+package httpapi
 
 import (
 	"context"
@@ -12,13 +12,13 @@ import (
 
 // HTTPServer manages the status API HTTP server
 type HTTPServer struct {
-	controller *MemgraphController
+	controller ControllerInterface
 	server     *http.Server
 	config     *common.Config
 }
 
 // NewHTTPServer creates a new HTTP server for status API
-func NewHTTPServer(controller *MemgraphController, config *common.Config) *HTTPServer {
+func NewHTTPServer(controller ControllerInterface, config *common.Config) *HTTPServer {
 	mux := http.NewServeMux()
 
 	httpServer := &HTTPServer{
@@ -46,6 +46,7 @@ func NewHTTPServer(controller *MemgraphController, config *common.Config) *HTTPS
 
 // Start begins listening for HTTP requests (non-blocking)
 func (h *HTTPServer) Start() error {
+	logger := common.GetLogger()
 	logger.Info("Starting HTTP server", "port", h.config.HTTPPort)
 
 	go func() {
@@ -62,6 +63,7 @@ func (h *HTTPServer) Start() error {
 
 // Stop gracefully shuts down the HTTP server
 func (h *HTTPServer) Stop(ctx context.Context) error {
+	logger := common.GetLogger()
 	logger.Info("Shutting down HTTP server...")
 
 	err := h.server.Shutdown(ctx)
@@ -81,6 +83,7 @@ func (h *HTTPServer) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger := common.GetLogger()
 	logger.Info("Handling status API request")
 
 	// Create context with timeout for status collection
@@ -116,6 +119,7 @@ func (h *HTTPServer) handleLeadership(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	logger := common.GetLogger()
 	logger.Info("Handling leadership API request")
 
 	// Create context with timeout

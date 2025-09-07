@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"memgraph-controller/internal/httpapi"
 )
 
 // Run starts the controller reconciliation loop
@@ -209,15 +211,23 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 }
 
 // GetReconciliationMetrics returns current reconciliation metrics
-func (c *MemgraphController) GetReconciliationMetrics() ReconciliationMetrics {
+func (c *MemgraphController) GetReconciliationMetrics() httpapi.ReconciliationMetrics {
 	if c.metrics == nil {
-		return ReconciliationMetrics{}
+		return httpapi.ReconciliationMetrics{}
 	}
-	return *c.metrics
+	return httpapi.ReconciliationMetrics{
+		TotalReconciliations:      c.metrics.TotalReconciliations,
+		SuccessfulReconciliations: c.metrics.SuccessfulReconciliations,
+		FailedReconciliations:     c.metrics.FailedReconciliations,
+		AverageReconciliationTime: c.metrics.AverageReconciliationTime,
+		LastReconciliationTime:    c.metrics.LastReconciliationTime,
+		LastReconciliationReason:  c.metrics.LastReconciliationReason,
+		LastReconciliationError:   c.metrics.LastReconciliationError,
+	}
 }
 
 // GetClusterStatus returns comprehensive cluster status for the HTTP API
-func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusResponse, error) {
+func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*httpapi.StatusResponse, error) {
 	clusterState := c.cluster
 	if clusterState == nil {
 		return nil, fmt.Errorf("no cluster state available")
@@ -231,7 +241,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	}
 
 	// Build cluster status summary
-	statusResponse := ClusterStatus{
+	statusResponse := httpapi.ClusterStatus{
 		CurrentMain:        currentMain,
 		CurrentSyncReplica: "", // Will be determined below
 		TotalPods:          len(clusterState.MemgraphNodes),
@@ -248,7 +258,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	statusResponse.UnhealthyPods = statusResponse.TotalPods - healthyCount
 
 	// Convert pods to API format
-	var pods []PodStatus
+	var pods []httpapi.PodStatus
 	for _, node := range clusterState.MemgraphNodes {
 		pod, err := c.getPodFromCache(node.GetName())
 		healthy := err == nil && isPodReady(pod)
@@ -257,16 +267,16 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	}
 
 	// Get replica registrations from the main node
-	var replicaRegistrations []ReplicaRegistration
+	var replicaRegistrations []httpapi.ReplicaRegistration
 	if targetMainIndex, err := c.GetTargetMainIndex(ctx); err == nil {
 		targetMainPodName := c.config.GetPodName(targetMainIndex)
 		if mainNode, exists := clusterState.MemgraphNodes[targetMainPodName]; exists {
 			if replicas, err := mainNode.GetReplicas(ctx); err == nil {
 				for _, replica := range replicas {
-					replicaRegistrations = append(replicaRegistrations, ReplicaRegistration{
+					replicaRegistrations = append(replicaRegistrations, httpapi.ReplicaRegistration{
 						Name:      replica.Name,
 						PodName:   replica.GetPodName(),
-						IPAddress: strings.Split(replica.SocketAddress, ":")[0],
+						Address:   replica.SocketAddress,
 						SyncMode:  replica.SyncMode,
 						IsHealthy: replica.IsHealthy(),
 					})
@@ -280,7 +290,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*StatusRespo
 	statusResponse.ReconciliationMetrics = c.GetReconciliationMetrics()
 	statusResponse.ReplicaRegistrations = replicaRegistrations
 
-	response := &StatusResponse{
+	response := &httpapi.StatusResponse{
 		Timestamp:    time.Now(),
 		ClusterState: statusResponse,
 		Pods:         pods,

@@ -1,14 +1,13 @@
 package controller
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"memgraph-controller/internal/common"
+	"memgraph-controller/internal/httpapi"
 )
 
 func TestConvertMemgraphNodeToStatus(t *testing.T) {
@@ -198,9 +197,9 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 	clusterState.MemgraphNodes["memgraph-1"] = node2
 
 	// Create API response directly
-	response := StatusResponse{
+	response := httpapi.StatusResponse{
 		Timestamp: time.Now(),
-		ClusterState: ClusterStatus{
+		ClusterState: httpapi.ClusterStatus{
 			TotalPods:          len(clusterState.MemgraphNodes),
 			HealthyPods:        2,
 			UnhealthyPods:      0,
@@ -208,7 +207,7 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 			CurrentSyncReplica: "memgraph-1",
 			SyncReplicaHealthy: true,
 		},
-		Pods: []PodStatus{
+		Pods: []httpapi.PodStatus{
 			convertMemgraphNodeToStatus(node1, true, pod1),
 			convertMemgraphNodeToStatus(node2, true, pod2),
 		},
@@ -221,7 +220,7 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 	}
 
 	// Verify response structure
-	var decoded StatusResponse
+	var decoded httpapi.StatusResponse
 	if err := json.Unmarshal(jsonData, &decoded); err != nil {
 		t.Fatalf("Failed to unmarshal response: %v", err)
 	}
@@ -248,94 +247,5 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 	}
 }
 
-func TestHTTPServerHealthEndpoint(t *testing.T) {
-	config := &common.Config{HTTPPort: "8080"}
-	controller := &MemgraphController{} // Minimal controller for test
-	httpServer := NewHTTPServer(controller, config)
-
-	req := httptest.NewRequest("GET", "/health", nil)
-	w := httptest.NewRecorder()
-
-	httpServer.handleHealth(w, req)
-
-	resp := w.Result()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
-	}
-
-	var health map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
-		t.Fatalf("Failed to decode health response: %v", err)
-	}
-
-	if health["status"] != "ok" {
-		t.Errorf("Expected status 'ok', got '%v'", health["status"])
-	}
-
-	if health["service"] != "memgraph-controller" {
-		t.Errorf("Expected service 'memgraph-controller', got '%v'", health["service"])
-	}
-}
-
-func TestHTTPServerRootEndpoint(t *testing.T) {
-	config := &common.Config{HTTPPort: "8080"}
-	controller := &MemgraphController{} // Minimal controller for test
-	httpServer := NewHTTPServer(controller, config)
-
-	req := httptest.NewRequest("GET", "/", nil)
-	w := httptest.NewRecorder()
-
-	httpServer.handleRoot(w, req)
-
-	resp := w.Result()
-	if resp.StatusCode != http.StatusOK {
-		t.Errorf("Expected status 200, got %d", resp.StatusCode)
-	}
-
-	var root map[string]interface{}
-	if err := json.NewDecoder(resp.Body).Decode(&root); err != nil {
-		t.Fatalf("Failed to decode root response: %v", err)
-	}
-
-	if root["service"] != "memgraph-controller" {
-		t.Errorf("Expected service 'memgraph-controller', got '%v'", root["service"])
-	}
-
-	endpoints, ok := root["endpoints"].([]interface{})
-	if !ok {
-		t.Fatal("Endpoints should be an array")
-	}
-
-	expectedEndpoints := []string{"/api/v1/status", "/api/v1/leadership", "/health", "/livez", "/readyz"}
-	if len(endpoints) != len(expectedEndpoints) {
-		t.Errorf("Expected %d endpoints, got %d", len(expectedEndpoints), len(endpoints))
-	}
-}
-
-func TestHTTPServerMethodNotAllowed(t *testing.T) {
-	config := &common.Config{HTTPPort: "8080"}
-	controller := &MemgraphController{} // Minimal controller for test
-	httpServer := NewHTTPServer(controller, config)
-
-	// Test POST to status endpoint
-	req := httptest.NewRequest("POST", "/api/v1/status", nil)
-	w := httptest.NewRecorder()
-
-	httpServer.handleStatus(w, req)
-
-	resp := w.Result()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("Expected status 405, got %d", resp.StatusCode)
-	}
-
-	// Test POST to health endpoint
-	req = httptest.NewRequest("POST", "/health", nil)
-	w = httptest.NewRecorder()
-
-	httpServer.handleHealth(w, req)
-
-	resp = w.Result()
-	if resp.StatusCode != http.StatusMethodNotAllowed {
-		t.Errorf("Expected status 405, got %d", resp.StatusCode)
-	}
-}
+// HTTP server handler tests have been moved to internal/httpapi/server_test.go
+// since the handlers are now private methods in the httpapi package

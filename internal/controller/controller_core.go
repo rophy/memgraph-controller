@@ -16,6 +16,7 @@ import (
 
 	"memgraph-controller/internal/common"
 	"memgraph-controller/internal/gateway"
+	"memgraph-controller/internal/httpapi"
 )
 
 var logger = common.GetLogger()
@@ -24,7 +25,7 @@ type MemgraphController struct {
 	clientset      kubernetes.Interface
 	config         *common.Config
 	memgraphClient *MemgraphClient
-	httpServer     *HTTPServer
+	httpServer     *httpapi.HTTPServer
 	gatewayServer  *gateway.Server
 
 	// Leader election
@@ -72,7 +73,7 @@ func NewMemgraphController(clientset kubernetes.Interface, config *common.Config
 	}
 
 	// Initialize HTTP server
-	controller.httpServer = NewHTTPServer(controller, config)
+	controller.httpServer = httpapi.NewHTTPServer(controller, config)
 
 	// Initialize gateway server (always enabled)
 	gatewayConfig := gateway.LoadGatewayConfig()
@@ -361,7 +362,7 @@ func (c *MemgraphController) IsRunning() bool {
 }
 
 // GetLeaderElection returns the leader election instance for testing
-func (c *MemgraphController) GetLeaderElection() *LeaderElection {
+func (c *MemgraphController) GetLeaderElection() httpapi.LeaderElectionInterface {
 	return c.leaderElection
 }
 

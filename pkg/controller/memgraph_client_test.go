@@ -1,12 +1,14 @@
 package controller
 
+import "memgraph-controller/pkg/common"
+
 import (
 	"context"
 	"testing"
 )
 
 func TestMemgraphClient_QueryReplicationRole_EmptyAddress(t *testing.T) {
-	config := &Config{}
+	config := &common.Config{}
 	client := NewMemgraphClient(config)
 
 	_, err := client.QueryReplicationRole(context.Background(), "")
@@ -21,7 +23,7 @@ func TestMemgraphClient_QueryReplicationRole_EmptyAddress(t *testing.T) {
 }
 
 func TestMemgraphClient_TestConnection_EmptyAddress(t *testing.T) {
-	config := &Config{}
+	config := &common.Config{}
 	client := NewMemgraphClient(config)
 
 	err := client.TestConnection(context.Background(), "")
@@ -37,7 +39,7 @@ func TestMemgraphClient_TestConnection_EmptyAddress(t *testing.T) {
 
 
 func TestNewMemgraphClient(t *testing.T) {
-	config := &Config{
+	config := &common.Config{
 		BoltPort: "7687",
 	}
 

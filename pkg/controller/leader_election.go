@@ -10,19 +10,20 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
+	"memgraph-controller/pkg/common"
 )
 
 // LeaderElection handles Kubernetes leader election for HA controller
 type LeaderElection struct {
 	clientset        kubernetes.Interface
-	config           *Config
+	config           *common.Config
 	onStartedLeading func(ctx context.Context)
 	onStoppedLeading func()
 	onNewLeader      func(identity string)
 }
 
 // NewLeaderElection creates a new leader election instance
-func NewLeaderElection(clientset kubernetes.Interface, config *Config) *LeaderElection {
+func NewLeaderElection(clientset kubernetes.Interface, config *common.Config) *LeaderElection {
 	return &LeaderElection{
 		clientset: clientset,
 		config:    config,

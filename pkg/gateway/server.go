@@ -12,10 +12,10 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	
-	"memgraph-controller/pkg/logging"
+	"memgraph-controller/pkg/common"
 )
 
-var logger = logging.GetLogger().WithFields(map[string]any{"component": "gateway"})
+var logger = common.GetLogger()
 
 // MemgraphNode represents a Memgraph node with pod information
 type MemgraphNode struct {

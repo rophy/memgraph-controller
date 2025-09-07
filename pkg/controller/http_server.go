@@ -6,17 +6,19 @@ import (
 	"fmt"
 	"net/http"
 	"time"
+
+	"memgraph-controller/pkg/common"
 )
 
 // HTTPServer manages the status API HTTP server
 type HTTPServer struct {
 	controller *MemgraphController
 	server     *http.Server
-	config     *Config
+	config     *common.Config
 }
 
 // NewHTTPServer creates a new HTTP server for status API
-func NewHTTPServer(controller *MemgraphController, config *Config) *HTTPServer {
+func NewHTTPServer(controller *MemgraphController, config *common.Config) *HTTPServer {
 	mux := http.NewServeMux()
 
 	httpServer := &HTTPServer{

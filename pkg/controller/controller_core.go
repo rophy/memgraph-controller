@@ -14,15 +14,15 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 
+	"memgraph-controller/pkg/common"
 	"memgraph-controller/pkg/gateway"
-	"memgraph-controller/pkg/logging"
 )
 
-var logger = logging.GetLogger()
+var logger = common.GetLogger()
 
 type MemgraphController struct {
 	clientset      kubernetes.Interface
-	config         *Config
+	config         *common.Config
 	memgraphClient *MemgraphClient
 	httpServer     *HTTPServer
 	gatewayServer  *gateway.Server
@@ -63,7 +63,7 @@ type MemgraphController struct {
 	metrics *ReconciliationMetrics
 }
 
-func NewMemgraphController(clientset kubernetes.Interface, config *Config) *MemgraphController {
+func NewMemgraphController(clientset kubernetes.Interface, config *common.Config) *MemgraphController {
 
 	controller := &MemgraphController{
 		clientset:      clientset,

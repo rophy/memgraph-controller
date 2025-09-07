@@ -1,10 +1,10 @@
-package logging
+package common
 
 import (
 	"context"
 	"log/slog"
 	"os"
-	"strings"
+	"sync"
 )
 
 // Logger wraps slog.Logger with memgraph-controller specific functionality
@@ -13,22 +13,35 @@ type Logger struct {
 	component string
 }
 
-// Config holds logger configuration
-type Config struct {
+// LoggingConfig holds logger configuration
+type LoggingConfig struct {
 	Level     string
 	Component string
+	AddSource bool
+	Format    string
 }
 
-// NewLogger creates a new structured logger with JSONL output
-func NewLogger(config Config) *Logger {
+var (
+	globalLogger *Logger
+	once         sync.Once
+)
+
+// NewLogger creates a new structured logger with configurable output
+func NewLogger(config LoggingConfig) *Logger {
 	level := parseLevel(config.Level)
 
 	opts := &slog.HandlerOptions{
 		Level:     level,
-		AddSource: true,
+		AddSource: config.AddSource,
 	}
 
-	handler := slog.NewTextHandler(os.Stdout, opts)
+	var handler slog.Handler
+	if config.Format == "json" {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	} else {
+		// Default to text format
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	}
 	logger := slog.New(handler)
 
 	// Add component context if provided
@@ -44,7 +57,7 @@ func NewLogger(config Config) *Logger {
 
 // parseLevel converts string level to slog.Level
 func parseLevel(level string) slog.Level {
-	switch strings.ToLower(level) {
+	switch level {
 	case "debug":
 		return slog.LevelDebug
 	case "info":
@@ -111,26 +124,22 @@ func extractContextAttrs(ctx context.Context) []any {
 	return attrs
 }
 
-// NewControllerLogger creates a logger for controller components
-func NewControllerLogger(level string) *Logger {
-	return NewLogger(Config{
-		Level:     level,
-		Component: "controller",
+// InitLogger initializes the global logger using the centralized config
+func InitLogger() {
+	once.Do(func() {
+		config, _ := Load()
+		globalLogger = NewLogger(LoggingConfig{
+			Level:     config.LogLevel,
+			AddSource: config.LogAddSource,
+			Format:    config.LogFormat,
+		})
 	})
 }
 
-// NewGatewayLogger creates a logger for gateway components
-func NewGatewayLogger(level string) *Logger {
-	return NewLogger(Config{
-		Level:     level,
-		Component: "gateway",
-	})
-}
-
-// GetLogLevel returns log level from environment or default
-func GetLogLevel() string {
-	if level := os.Getenv("LOG_LEVEL"); level != "" {
-		return level
+// GetLogger returns the global logger
+func GetLogger() *Logger {
+	if globalLogger == nil {
+		InitLogger()
 	}
-	return "info"
+	return globalLogger
 }

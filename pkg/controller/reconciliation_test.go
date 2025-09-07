@@ -1,5 +1,7 @@
 package controller
 
+import "memgraph-controller/pkg/common"
+
 import (
 	"testing"
 	"time"
@@ -10,7 +12,7 @@ import (
 
 func TestShouldReconcile(t *testing.T) {
 	controller := &MemgraphController{
-		config: &Config{StatefulSetName: "test-memgraph"},
+		config: &common.Config{StatefulSetName: "test-memgraph"},
 	}
 
 	tests := []struct {

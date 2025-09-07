@@ -10,10 +10,11 @@ import (
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j/config"
 	"gopkg.in/yaml.v3"
+	"memgraph-controller/pkg/common"
 )
 
 type MemgraphClient struct {
-	config         *Config
+	config         *common.Config
 	connectionPool *ConnectionPool // Will be set from ClusterState
 	retryConfig    RetryConfig
 }
@@ -312,7 +313,7 @@ func assessReplicationHealth(status string, behind int) (bool, string) {
 	}
 }
 
-func NewMemgraphClient(config *Config) *MemgraphClient {
+func NewMemgraphClient(config *common.Config) *MemgraphClient {
 	return &MemgraphClient{
 		config:         config,
 		connectionPool: NewConnectionPool(config), // Create own connection pool initially

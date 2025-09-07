@@ -146,6 +146,7 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 	}
 	var syncReplica *ReplicaInfo = nil
 	for _, replica := range replicas {
+		logger.Debug("failover check: checking replica", "replica_name", replica.Name, "target_sync_replica_name", targetSyncReplicaName)
 		if replica.Name == targetSyncReplicaName {
 			syncReplica = &replica
 			break

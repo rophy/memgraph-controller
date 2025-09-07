@@ -7,18 +7,24 @@ import (
 	"syscall"
 	"time"
 
+	"memgraph-controller/pkg/common"
 	"memgraph-controller/pkg/controller"
-	"memgraph-controller/pkg/logging"
 
 	"k8s.io/client-go/kubernetes"
 )
 
 func main() {
-	logger := logging.GetLogger()
+	// Load configuration first
+	config, err := common.Load()
+	if err != nil {
+		panic(err)
+	}
+	
+	// Initialize structured logging
+	common.InitLogger()
+	logger := common.GetLogger()
 
 	logger.Info("Starting Memgraph Controller with HA support")
-
-	config := controller.LoadConfig()
 	logger.Info("Configuration loaded",
 		"app_name", config.AppName,
 		"namespace", config.Namespace,

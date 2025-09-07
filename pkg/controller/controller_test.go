@@ -1,5 +1,7 @@
 package controller
 
+import "memgraph-controller/pkg/common"
+
 import (
 	"testing"
 
@@ -8,7 +10,7 @@ import (
 
 func TestMemgraphController_TestConnection(t *testing.T) {
 	fakeClientset := fake.NewSimpleClientset()
-	config := &Config{
+	config := &common.Config{
 		AppName:   "memgraph",
 		Namespace: "memgraph",
 	}

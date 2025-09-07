@@ -1,5 +1,7 @@
 package controller
 
+import "memgraph-controller/pkg/common"
+
 import (
 	"encoding/json"
 	"net/http"
@@ -28,7 +30,7 @@ func TestConvertMemgraphNodeToStatus(t *testing.T) {
 	}
 
 	// Create a test client for the node
-	config := &Config{
+	config := &common.Config{
 		AppName:         "memgraph",
 		StatefulSetName: "memgraph-ha",
 	}
@@ -112,7 +114,7 @@ func TestConvertMemgraphNodeToStatus_SyncReplica(t *testing.T) {
 	}
 
 	// Create a test client for the node
-	config := &Config{
+	config := &common.Config{
 		AppName:         "memgraph",
 		StatefulSetName: "memgraph-ha",
 	}
@@ -148,7 +150,7 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 	// Test the HTTP response format and structure
 
 	// Create a test client for the nodes
-	config := &Config{
+	config := &common.Config{
 		AppName:         "memgraph",
 		StatefulSetName: "memgraph-ha",
 	}
@@ -249,7 +251,7 @@ func TestHTTPServerStatusEndpoint(t *testing.T) {
 }
 
 func TestHTTPServerHealthEndpoint(t *testing.T) {
-	config := &Config{HTTPPort: "8080"}
+	config := &common.Config{HTTPPort: "8080"}
 	controller := &MemgraphController{} // Minimal controller for test
 	httpServer := NewHTTPServer(controller, config)
 
@@ -278,7 +280,7 @@ func TestHTTPServerHealthEndpoint(t *testing.T) {
 }
 
 func TestHTTPServerRootEndpoint(t *testing.T) {
-	config := &Config{HTTPPort: "8080"}
+	config := &common.Config{HTTPPort: "8080"}
 	controller := &MemgraphController{} // Minimal controller for test
 	httpServer := NewHTTPServer(controller, config)
 
@@ -313,7 +315,7 @@ func TestHTTPServerRootEndpoint(t *testing.T) {
 }
 
 func TestHTTPServerMethodNotAllowed(t *testing.T) {
-	config := &Config{HTTPPort: "8080"}
+	config := &common.Config{HTTPPort: "8080"}
 	controller := &MemgraphController{} // Minimal controller for test
 	httpServer := NewHTTPServer(controller, config)
 

@@ -1,5 +1,7 @@
 package controller
 
+import "memgraph-controller/pkg/common"
+
 import (
 	"testing"
 	"time"
@@ -86,7 +88,7 @@ func TestMemgraphController_DiscoverPods(t *testing.T) {
 	}
 
 	fakeClient := fake.NewSimpleClientset(pod1, pod2, pod3)
-	config := &Config{
+	config := &common.Config{
 		AppName:   "memgraph",
 		Namespace: "memgraph",
 	}

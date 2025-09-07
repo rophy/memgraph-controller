@@ -8,13 +8,14 @@ import (
 	"time"
 
 	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
+	"memgraph-controller/pkg/common"
 )
 
 type ConnectionPool struct {
 	drivers map[string]neo4j.DriverWithContext // boltAddress -> driver
 	podIPs  map[string]string                  // podName -> currentIP
 	mutex   sync.RWMutex
-	config  *Config
+	config  *common.Config
 }
 
 type RetryConfig struct {
@@ -23,7 +24,7 @@ type RetryConfig struct {
 	MaxDelay   time.Duration
 }
 
-func NewConnectionPool(config *Config) *ConnectionPool {
+func NewConnectionPool(config *common.Config) *ConnectionPool {
 	return &ConnectionPool{
 		drivers: make(map[string]neo4j.DriverWithContext),
 		podIPs:  make(map[string]string),

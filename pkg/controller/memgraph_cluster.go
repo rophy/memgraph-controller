@@ -7,6 +7,7 @@ import (
 
 	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/tools/cache"
+	"memgraph-controller/pkg/common"
 )
 
 // MemgraphCluster handles all Memgraph cluster-specific operations and represents the cluster state
@@ -16,12 +17,12 @@ type MemgraphCluster struct {
 
 	// External dependencies
 	podCacheStore  cache.Store
-	config         *Config
+	config         *common.Config
 	memgraphClient *MemgraphClient
 }
 
 // NewMemgraphCluster creates a new MemgraphCluster instance
-func NewMemgraphCluster(podCacheStore cache.Store, config *Config, memgraphClient *MemgraphClient) *MemgraphCluster {
+func NewMemgraphCluster(podCacheStore cache.Store, config *common.Config, memgraphClient *MemgraphClient) *MemgraphCluster {
 
 	cluster := &MemgraphCluster{
 		// Initialize cluster data

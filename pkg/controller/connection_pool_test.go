@@ -6,10 +6,12 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"memgraph-controller/pkg/common"
 )
 
 func TestNewConnectionPool(t *testing.T) {
-	config := &Config{}
+	config := &common.Config{}
 	pool := NewConnectionPool(config)
 
 	if pool == nil {
@@ -30,7 +32,7 @@ func TestNewConnectionPool(t *testing.T) {
 }
 
 func TestConnectionPool_GetDriver_EmptyAddress(t *testing.T) {
-	config := &Config{}
+	config := &common.Config{}
 	pool := NewConnectionPool(config)
 	defer pool.Close(context.Background())
 
@@ -47,7 +49,7 @@ func TestConnectionPool_GetDriver_EmptyAddress(t *testing.T) {
 
 
 func TestConnectionPool_Close(t *testing.T) {
-	config := &Config{}
+	config := &common.Config{}
 	pool := NewConnectionPool(config)
 
 	// Close should not panic even with empty pool

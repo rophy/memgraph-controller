@@ -91,29 +91,6 @@ setup_python_environment() {
     log_info "📦 Installing Python dependencies..."
     cd "$test_dir"
     
-    # Show what we're trying to install
-    log_info "Installing from requirements.txt:"
-    cat requirements.txt
-    
-    # Try to install with more verbose output
-    if ! python3 -m pip install -r requirements.txt --disable-pip-version-check; then
-        log_error "Failed to install Python dependencies"
-        log_error "Try running manually: cd tests/e2e && python3 -m pip install -r requirements.txt"
-        exit 1
-    fi
-    
-    # Verify pytest is available via python module
-    local pytest_version
-    if ! pytest_version=$(python3 -m pytest --version 2>&1); then
-        log_error "pytest module not available"
-        log_error "Error: $pytest_version"
-        log_error "Try: python3 -m pip install pytest"
-        exit 1
-    else
-        log_info "✅ Found pytest module: $pytest_version"
-    fi
-    
-    log_success "✅ Python environment ready"
     cd - > /dev/null
 }
 

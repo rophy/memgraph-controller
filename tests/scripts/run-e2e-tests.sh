@@ -32,23 +32,16 @@ log_warning() {
 check_prerequisites() {
     log_info "🔍 Checking prerequisites for Python E2E tests..."
     
-    # Check if python3 is available
-    if ! command -v python3 &> /dev/null; then
-        log_error "python3 is required but not installed"
+    # Check if python is available
+    if ! command -v python &> /dev/null; then
+        log_error "python is required but not installed"
         log_error "Please install Python 3.8+ to run Python E2E tests"
         exit 1
     fi
     
     local python_version
-    python_version=$(python3 --version 2>&1 | cut -d' ' -f2)
+    python_version=$(python --version 2>&1 | cut -d' ' -f2)
     log_info "✅ Found Python: $python_version"
-    
-    # Check if pip is available
-    if ! python3 -m pip --version &> /dev/null; then
-        log_error "pip is required but not available"
-        log_error "Please ensure pip is installed for Python 3"
-        exit 1
-    fi
     
     # Check kubectl
     if ! command -v kubectl &> /dev/null; then
@@ -111,14 +104,12 @@ run_python_tests() {
         pytest_args="$pytest_args $*"
     fi
     
-    log_info "Running: python3 -m pytest $pytest_args"
+    log_info "Running: python -m pytest $pytest_args $test_dir"
     
-    if python3 -m pytest $pytest_args; then
-        cd - > /dev/null
+    if python -m pytest $pytest_args "$test_dir"; then
         log_success "🎉 All Python E2E tests passed!"
         return 0
     else
-        cd - > /dev/null
         log_error "💥 Some Python E2E tests failed!"
         return 1
     fi

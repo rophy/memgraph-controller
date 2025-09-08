@@ -19,6 +19,9 @@ build: ## Build the memgraph-controller binary
 
 clean: ## Remove build artifacts
 	rm -rf bin/
+	rm -rf logs/*
+	rm -rf tests/e2e/__pycache__/
+	rm -rf tests/e2e/.pytest_cache/
 
 # Test targets
 test: ## Run unit tests

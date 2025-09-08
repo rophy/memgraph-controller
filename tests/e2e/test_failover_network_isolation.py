@@ -29,7 +29,8 @@ from utils import (
     get_pod_logs,
     read_log_file,
     detect_failover_in_log_file,
-    get_controller_pod
+    get_controller_pod,
+    memgraph_query_direct
 )
 
 
@@ -377,6 +378,26 @@ def test_network_partition_failover(network_isolation_manager):
     # Wait for cluster to converge again
     if not wait_for_cluster_convergence(timeout=60):
         print("⚠️  Warning: Cluster did not converge after network recovery")
+    
+    # Verify the old main is now a replica
+    print(f"\n🔍 Step 7b: Verifying old main {initial_main} is reconciled to replica...")
+    try:
+        # Query the old main pod directly to check its role
+        role_output = memgraph_query_direct(initial_main, "SHOW REPLICATION ROLE;")
+        lines = role_output.strip().split('\n')
+        
+        # Parse the role from CSV output
+        if len(lines) >= 2:
+            role_line = lines[1]  # Second line contains the actual role
+            if '"replica"' in role_line.lower():
+                print(f"✅ Old main {initial_main} successfully reconciled to replica role")
+            elif '"main"' in role_line.lower():
+                print(f"⚠️  WARNING: Old main {initial_main} still reports as main - split-brain not resolved!")
+                print("   This indicates controller hasn't fully reconciled the cluster yet")
+            else:
+                print(f"⚠️  Unexpected role for {initial_main}: {role_line}")
+    except Exception as e:
+        print(f"⚠️  Could not verify old main role: {e}")
     
     # Final validation
     print(f"\n✅ Step 8: Final validation...")

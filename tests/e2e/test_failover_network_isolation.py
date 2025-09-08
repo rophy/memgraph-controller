@@ -379,25 +379,43 @@ def test_network_partition_failover(network_isolation_manager):
     if not wait_for_cluster_convergence(timeout=60):
         print("⚠️  Warning: Cluster did not converge after network recovery")
     
-    # Verify the old main is now a replica
+    # Verify the old main is now a replica (with retries for reconciliation)
     print(f"\n🔍 Step 7b: Verifying old main {initial_main} is reconciled to replica...")
-    try:
-        # Query the old main pod directly to check its role
-        role_output = memgraph_query_direct(initial_main, "SHOW REPLICATION ROLE;")
-        lines = role_output.strip().split('\n')
-        
-        # Parse the role from CSV output
-        if len(lines) >= 2:
-            role_line = lines[1]  # Second line contains the actual role
-            if '"replica"' in role_line.lower():
-                print(f"✅ Old main {initial_main} successfully reconciled to replica role")
-            elif '"main"' in role_line.lower():
-                print(f"⚠️  WARNING: Old main {initial_main} still reports as main - split-brain not resolved!")
-                print("   This indicates controller hasn't fully reconciled the cluster yet")
+    reconciled = False
+    max_wait = 30
+    
+    for attempt in range(max_wait // 3):  # Check every 3 seconds for up to 30 seconds
+        try:
+            # Query the old main pod directly to check its role
+            role_output = memgraph_query_direct(initial_main, "SHOW REPLICATION ROLE;")
+            lines = role_output.strip().split('\n')
+            
+            # Parse the role from CSV output
+            if len(lines) >= 2:
+                role_line = lines[1]  # Second line contains the actual role
+                if '"replica"' in role_line.lower():
+                    print(f"✅ Old main {initial_main} successfully reconciled to replica role after {(attempt+1)*3}s")
+                    reconciled = True
+                    break
+                elif '"main"' in role_line.lower():
+                    if attempt < (max_wait // 3 - 1):  # Not last attempt
+                        print(f"⏳ Old main {initial_main} still reports as main, waiting for reconciliation... ({(attempt+1)*3}s/{max_wait}s)")
+                        time.sleep(3)
+                    else:
+                        print(f"⚠️  WARNING: Old main {initial_main} still reports as main after {max_wait}s - split-brain not resolved!")
+                        print("   This indicates controller hasn't fully reconciled the cluster yet")
+                else:
+                    print(f"⚠️  Unexpected role for {initial_main}: {role_line}")
+                    break
+        except Exception as e:
+            if attempt < (max_wait // 3 - 1):  # Not last attempt
+                print(f"⏳ Could not query old main (may be restarting): {e}. Retrying... ({(attempt+1)*3}s/{max_wait}s)")
+                time.sleep(3)
             else:
-                print(f"⚠️  Unexpected role for {initial_main}: {role_line}")
-    except Exception as e:
-        print(f"⚠️  Could not verify old main role: {e}")
+                print(f"⚠️  Could not verify old main role after {max_wait}s: {e}")
+    
+    if not reconciled and attempt == (max_wait // 3 - 1):
+        print(f"⚠️  Old main {initial_main} was not reconciled to replica after {max_wait}s")
     
     # Final validation
     print(f"\n✅ Step 8: Final validation...")

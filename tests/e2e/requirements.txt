@@ -17,3 +17,7 @@ PyYAML>=5.4.0
 
 # Log parsing
 logfmt>=0.4
+
+# Code quality tools (optional for development)
+flake8>=6.0.0
+pyflakes>=3.0.0

@@ -76,6 +76,27 @@ kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --outp
 
 **Do NOT rely on the memgraph-controller status API for debugging** - always verify the actual Memgraph state directly using the above commands.
 
+# Python E2E Test Development
+
+## Code Quality Requirements
+
+**When making ANY changes to Python-based tests in `tests/e2e/`:**
+
+1. **ALWAYS activate the virtual environment first:**
+   ```bash
+   source venv/bin/activate
+   ```
+
+2. **ALWAYS run syntax checking before committing:**
+   ```bash
+   # Check for syntax errors and basic issues
+   flake8 tests/e2e/*.py
+   ```
+
+3. **NEVER commit Python code with syntax errors** - this breaks the E2E test pipeline
+
+**Remember:** Always run these checks from within the activated virtual environment to ensure proper dependency resolution.
+
 # DESIGN COMPLIANCE FRAMEWORK
 
 > **CRITICAL**: All code MUST implement specific parts of the design documents in [design/](./design/)  

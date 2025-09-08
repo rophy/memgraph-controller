@@ -36,7 +36,7 @@ def pytest_runtest_teardown(item, nextitem):
 def cluster_ready():
     """Fixture to ensure cluster is ready for testing"""
     from utils import wait_for_cluster_ready
-    
+
     try:
         wait_for_cluster_ready()
         return True

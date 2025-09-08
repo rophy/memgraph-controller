@@ -305,20 +305,26 @@ class TestFailoverPodDeletion:
             print("⚠ No operations logged during failover window - test-client likely stopped")
             print("This indicates complete service disruption during failover")
             
-            # Wait longer and check if test-client recovers
-            print("Waiting additional 15s for test-client recovery...")
-            time.sleep(15)
+            # Wait for test-client to recover
+            print("Waiting for test-client recovery...")
+            recovery_confirmed = False
             
-            # Check if operations resume - look at logs from failover start, not 30s later
-            recovery_since_time = failover_start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
-            recent_logs = get_test_client_logs_since(recovery_since_time)
-            # Analyze a 45-second window from failover start to capture recovery
-            recent_analysis = analyze_logs_for_failover(recent_logs, failover_start_time, window_seconds=45)
+            # Poll for recovery over 20 seconds
+            for attempt in range(10):  # 10 attempts * 2 seconds = 20 seconds
+                recovery_since_time = failover_start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
+                recent_logs = get_test_client_logs_since(recovery_since_time)
+                # Analyze a 45-second window from failover start to capture recovery
+                recent_analysis = analyze_logs_for_failover(recent_logs, failover_start_time, window_seconds=45)
+                
+                if recent_analysis['success_count'] > 0:
+                    print(f"✓ Test-client recovered and operations resumed after {(attempt+1)*2}s")
+                    recovery_confirmed = True
+                    break
+                    
+                if attempt < 9:  # Don't sleep on last iteration
+                    time.sleep(2)
             
-            if recent_analysis['success_count'] > 0:
-                print("✓ Test-client recovered and operations resumed")
-                recovery_confirmed = True
-            else:
+            if not recovery_confirmed:
                 print("❌ Test-client has not recovered - extended outage")
                 recovery_confirmed = False
                 

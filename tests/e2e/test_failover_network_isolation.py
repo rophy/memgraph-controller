@@ -22,6 +22,9 @@ from utils import (
     kubectl_apply_yaml,
     kubectl_delete_resource,
     wait_for_cluster_convergence,
+    wait_for_controller_to_detect_failure,
+    wait_for_network_policy_effect,
+    wait_for_test_client_recovery,
     get_test_client_logs,
     find_main_pod_by_querying,
     log_info,
@@ -273,7 +276,10 @@ def test_network_partition_failover(network_isolation_manager):
     
     # Verify the NetworkPolicy is actually blocking connections
     print("\n🔍 Step 2a: Verifying network isolation is effective...")
-    time.sleep(2)  # Give NetworkPolicy time to take effect
+    
+    # Wait for NetworkPolicy to take effect
+    if not wait_for_network_policy_effect(initial_main, timeout=10):
+        print("⚠️  Warning: NetworkPolicy may not be fully effective yet")
     
     if not verify_network_isolation(initial_main):
         pytest.skip("NetworkPolicy not blocking connections - skipping test. "
@@ -291,9 +297,12 @@ def test_network_partition_failover(network_isolation_manager):
     # Step 4: Wait for failover completion
     print("\n🔄 Step 4: Waiting for failover completion...")
     
-    # Give controller time to detect the failure (health check intervals)
-    print("⏳ Allowing time for controller health checks to detect failure...")
-    time.sleep(15)  # Wait for controller to detect failure
+    # Wait for controller to detect the failure
+    print("⏳ Waiting for controller to detect pod failure...")
+    if wait_for_controller_to_detect_failure(test_start_time, timeout=30):
+        print("✅ Controller detected pod failure")
+    else:
+        print("⚠️  Controller may not have detected failure yet")
     
     # Check controller logs for failover events (the source of truth during split-brain)
     print("🔍 Checking controller logs for failover activity...")
@@ -352,10 +361,11 @@ def test_network_partition_failover(network_isolation_manager):
     # Step 5: Verify post-failover functionality
     print(f"\n✅ Step 5: Verifying post-failover functionality...")
     
-    # Verify test client success after failover
-    time.sleep(10)  # Allow time for connections to recover
-    
-    if not verify_recent_test_client_success(required_consecutive=5):
+    # Wait for test client to recover and show successful operations
+    print("⏳ Waiting for test client to recover...")
+    if wait_for_test_client_recovery(required_consecutive=5, timeout=20):
+        print("✅ Test client recovered and showing successful operations")
+    else:
         print("⚠️  Warning: Test client not showing recent successes after failover")
     
     # Verify new main is different
@@ -372,11 +382,8 @@ def test_network_partition_failover(network_isolation_manager):
     # Step 7: Wait for cluster reconciliation
     print(f"\n🔄 Step 7: Waiting for cluster reconciliation...")
     
-    # Allow time for network recovery and reconciliation
-    time.sleep(30)
-    
-    # Wait for cluster to converge again
-    if not wait_for_cluster_convergence(timeout=60):
+    # Wait for cluster to converge again (includes network recovery time)
+    if not wait_for_cluster_convergence(timeout=90):
         print("⚠️  Warning: Cluster did not converge after network recovery")
     
     # Verify the old main is now a replica (with retries for reconciliation)

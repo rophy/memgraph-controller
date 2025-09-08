@@ -722,6 +722,98 @@ def wait_for_cluster_convergence(timeout: int = 60) -> bool:
     raise E2ETestError(f"Cluster failed to converge within {timeout}s")
 
 
+def wait_for_controller_to_detect_failure(since_time: str, timeout: int = 30) -> bool:
+    """
+    Wait for controller to detect pod failure by checking logs for health check failures.
+    
+    Args:
+        since_time: ISO format timestamp to check logs from
+        timeout: Maximum wait time in seconds
+        
+    Returns:
+        True if failure detected, False if timeout
+    """
+    start_time = time.time()
+    controller_pod = get_controller_pod()
+    
+    while time.time() - start_time < timeout:
+        try:
+            # Get controller logs and check for health check failures
+            log_filepath = get_pod_logs(controller_pod, since_time=since_time)
+            with open(log_filepath, 'r') as f:
+                log_content = f.read()
+            
+            # Look for health check failure indicators
+            if any(indicator in log_content for indicator in [
+                "health check failed",
+                "marking pod as unhealthy",
+                "failed to connect to pod",
+                "initiating failover"
+            ]):
+                return True
+                
+        except Exception as e:
+            log_info(f"Error checking controller logs: {e}")
+        
+        elapsed = int(time.time() - start_time)
+        if elapsed < timeout - 1:
+            time.sleep(1)
+    
+    return False
+
+
+def wait_for_network_policy_effect(pod_name: str, timeout: int = 10) -> bool:
+    """
+    Wait for NetworkPolicy to take effect by verifying connection failure.
+    
+    Args:
+        pod_name: Pod to test connectivity to
+        timeout: Maximum wait time in seconds
+        
+    Returns:
+        True if NetworkPolicy is blocking connections, False if timeout
+    """
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        try:
+            # Try to query the pod - should fail if NetworkPolicy is working
+            memgraph_query_direct(pod_name, "RETURN 1;")
+            # If query succeeds, NetworkPolicy hasn't taken effect yet
+            elapsed = int(time.time() - start_time)
+            if elapsed < timeout - 1:
+                time.sleep(1)
+        except (MemgraphQueryError, subprocess.CalledProcessError):
+            # Connection failed - NetworkPolicy is working
+            return True
+    
+    return False
+
+
+def wait_for_test_client_recovery(required_consecutive: int = 5, timeout: int = 30) -> bool:
+    """
+    Wait for test client to show consecutive successful operations.
+    
+    Args:
+        required_consecutive: Number of consecutive successes required
+        timeout: Maximum wait time in seconds
+        
+    Returns:
+        True if client recovered, False if timeout
+    """
+    start_time = time.time()
+    
+    while time.time() - start_time < timeout:
+        if verify_recent_test_client_success(required_consecutive=required_consecutive):
+            return True
+        
+        elapsed = int(time.time() - start_time)
+        if elapsed < timeout - 2:
+            time.sleep(2)
+    
+    return False
+
+
 def write_test_data(test_id: str, test_value: str) -> bool:
     """Write test data to memgraph via client"""
     try:

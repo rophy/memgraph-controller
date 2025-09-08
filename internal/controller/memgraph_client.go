@@ -317,7 +317,7 @@ func assessReplicationHealth(status string, behind int) (bool, string) {
 func NewMemgraphClient(config *common.Config) *MemgraphClient {
 	return &MemgraphClient{
 		config:         config,
-		connectionPool: NewConnectionPool(config), // Create own connection pool initially
+		connectionPool: NewConnectionPool(config), // Each client has its own connection pool
 		retryConfig: RetryConfig{
 			MaxRetries: 3,
 			BaseDelay:  1 * time.Second,
@@ -326,10 +326,6 @@ func NewMemgraphClient(config *common.Config) *MemgraphClient {
 	}
 }
 
-// SetConnectionPool sets the connection pool from ClusterState
-func (mc *MemgraphClient) SetConnectionPool(connectionPool *ConnectionPool) {
-	mc.connectionPool = connectionPool
-}
 
 func (mc *MemgraphClient) Close(ctx context.Context) {
 	if mc.connectionPool != nil {

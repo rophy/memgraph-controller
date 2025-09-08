@@ -20,7 +20,8 @@ make test
 3. Wait for the memgraph-ha cluster to stablize. Docker build takes around 120s, other parts around 30s.
    Can check memgraph-controller pod logs to assist.
 4. Run `make test-e2e`, which builds E2E test container and runs tests as Kubernetes Job.
-5. If asked to run e2e tests repeatly, use `tests/scripts/repeat-e2e-tests.sh`
+5. For single test execution: `make test-e2e ARGS="test_file.py"` or `make test-e2e ARGS="test_file.py::test_function"`
+6. If asked to run e2e tests repeatly, use `tests/scripts/repeat-e2e-tests.sh`
 
 
 ## Standard Development Process

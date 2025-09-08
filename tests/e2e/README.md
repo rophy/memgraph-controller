@@ -14,8 +14,21 @@ Tests run as Kubernetes Jobs in the `memgraph` namespace and connect directly to
 
 ## Running Tests
 
+### All Tests
 ```bash
 make test-e2e        # Run all E2E tests
+```
+
+### Single Test
+```bash
+# Run a specific test file
+make test-e2e ARGS="test_failover_pod_deletion.py"
+
+# Run a specific test function
+make test-e2e ARGS="test_failover_pod_deletion.py::test_pod_deletion_failover"
+
+# Run with additional pytest options
+make test-e2e ARGS="-k failover -v"
 ```
 
 ### Reliability Testing

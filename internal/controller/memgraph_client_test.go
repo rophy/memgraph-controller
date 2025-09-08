@@ -9,6 +9,7 @@ import (
 func TestMemgraphClient_QueryReplicationRole_EmptyAddress(t *testing.T) {
 	config := &common.Config{}
 	client := NewMemgraphClient(config)
+	// Note: QueryReplicationRole uses a separate driver, so it doesn't need the connection pool
 
 	_, err := client.QueryReplicationRole(context.Background(), "")
 	if err == nil {
@@ -24,6 +25,7 @@ func TestMemgraphClient_QueryReplicationRole_EmptyAddress(t *testing.T) {
 func TestMemgraphClient_TestConnection_EmptyAddress(t *testing.T) {
 	config := &common.Config{}
 	client := NewMemgraphClient(config)
+	// Note: TestConnection uses a separate driver, so it doesn't need the connection pool
 
 	err := client.TestConnection(context.Background(), "")
 	if err == nil {
@@ -48,6 +50,12 @@ func TestNewMemgraphClient(t *testing.T) {
 	if client.config != config {
 		t.Error("NewMemgraphClient() did not store config correctly")
 	}
+
+	// Verify connection pool is created
+	if client.connectionPool == nil {
+		t.Error("NewMemgraphClient() should create its own connection pool")
+	}
+
 }
 
 // Note: Integration tests with real Memgraph instances would go in e2e tests

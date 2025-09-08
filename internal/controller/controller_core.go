@@ -22,11 +22,11 @@ import (
 var logger = common.GetLogger()
 
 type MemgraphController struct {
-	clientset      kubernetes.Interface
-	config         *common.Config
-	memgraphClient *MemgraphClient
-	httpServer     *httpapi.HTTPServer
-	gatewayServer  *gateway.Server
+	clientset        kubernetes.Interface
+	config           *common.Config
+	memgraphClient   *MemgraphClient    // Singleton instance - all components use this
+	httpServer       *httpapi.HTTPServer
+	gatewayServer    *gateway.Server
 
 	// Leader election
 	leaderElection  *LeaderElection
@@ -69,10 +69,14 @@ type MemgraphController struct {
 
 func NewMemgraphController(clientset kubernetes.Interface, config *common.Config) *MemgraphController {
 
+	// Create single MemgraphClient instance with its own connection pool
+	// All components will use this singleton instance
+	memgraphClient := NewMemgraphClient(config)
+
 	controller := &MemgraphController{
 		clientset:      clientset,
 		config:         config,
-		memgraphClient: NewMemgraphClient(config),
+		memgraphClient: memgraphClient,  // Singleton instance
 	}
 
 	// Initialize HTTP server
@@ -627,7 +631,7 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 
 	totalConnections := 0
 
-	// Reset controller's internal connection pool
+	// Reset the singleton MemgraphClient's connection pool
 	if c.memgraphClient != nil && c.memgraphClient.connectionPool != nil {
 		c.memgraphClient.connectionPool.mutex.RLock()
 		controllerConnections := len(c.memgraphClient.connectionPool.drivers)
@@ -635,9 +639,9 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 
 		c.memgraphClient.connectionPool.Close(ctx)
 		totalConnections += controllerConnections
-		logger.Info("Admin API: Reset controller connections", "count", controllerConnections)
+		logger.Info("Admin API: Reset singleton MemgraphClient connection pool", "count", controllerConnections)
 	} else {
-		logger.Warn("Admin API: No controller connection pool to reset")
+		logger.Warn("Admin API: No MemgraphClient connection pool to reset")
 	}
 
 	// Reset gateway connections

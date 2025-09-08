@@ -3,5 +3,17 @@
 # Testing framework
 pytest>=7.0.0
 
+# HTTP requests
+requests>=2.25.0
+
+# Kubernetes client
+kubernetes>=18.0.0
+
+# Date/time handling
+python-dateutil>=2.8.0
+
+# YAML processing
+PyYAML>=5.4.0
+
 # Log parsing
 logfmt>=0.4

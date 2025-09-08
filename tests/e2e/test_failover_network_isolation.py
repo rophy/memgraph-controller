@@ -10,7 +10,6 @@ Kubernetes NetworkPolicy, forcing automatic failover.
 import json
 import pytest
 import time
-import subprocess
 from datetime import datetime, timezone
 
 from utils import (
@@ -19,6 +18,9 @@ from utils import (
     parse_logfmt,
     get_test_client_pod,
     kubectl_exec,
+    kubectl_get,
+    kubectl_apply_yaml,
+    kubectl_delete_resource,
     wait_for_cluster_convergence,
     get_test_client_logs,
     find_main_pod_by_querying,
@@ -58,15 +60,13 @@ spec:
 """
         
         try:
-            # Apply NetworkPolicy using kubectl
-            result = subprocess.run([
-                "kubectl", "apply", "-f", "-"
-            ], input=policy_yaml, text=True, capture_output=True, check=True)
+            # Apply NetworkPolicy using utility function
+            kubectl_apply_yaml(policy_yaml)
             
             print(f"✅ Created NetworkPolicy: {self.policy_name}")
             return self.policy_name
-        except subprocess.CalledProcessError as e:
-            raise Exception(f"Failed to create NetworkPolicy: {e.stderr}")
+        except Exception as e:
+            raise Exception(f"Failed to create NetworkPolicy: {e}")
     
     def cleanup(self):
         """Clean up NetworkPolicy if it exists."""
@@ -74,16 +74,12 @@ spec:
             return
             
         try:
-            result = subprocess.run([
-                "kubectl", "delete", "networkpolicy", self.policy_name, "-n", self.namespace
-            ], capture_output=True, text=True, check=False)
+            success = kubectl_delete_resource("networkpolicy", self.policy_name, self.namespace)
             
-            if result.returncode == 0:
+            if success:
                 print(f"✅ Cleaned up NetworkPolicy: {self.policy_name}")
-            elif "not found" in result.stderr:
-                print(f"✅ NetworkPolicy {self.policy_name} already deleted")
             else:
-                print(f"⚠️  Warning: Failed to cleanup NetworkPolicy {self.policy_name}: {result.stderr}")
+                print(f"⚠️  Warning: Failed to cleanup NetworkPolicy {self.policy_name}")
         except Exception as e:
             print(f"⚠️  Warning: Failed to cleanup NetworkPolicy {self.policy_name}: {e}")
         finally:
@@ -98,6 +94,48 @@ def network_isolation_manager():
         yield manager
     finally:
         manager.cleanup()
+
+
+def verify_network_isolation(isolated_pod: str) -> bool:
+    """Verify that NetworkPolicy is actually blocking connections to the isolated pod."""
+    try:
+        # Get the isolated pod's IP using kubectl_get
+        pod_ip = kubectl_get(f"pod/{isolated_pod}", namespace="memgraph", output="jsonpath={.status.podIP}")
+        if not pod_ip:
+            print(f"⚠️  Could not get IP for pod {isolated_pod}")
+            return False
+            
+        print(f"🔍 Testing connection to isolated pod {isolated_pod} at {pod_ip}:7687...")
+        
+        # Get a controller pod to test from
+        controller_pods_output = kubectl_get("pods", namespace="memgraph", 
+                                           selector="app=memgraph-controller", output="name")
+        controller_pods = controller_pods_output.split('\n')
+        if not controller_pods or not controller_pods[0]:
+            print("⚠️  No controller pods found")
+            return False
+            
+        controller_pod = controller_pods[0].replace("pod/", "")
+        
+        # Try to connect from controller to isolated pod
+        # Using nc (netcat) to test TCP connection with timeout
+        stdout, stderr, exit_code = kubectl_exec(
+            controller_pod,
+            "memgraph",
+            ["nc", "-zv", "-w", "2", pod_ip, "7687"]
+        )
+        
+        if exit_code == 0:
+            print(f"❌ Connection succeeded - NetworkPolicy is NOT blocking traffic!")
+            print(f"   This means NetworkPolicy enforcement is not working in this cluster.")
+            return False
+        else:
+            print(f"✅ Connection failed as expected - NetworkPolicy IS blocking traffic")
+            return True
+            
+    except Exception as e:
+        print(f"⚠️  Error verifying network isolation: {e}")
+        return False
 
 
 def reset_controller_connections():
@@ -222,7 +260,16 @@ def test_network_partition_failover(network_isolation_manager):
     
     policy_name = network_isolation_manager.create_isolation_policy(initial_main)
     
+    # Verify the NetworkPolicy is actually blocking connections
+    print("\n🔍 Step 2a: Verifying network isolation is effective...")
+    time.sleep(2)  # Give NetworkPolicy time to take effect
+    
+    if not verify_network_isolation(initial_main):
+        pytest.skip("NetworkPolicy not blocking connections - skipping test. "
+                   "NetworkPolicy enforcement may not be enabled in this cluster.")
+    
     # Reset connections to force immediate connection failures
+    print("\n🔄 Step 2b: Resetting controller connections...")
     reset_controller_connections()
     
     # Step 3: Wait for failure detection

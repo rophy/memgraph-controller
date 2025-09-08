@@ -106,6 +106,9 @@ def detect_failover_in_controller_logs(logs: str) -> Dict[str, Any]:
     # Look for failover-related log messages
     failover_patterns = [
         "promoting replica to main",
+        "promoting sync replica to main",
+        "health prober: failure threshold reached",
+        "health prober triggering failover",
         "main pod failed",
         "updating replication topology", 
         "cluster failover",
@@ -314,6 +317,50 @@ def kubectl_get(resource: str, namespace: str = None, selector: str = None,
         raise KubectlError(f"kubectl get failed: {result.stderr}")
     
     return result.stdout.strip()
+
+
+def kubectl_apply_yaml(yaml_content: str, namespace: str = None) -> None:
+    """
+    Apply YAML content using kubectl apply
+    
+    Args:
+        yaml_content: The YAML content to apply
+        namespace: Optional namespace (if not specified in YAML)
+    """
+    cmd = ["kubectl", "apply", "-f", "-"]
+    if namespace:
+        cmd.extend(["-n", namespace])
+    
+    result = subprocess.run(cmd, input=yaml_content, text=True, capture_output=True)
+    if result.returncode != 0:
+        raise KubectlError(f"kubectl apply failed: {result.stderr}")
+
+
+def kubectl_delete_resource(resource_type: str, name: str, namespace: str = None) -> bool:
+    """
+    Delete a Kubernetes resource using kubectl delete
+    
+    Args:
+        resource_type: Type of resource (e.g., 'networkpolicy', 'pod')
+        name: Name of the resource to delete
+        namespace: Optional namespace
+        
+    Returns:
+        True if deleted successfully or already gone, False on error
+    """
+    cmd = ["kubectl", "delete", resource_type, name]
+    if namespace:
+        cmd.extend(["-n", namespace])
+    
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    
+    if result.returncode == 0:
+        return True
+    elif "not found" in result.stderr:
+        return True  # Already deleted
+    else:
+        print(f"⚠️  Warning: Failed to delete {resource_type} {name}: {result.stderr}")
+        return False
 
 
 def get_test_client_pod() -> str:

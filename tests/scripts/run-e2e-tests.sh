@@ -92,7 +92,6 @@ run_python_tests() {
     log_info "=" * 50
     
     local test_dir="tests/e2e"
-    cd "$test_dir"
     
     # Run pytest with verbose output and short traceback
     # Using -x to stop on first failure for faster feedback

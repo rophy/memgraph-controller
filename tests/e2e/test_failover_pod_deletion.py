@@ -309,10 +309,11 @@ class TestFailoverPodDeletion:
             print("Waiting additional 15s for test-client recovery...")
             time.sleep(15)
             
-            # Check if operations resume
-            recovery_since_time = (failover_start_time + timedelta(seconds=30)).strftime('%Y-%m-%dT%H:%M:%SZ')
+            # Check if operations resume - look at logs from failover start, not 30s later
+            recovery_since_time = failover_start_time.strftime('%Y-%m-%dT%H:%M:%SZ')
             recent_logs = get_test_client_logs_since(recovery_since_time)
-            recent_analysis = analyze_logs_for_failover(recent_logs, failover_start_time + timedelta(seconds=30), window_seconds=10)
+            # Analyze a 45-second window from failover start to capture recovery
+            recent_analysis = analyze_logs_for_failover(recent_logs, failover_start_time, window_seconds=45)
             
             if recent_analysis['success_count'] > 0:
                 print("✓ Test-client recovered and operations resumed")

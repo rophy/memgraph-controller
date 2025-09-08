@@ -212,6 +212,7 @@ func (c *MemgraphController) executeFailover(ctx context.Context) error {
 		logger.Error("failover: cached replica status is not \"ready\", unsafe to perform failover",
 			"pod_name", targetSyncReplicaName,
 			"status", syncReplica.ParsedDataInfo.Status,
+			"data_info", syncReplica.DataInfo,
 		)
 		return fmt.Errorf("cached replica status is not \"ready\"")
 	}

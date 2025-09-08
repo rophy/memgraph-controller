@@ -52,10 +52,7 @@ def wait_for_controller_to_detect_failure(
 
       # Look for health check failure indicators
       if any(indicator in log_content for indicator in [
-              "health check failed",
-              "marking pod as unhealthy",
-              "failed to connect to pod",
-              "initiating failover"
+              "cannot ping main pod",
       ]):
         return True
 
@@ -64,7 +61,7 @@ def wait_for_controller_to_detect_failure(
 
     elapsed = int(time.time() - start_time)
     if elapsed < timeout - 1:
-      time.sleep(1)
+      time.sleep(5)
 
   return False
 
@@ -159,18 +156,23 @@ def detect_failover_in_controller_logs(logs: str) -> Dict[str, Any]:
       "failover_events": []
   }
 
-  # Look for failover-related log messages
+  # Look for failover-related log messages (match actual controller output)
   failover_patterns = [
       "promoting replica to main",
       "promoting sync replica to main",
+      "success promoting sync replica to main",
       "health prober: failure threshold reached",
+      "🚨 health prober: failure threshold reached, triggering failover",
       "health prober triggering failover",
+      "health prober triggering failover execution",
       "main pod failed",
       "updating replication topology",
       "cluster failover",
       "main role changed",
       "reconciling failover",
-      "setting main role"
+      "setting main role",
+      "failover execution failed",
+      "failover: cached replica status"
   ]
 
   lines = logs.strip().split('\n')
@@ -466,6 +468,10 @@ def test_network_partition_failover(network_isolation_manager):
   # Poll controller logs for up to 120 seconds
   for attempt in range(24):  # 24 * 5 = 120 seconds
     try:
+      if attempt < 23:  # Don't sleep on last iteration
+        print(f"⏳ Waiting for failover... ({(attempt+1)*5}s/120s)")
+        time.sleep(5)
+
       # Get controller logs and check for failover
       controller_pod = get_controller_pod()
       controller_logs = get_pod_logs(
@@ -474,10 +480,15 @@ def test_network_partition_failover(network_isolation_manager):
 
       if failover_events.get('failover_triggered'):
         print(
-            f"✅ Failover detected! Found {len(failover_events.get('events', []))} events")
+            f"✅ Failover attempted! Found {len(failover_events.get('failover_events', []))} events")
+        
+        # Debug: show what events were detected
+        for event in failover_events.get('failover_events', []):
+          print(f"  📋 Event: {event}")
 
-        # Parse controller logs to find the new main
+        # Parse controller logs to find the new main or failure reasons
         lines = controller_logs.strip().split('\n')
+        failover_execution_failed = False
 
         # Look for successful promotion messages
         for line in lines:
@@ -490,18 +501,9 @@ def test_network_partition_failover(network_isolation_manager):
             print(f"📊 Controller promoted {new_main} to main")
             failover_detected = True
             break
-          elif 'promoting sync replica to main' in line and 'pod_name=' in line:
-            # Backup pattern
-            pod_part = line.split('pod_name=')[
-                1].split(' ')[0].strip('"')
-            new_main = pod_part.replace('_', '-')
 
         if failover_detected:
           break
-
-      if attempt < 23:  # Don't sleep on last iteration
-        print(f"⏳ Waiting for failover... ({(attempt+1)*5}s/120s)")
-        time.sleep(5)
 
     except Exception as e:
       print(f"⚠️  Error checking controller logs: {e}")
@@ -509,8 +511,18 @@ def test_network_partition_failover(network_isolation_manager):
         time.sleep(5)
 
   if not failover_detected or not new_main:
-    pytest.fail(
-        "No failover detected in controller logs after 120 seconds")
+    # Check if we at least detected failover attempts
+    controller_logs = get_pod_logs(controller_pod, since_time=test_start_time)
+    final_events = detect_failover_in_controller_logs(controller_logs)
+    
+    if final_events.get('failover_triggered'):
+      print("🔍 Final diagnosis: Failover was attempted but did not complete successfully")
+      print("   This indicates a controller issue with replica readiness or failover execution")
+      for event in final_events.get('failover_events', [])[:5]:  # Show first 5 events
+        print(f"   📋 {event}")
+      pytest.fail("Failover attempted but failed to complete - controller may have replica readiness issues")
+    else:
+      pytest.fail("No failover detected in controller logs after 120 seconds")
 
   if new_main == initial_main:
     pytest.fail(

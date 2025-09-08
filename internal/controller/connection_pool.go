@@ -7,8 +7,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 	"memgraph-controller/internal/common"
+
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 type ConnectionPool struct {
@@ -47,7 +48,7 @@ func (cp *ConnectionPool) GetDriver(ctx context.Context, boltAddress string) (ne
 			return driver, nil
 		} else {
 			// Driver is no longer valid, remove it and create a new one
-			logger.Warn("driver for %s is no longer valid", "bolt_address", boltAddress, "error", err)
+			logger.Warn("driver is no longer valid", "bolt_address", boltAddress, "error", err)
 			cp.removeDriver(boltAddress)
 		}
 	}
@@ -80,7 +81,7 @@ func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) 
 	}
 
 	cp.drivers[boltAddress] = driver
-	logger.Debug("created new driver for %s", "bolt_address", boltAddress)
+	logger.Debug("created new driver", "bolt_address", boltAddress)
 	return driver, nil
 }
 
@@ -126,7 +127,7 @@ func (cp *ConnectionPool) InvalidatePodConnection(podName string) {
 		if driver, exists := cp.drivers[boltAddress]; exists {
 			driver.Close(context.Background())
 			delete(cp.drivers, boltAddress)
-			logger.Debug("invalidated connection for pod %s: IP changed from %s to %s", podName, ip)
+			logger.Debug("invalidated connection: IP changed", "pod_name", podName, "old_ip", ip)
 		}
 	}
 }
@@ -142,7 +143,7 @@ func (cp *ConnectionPool) Close(ctx context.Context) {
 
 	for boltAddress, driver := range cp.drivers {
 		driver.Close(ctx)
-		logger.Debug("closed driver for %s", "bolt_address", boltAddress)
+		logger.Debug("closed driver", "bolt_address", boltAddress)
 	}
 	cp.drivers = make(map[string]neo4j.DriverWithContext)
 	cp.podIPs = make(map[string]string)

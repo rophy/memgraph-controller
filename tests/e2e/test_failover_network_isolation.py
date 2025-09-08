@@ -24,7 +24,6 @@ from utils import (
     wait_for_cluster_convergence,
     get_test_client_logs,
     find_main_pod_by_querying,
-    monitor_main_pod_changes_enhanced,
     log_info,
     log_error,
     get_pod_logs,
@@ -295,38 +294,59 @@ def test_network_partition_failover(network_isolation_manager):
     print("⏳ Allowing time for controller health checks to detect failure...")
     time.sleep(15)  # Wait for controller to detect failure
     
-    # Use existing function to monitor main pod changes  
-    failover_result = monitor_main_pod_changes_enhanced(initial_main, timeout=120)
+    # Check controller logs for failover events (the source of truth during split-brain)
+    print("🔍 Checking controller logs for failover activity...")
+    new_main = None
+    failover_detected = False
     
-    if not failover_result.get("success", False):
-        print(f"⚠️  Failover monitoring result: {failover_result}")
-        
-        # Check controller logs for debug information
-        print("🔍 Checking controller logs for failover activity...")
+    # Poll controller logs for up to 120 seconds
+    for attempt in range(24):  # 24 * 5 = 120 seconds
         try:
-            # Save controller logs to file for debugging
+            # Get controller logs and check for failover
             controller_pod = get_controller_pod()
             controller_log_filepath = get_pod_logs(controller_pod, since_time=test_start_time)
             failover_events = detect_failover_in_log_file(controller_log_filepath)
-            print(f"📊 Controller failover events: {len(failover_events.get('events', []))}")
-            if failover_events.get('events'):
-                for event in failover_events['events'][:3]:  # Show first 3 events
-                    print(f"  - {event}")
+            
+            if failover_events.get('failover_triggered'):
+                print(f"✅ Failover detected! Found {len(failover_events.get('events', []))} events")
+                
+                # Parse controller logs to find the new main
+                with open(controller_log_filepath, 'r') as f:
+                    log_content = f.read()
+                
+                # Look for successful promotion messages
+                for line in log_content.split('\n'):
+                    if 'success promoting sync replica to main' in line and 'pod_name=' in line:
+                        # Extract pod name from log line
+                        pod_part = line.split('pod_name=')[1].split(' ')[0].strip('"')
+                        new_main = pod_part.replace('_', '-')  # Convert underscore to dash
+                        print(f"📊 Controller promoted {new_main} to main")
+                        failover_detected = True
+                        break
+                    elif 'promoting sync replica to main' in line and 'pod_name=' in line:
+                        # Backup pattern
+                        pod_part = line.split('pod_name=')[1].split(' ')[0].strip('"')
+                        new_main = pod_part.replace('_', '-')
+                
+                if failover_detected:
+                    break
+            
+            if attempt < 23:  # Don't sleep on last iteration
+                print(f"⏳ Waiting for failover... ({(attempt+1)*5}s/120s)")
+                time.sleep(5)
+                
         except Exception as e:
-            print(f"⚠️  Could not get controller logs: {e}")
-        
-        # Try to get current main pod directly as fallback
-        try:
-            current_main = find_main_pod_by_querying()
-            if current_main != initial_main:
-                print(f"✅ Fallback detection: Failover completed {initial_main} -> {current_main}")
-                new_main = current_main
-            else:
-                pytest.fail(f"Failover monitoring failed and main pod unchanged: {failover_result}")
-        except Exception as e:
-            pytest.fail(f"Failover monitoring failed and cannot verify main pod: {e}")
-    else:
-        new_main = failover_result.get("final_main", initial_main)
+            print(f"⚠️  Error checking controller logs: {e}")
+            if attempt < 23:
+                time.sleep(5)
+    
+    if not failover_detected or not new_main:
+        pytest.fail(f"No failover detected in controller logs after 120 seconds")
+    
+    if new_main == initial_main:
+        pytest.fail(f"Controller promoted the same pod {initial_main} - not a real failover")
+    
+    print(f"✅ Failover completed: {initial_main} -> {new_main} (according to controller)")
     
     # Step 5: Verify post-failover functionality
     print(f"\n✅ Step 5: Verifying post-failover functionality...")

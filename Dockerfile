@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1
+
 # Build stage
 FROM golang:1.24-alpine AS builder
 
@@ -14,8 +16,10 @@ RUN go mod download
 COPY internal/ ./internal/
 COPY cmd/ ./cmd/
 
-# Build the controller binary
-RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -a -installsuffix cgo -o bin/memgraph-controller ./cmd/memgraph-controller
+# Build the controller binary with build cache
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    --mount=type=cache,target=/go/pkg \
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -ldflags="-w -s" -o bin/memgraph-controller ./cmd/memgraph-controller
 
 # Final stage
 FROM alpine:3.18

@@ -90,10 +90,8 @@ def test_data_write_gateway(cluster_ready, unique_test_id):
     assert read_result['records'], f"Test data not found: {unique_test_id}"
     record = read_result['records'][0]
 
-    assert record['n.id'] == unique_test_id, f"ID mismatch: expected {unique_test_id}, got {
-        record['n.id']}"
-    assert record['n.value'] == test_value, f"Value mismatch: expected {test_value}, got {
-        record['n.value']}"
+    assert record['n.id'] == unique_test_id, f"ID mismatch: expected {unique_test_id}, got {record['n.id']}"
+    assert record['n.value'] == test_value, f"Value mismatch: expected {test_value}, got {record['n.value']}"
 
     log_success(f"✅ Data write/read verified: ID={unique_test_id}")
 
@@ -128,10 +126,8 @@ def test_data_replication():
     assert read_result['records'], f"Replication test data not found: {test_id}"
     record = read_result['records'][0]
 
-    assert record['n.id'] == test_id, f"Replication data ID mismatch: {
-        record['n.id']}"
-    assert record[
-        'n.value'] == test_value, f"Replication data value mismatch: {record['n.value']}"
+    assert record['n.id'] == test_id, f"Replication data ID mismatch: {record['n.id']}"
+    assert record['n.value'] == test_value, f"Replication data value mismatch: {record['n.value']}"
 
     # Verify final node count increased
     final_count = count_nodes()

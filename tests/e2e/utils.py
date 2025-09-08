@@ -80,31 +80,32 @@ def get_controller_pod() -> str:
         raise E2ETestError("Failed to find memgraph-controller pod")
 
 
-def get_pod_logs(pod_name: str, namespace: str = MEMGRAPH_NS,
-                 tail_lines: Optional[int] = None, since_time: Optional[str] = None,
-                 output_dir: str = "logs") -> str:
+def get_logs(pod_name: Optional[str] = None, namespace: str = MEMGRAPH_NS,
+             tail_lines: Optional[int] = None, since_time: Optional[str] = None,
+             output_dir: Optional[str] = None, pod_type: str = "pod") -> str:
     """
-    Generalized function to get pod logs and save them to a file.
+    Unified function to get pod logs with flexible output options.
 
     Args:
-        pod_name: Name of the pod to get logs from
+        pod_name: Name of the pod to get logs from (auto-discovers if None based on pod_type)
         namespace: Kubernetes namespace (default: memgraph)
         tail_lines: Number of recent lines to get (optional)
         since_time: RFC3339 time to get logs since (optional)
-        output_dir: Directory to save log files (default: logs)
+        output_dir: Directory to save log files (default: None for direct return)
+        pod_type: Type of pod for auto-discovery: "controller", "test-client", or "pod"
 
     Returns:
-        Absolute path to the saved log file
+        Log content as string (if output_dir=None) or absolute path to saved log file
     """
     try:
-        # Create output directory if it doesn't exist
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Generate timestamp for unique filename
-        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[
-            :-3]  # microseconds to milliseconds
-        log_filename = f"{pod_name}_{timestamp}.log"
-        log_filepath = os.path.abspath(os.path.join(output_dir, log_filename))
+        # Auto-discover pod name based on pod_type if not provided
+        if pod_name is None:
+            if pod_type == "controller":
+                pod_name = get_controller_pod()
+            elif pod_type == "test-client":
+                pod_name = get_test_client_pod()
+            else:
+                raise E2ETestError(f"Cannot auto-discover pod name for pod_type: {pod_type}")
 
         # Build kubectl logs command
         cmd = ["kubectl", "logs", pod_name, "-n", namespace]
@@ -114,8 +115,6 @@ def get_pod_logs(pod_name: str, namespace: str = MEMGRAPH_NS,
         if since_time is not None:
             cmd.extend([f"--since-time={since_time}"])
 
-        print(f"📄 Getting logs from {pod_name}, saving to: {log_filepath}")
-
         # Execute command and capture logs
         result = subprocess.run(cmd, capture_output=True, text=True)
 
@@ -123,25 +122,54 @@ def get_pod_logs(pod_name: str, namespace: str = MEMGRAPH_NS,
             raise E2ETestError(
                 f"Failed to get logs from {pod_name}: {result.stderr}")
 
-        # Write logs to file
-        with open(log_filepath, 'w') as f:
-            f.write(f"# Pod logs from: {pod_name} (namespace: {namespace})\n")
-            f.write(
-                f"# Retrieved at: {datetime.now(timezone.utc).isoformat()}\n")
-            if tail_lines:
-                f.write(f"# Tail lines: {tail_lines}\n")
-            if since_time:
-                f.write(f"# Since time: {since_time}\n")
-            f.write(f"# Command: {' '.join(cmd)}\n")
-            f.write("# " + "="*60 + "\n\n")
-            f.write(result.stdout)
+        log_content = result.stdout
 
-        print(
-            f"✅ Saved {len(result.stdout.splitlines())} log lines to {log_filepath}")
-        return log_filepath
+        # If output_dir is specified, save to file
+        if output_dir is not None:
+            os.makedirs(output_dir, exist_ok=True)
+
+            # Generate timestamp for unique filename
+            timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[
+                :-3]  # microseconds to milliseconds
+            log_filename = f"{pod_name}_{timestamp}.log"
+            log_filepath = os.path.abspath(os.path.join(output_dir, log_filename))
+
+            print(f"📄 Getting logs from {pod_name}, saving to: {log_filepath}")
+
+            # Write logs to file
+            with open(log_filepath, 'w') as f:
+                f.write(f"# Pod logs from: {pod_name} (namespace: {namespace})\n")
+                f.write(
+                    f"# Retrieved at: {datetime.now(timezone.utc).isoformat()}\n")
+                if tail_lines:
+                    f.write(f"# Tail lines: {tail_lines}\n")
+                if since_time:
+                    f.write(f"# Since time: {since_time}\n")
+                f.write(f"# Command: {' '.join(cmd)}\n")
+                f.write("# " + "="*60 + "\n\n")
+                f.write(log_content)
+
+            print(
+                f"✅ Saved {len(log_content.splitlines())} log lines to {log_filepath}")
+            return log_filepath
+        else:
+            # Return log content directly
+            return log_content
 
     except Exception as e:
         raise E2ETestError(f"Failed to get logs from pod {pod_name}: {e}")
+
+
+def get_pod_logs(pod_name: str, namespace: str = MEMGRAPH_NS,
+                 tail_lines: Optional[int] = None, since_time: Optional[str] = None,
+                 output_dir: str = "logs") -> str:
+    """
+    Legacy wrapper for get_logs() that saves to file.
+    Maintained for backward compatibility.
+    """
+    return get_logs(pod_name=pod_name, namespace=namespace,
+                    tail_lines=tail_lines, since_time=since_time,
+                    output_dir=output_dir, pod_type="pod")
 
 
 def read_log_file(log_filepath: str) -> str:
@@ -170,139 +198,14 @@ def read_log_file(log_filepath: str) -> str:
         raise E2ETestError(f"Failed to read log file {log_filepath}: {e}")
 
 
-def detect_failover_in_log_file(log_filepath: str) -> Dict[str, Any]:
-    """
-    Detect failover events in a saved controller log file.
-
-    Args:
-        log_filepath: Path to the controller log file
-
-    Returns:
-        dict with failover detection info
-    """
-    try:
-        log_content = read_log_file(log_filepath)
-        return detect_failover_in_controller_logs(log_content)
-    except Exception as e:
-        raise E2ETestError(
-            f"Failed to detect failover in log file {log_filepath}: {e}")
-
-
 def get_controller_logs(tail_lines: int = 50) -> str:
     """Get recent logs from memgraph-controller pod"""
-    try:
-        controller_pod = get_controller_pod()
-        cmd = ["kubectl", "logs", controller_pod,
-               "-n", MEMGRAPH_NS, f"--tail={tail_lines}"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            raise E2ETestError(
-                f"Failed to get controller logs: {result.stderr}")
-
-        return result.stdout
-    except Exception as e:
-        raise E2ETestError(f"Failed to get controller logs: {e}")
+    return get_logs(pod_type="controller", tail_lines=tail_lines)
 
 
 def get_controller_logs_since(since_time: str) -> str:
     """Get controller logs since specified time"""
-    try:
-        controller_pod = get_controller_pod()
-        cmd = ["kubectl", "logs", controller_pod, "-n",
-               MEMGRAPH_NS, f"--since-time={since_time}"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            raise E2ETestError(
-                f"Failed to get controller logs since {since_time}: {result.stderr}")
-
-        return result.stdout
-    except Exception as e:
-        raise E2ETestError(
-            f"Failed to get controller logs since {since_time}: {e}")
-
-
-def detect_failover_in_controller_logs(logs: str) -> Dict[str, Any]:
-    """
-    Detect failover events in controller logs
-
-    Returns:
-        dict with failover detection info
-    """
-    result = {
-        "failover_triggered": False,
-        "main_promotion_detected": False,
-        "failover_events": []
-    }
-
-    # Look for failover-related log messages
-    failover_patterns = [
-        "promoting replica to main",
-        "promoting sync replica to main",
-        "health prober: failure threshold reached",
-        "health prober triggering failover",
-        "main pod failed",
-        "updating replication topology",
-        "cluster failover",
-        "main role changed",
-        "reconciling failover",
-        "setting main role"
-    ]
-
-    lines = logs.strip().split('\n')
-    for line in lines:
-        line_lower = line.lower()
-        for pattern in failover_patterns:
-            if pattern in line_lower:
-                result["failover_events"].append(line.strip())
-                if "promoting" in line_lower or "main role" in line_lower or "setting main" in line_lower:
-                    result["main_promotion_detected"] = True
-                result["failover_triggered"] = True
-
-    return result
-
-
-def monitor_main_pod_changes(
-    initial_main: str, timeout: int = 30) -> Dict[str, Any]:
-    """
-    Monitor for main pod role changes by polling Memgraph directly
-
-    Args:
-        initial_main: The original main pod name
-        timeout: Maximum seconds to monitor
-
-    Returns:
-        dict with change detection info
-    """
-    import time
-    start_time = time.time()
-
-    result = {
-        "main_changed": False,
-        "new_main": None,
-        "change_time": None,
-        "polling_count": 0
-    }
-
-    while time.time() - start_time < timeout:
-        try:
-            current_main = find_main_pod_by_querying()
-            result["polling_count"] += 1
-
-            if current_main != initial_main:
-                result["main_changed"] = True
-                result["new_main"] = current_main
-                result["change_time"] = time.time() - start_time
-                break
-
-        except Exception:
-            # Continue polling even if individual queries fail
-            pass
-
-        time.sleep(1)  # Poll every second
-
-    return result
+    return get_logs(pod_type="controller", since_time=since_time)
 
 
 def get_pod_age_seconds(pod_name: str) -> int:
@@ -321,69 +224,6 @@ def get_pod_age_seconds(pod_name: str) -> int:
         return age_seconds
     except Exception:
         return -1
-
-
-def monitor_main_pod_changes_enhanced(
-    initial_main: str, timeout: int = 30) -> Dict[str, Any]:
-    """
-    Enhanced monitoring for main pod role changes that also detects pod recreation.
-
-    Args:
-        initial_main: The original main pod name
-        timeout: Maximum seconds to monitor
-
-    Returns:
-        dict with enhanced change detection info
-    """
-    import time
-    start_time = time.time()
-
-    # Get initial pod age to detect recreation
-    initial_age = get_pod_age_seconds(initial_main)
-
-    result = {
-        "main_changed": False,
-        "new_main": None,
-        "change_time": None,
-        "polling_count": 0,
-        "pod_recreated": False,
-        "recreation_detected_at": None,
-        "initial_pod_age": initial_age
-    }
-
-    while time.time() - start_time < timeout:
-        try:
-            current_main = find_main_pod_by_querying()
-            result["polling_count"] += 1
-
-            # Check if main role moved to different pod
-            if current_main != initial_main:
-                result["main_changed"] = True
-                result["new_main"] = current_main
-                result["change_time"] = time.time() - start_time
-                break
-
-            # Check if the same-named pod was recreated (StatefulSet behavior)
-            current_age = get_pod_age_seconds(initial_main)
-            # 10s buffer
-            if current_age >= 0 and initial_age >= 0 and current_age < (
-                initial_age - 10):
-                result["pod_recreated"] = True
-                result["recreation_detected_at"] = time.time() - start_time
-                # In StatefulSet, recreation often means failover occurred then
-                # returned
-                result["main_changed"] = True
-                result["new_main"] = current_main  # Same name, but new pod
-                result["change_time"] = time.time() - start_time
-                break
-
-        except Exception:
-            # Continue polling even if individual queries fail
-            pass
-
-        time.sleep(1)  # Poll every second
-
-    return result
 
 
 class KubectlError(E2ETestError):
@@ -781,7 +621,7 @@ def wait_for_controller_to_detect_failure(
     while time.time() - start_time < timeout:
         try:
             # Get controller logs and check for health check failures
-            log_filepath = get_pod_logs(controller_pod, since_time=since_time)
+            log_filepath = get_logs(controller_pod, since_time=since_time, output_dir="logs")
             with open(log_filepath, 'r') as f:
                 log_content = f.read()
 
@@ -849,7 +689,7 @@ def wait_for_test_client_recovery(
     while time.time() - start_time < timeout:
         try:
             # Get recent logs and check for consecutive successes
-            logs = get_test_client_logs(tail_lines=50)
+            logs = get_logs(pod_type="test-client", tail_lines=50)
             lines = logs.strip().split('\n')
 
             # Parse recent operations
@@ -960,18 +800,7 @@ def get_pod_replication_role(pod: str) -> str:
 
 def get_test_client_logs(tail_lines: int = 50) -> str:
     """Get recent logs from test client pod"""
-    try:
-        pod = get_test_client_pod()
-        cmd = ["kubectl", "logs", pod, "-n",
-               MEMGRAPH_NS, f"--tail={tail_lines}"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            raise KubectlError(f"Failed to get logs: {result.stderr}")
-
-        return result.stdout
-    except Exception as e:
-        raise E2ETestError(f"Failed to get test client logs: {e}")
+    return get_logs(pod_type="test-client", tail_lines=tail_lines)
 
 
 def get_test_client_logs_since(since_time: str) -> str:
@@ -984,20 +813,7 @@ def get_test_client_logs_since(since_time: str) -> str:
     Returns:
         Log output as string
     """
-    try:
-        pod = get_test_client_pod()
-        cmd = ["kubectl", "logs", pod, "-n",
-               MEMGRAPH_NS, f"--since-time={since_time}"]
-        result = subprocess.run(cmd, capture_output=True, text=True)
-
-        if result.returncode != 0:
-            raise KubectlError(
-                f"Failed to get logs since {since_time}: {result.stderr}")
-
-        return result.stdout
-    except Exception as e:
-        raise E2ETestError(
-            f"Failed to get test client logs since {since_time}: {e}")
+    return get_logs(pod_type="test-client", since_time=since_time)
 
 
 def count_log_patterns(logs: str, success_pattern: str = "✓ Success",
@@ -1073,7 +889,7 @@ def wait_for_failover_recovery(timeout: int = 30) -> bool:
     log_info("⏳ Waiting for failover recovery...")
 
     # Get baseline logs before waiting
-    baseline_logs = get_test_client_logs(tail_lines=20)
+    baseline_logs = get_logs(pod_type="test-client", tail_lines=20)
     count_log_patterns(baseline_logs)
 
     while time.time() - start_time < timeout:
@@ -1082,7 +898,7 @@ def wait_for_failover_recovery(timeout: int = 30) -> bool:
             time.sleep(3)
 
             # Get recent logs
-            current_logs = get_test_client_logs(tail_lines=10)
+            current_logs = get_logs(pod_type="test-client", tail_lines=10)
 
             # Look for success pattern in recent logs
             if "✓ Success" in current_logs:

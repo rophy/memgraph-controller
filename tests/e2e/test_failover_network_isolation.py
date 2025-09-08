@@ -26,10 +26,69 @@ from utils import (
     log_error,
     get_pod_logs,
     read_log_file,
-    detect_failover_in_log_file,
     get_controller_pod,
-    memgraph_query_direct
+    memgraph_query_direct,
+    E2ETestError
 )
+from typing import Dict, Any
+
+
+def detect_failover_in_controller_logs(logs: str) -> Dict[str, Any]:
+    """
+    Detect failover events in controller logs
+
+    Returns:
+        dict with failover detection info
+    """
+    result = {
+        "failover_triggered": False,
+        "main_promotion_detected": False,
+        "failover_events": []
+    }
+
+    # Look for failover-related log messages
+    failover_patterns = [
+        "promoting replica to main",
+        "promoting sync replica to main",
+        "health prober: failure threshold reached",
+        "health prober triggering failover",
+        "main pod failed",
+        "updating replication topology",
+        "cluster failover",
+        "main role changed",
+        "reconciling failover",
+        "setting main role"
+    ]
+
+    lines = logs.strip().split('\n')
+    for line in lines:
+        line_lower = line.lower()
+        for pattern in failover_patterns:
+            if pattern in line_lower:
+                result["failover_events"].append(line.strip())
+                if "promoting" in line_lower or "main role" in line_lower or "setting main" in line_lower:
+                    result["main_promotion_detected"] = True
+                result["failover_triggered"] = True
+
+    return result
+
+
+def detect_failover_in_log_file(log_filepath: str) -> Dict[str, Any]:
+    """
+    Detect failover events in a saved controller log file.
+
+    Args:
+        log_filepath: Path to the controller log file
+
+    Returns:
+        dict with failover detection info
+    """
+    try:
+        log_content = read_log_file(log_filepath)
+        return detect_failover_in_controller_logs(log_content)
+    except Exception as e:
+        raise E2ETestError(
+            f"Failed to detect failover in log file {log_filepath}: {e}")
 
 
 class NetworkIsolationTestManager:

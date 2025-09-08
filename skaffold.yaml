@@ -6,6 +6,8 @@ metadata:
 
 # Build configuration for the controller and test client
 build:
+  local:
+    useBuildkit: true
   artifacts:
   - image: memgraph-controller
     context: .

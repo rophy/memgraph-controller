@@ -15,11 +15,112 @@ from utils import (
     delete_pod_forcefully,
     log_info,
     parse_logfmt,
-    monitor_main_pod_changes_enhanced,
     get_controller_logs_since,
-    detect_failover_in_controller_logs,
     get_pod_age_seconds
 )
+from typing import Dict, Any
+
+
+def detect_failover_in_controller_logs(logs: str) -> Dict[str, Any]:
+    """
+    Detect failover events in controller logs
+
+    Returns:
+        dict with failover detection info
+    """
+    result = {
+        "failover_triggered": False,
+        "main_promotion_detected": False,
+        "failover_events": []
+    }
+
+    # Look for failover-related log messages
+    failover_patterns = [
+        "promoting replica to main",
+        "promoting sync replica to main",
+        "health prober: failure threshold reached",
+        "health prober triggering failover",
+        "main pod failed",
+        "updating replication topology",
+        "cluster failover",
+        "main role changed",
+        "reconciling failover",
+        "setting main role"
+    ]
+
+    lines = logs.strip().split('\n')
+    for line in lines:
+        line_lower = line.lower()
+        for pattern in failover_patterns:
+            if pattern in line_lower:
+                result["failover_events"].append(line.strip())
+                if "promoting" in line_lower or "main role" in line_lower or "setting main" in line_lower:
+                    result["main_promotion_detected"] = True
+                result["failover_triggered"] = True
+
+    return result
+
+
+def monitor_main_pod_changes_enhanced(
+    initial_main: str, timeout: int = 30) -> Dict[str, Any]:
+    """
+    Enhanced monitoring for main pod role changes that also detects pod recreation.
+
+    Args:
+        initial_main: The original main pod name
+        timeout: Maximum seconds to monitor
+
+    Returns:
+        dict with enhanced change detection info
+    """
+    start_time = time.time()
+
+    # Get initial pod age to detect recreation
+    initial_age = get_pod_age_seconds(initial_main)
+
+    result = {
+        "main_changed": False,
+        "new_main": None,
+        "change_time": None,
+        "polling_count": 0,
+        "pod_recreated": False,
+        "recreation_detected_at": None,
+        "initial_pod_age": initial_age
+    }
+
+    while time.time() - start_time < timeout:
+        try:
+            current_main = find_main_pod_by_querying()
+            result["polling_count"] += 1
+
+            # Check if main role moved to different pod
+            if current_main != initial_main:
+                result["main_changed"] = True
+                result["new_main"] = current_main
+                result["change_time"] = time.time() - start_time
+                break
+
+            # Check if the same-named pod was recreated (StatefulSet behavior)
+            current_age = get_pod_age_seconds(initial_main)
+            # 10s buffer
+            if current_age >= 0 and initial_age >= 0 and current_age < (
+                initial_age - 10):
+                result["pod_recreated"] = True
+                result["recreation_detected_at"] = time.time() - start_time
+                # In StatefulSet, recreation often means failover occurred then
+                # returned
+                result["main_changed"] = True
+                result["new_main"] = current_main  # Same name, but new pod
+                result["change_time"] = time.time() - start_time
+                break
+
+        except Exception:
+            # Continue polling even if individual queries fail
+            pass
+
+        time.sleep(1)  # Poll every second
+
+    return result
 
 
 def parse_log_entry(log_line: str) -> tuple:

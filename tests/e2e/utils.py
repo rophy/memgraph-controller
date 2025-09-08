@@ -10,8 +10,10 @@ import json
 import time
 import sys
 import re
+import os
 from io import StringIO
 import logfmt
+from datetime import datetime, timezone
 from typing import Tuple, Dict, Any, Optional, List
 
 
@@ -48,16 +50,135 @@ class E2ETestError(Exception):
 
 
 def get_controller_pod() -> str:
-    """Get the memgraph-controller pod name"""
+    """Get the ready memgraph-controller pod name (leader pod)"""
     try:
+        # Get controller pods with ready status in a simple format
         result = subprocess.run([
             "kubectl", "get", "pods", "-n", MEMGRAPH_NS, 
             "-l", "app=memgraph-controller", 
+            "--no-headers", "-o", "custom-columns=NAME:.metadata.name,READY:.status.conditions[?(@.type=='Ready')].status"
+        ], capture_output=True, text=True, check=True)
+        
+        # Find the ready pod (leader)
+        for line in result.stdout.strip().split('\n'):
+            if line.strip():
+                parts = line.split()
+                if len(parts) >= 2 and parts[1] == 'True':
+                    return parts[0]
+        
+        # Fallback to first ready pod from standard output
+        result = subprocess.run([
+            "kubectl", "get", "pods", "-n", MEMGRAPH_NS, 
+            "-l", "app=memgraph-controller", 
+            "--field-selector", "status.phase=Running",
             "-o", "jsonpath={.items[0].metadata.name}"
         ], capture_output=True, text=True, check=True)
         return result.stdout.strip()
     except subprocess.CalledProcessError:
         raise E2ETestError("Failed to find memgraph-controller pod")
+
+
+def get_pod_logs(pod_name: str, namespace: str = MEMGRAPH_NS, 
+                 tail_lines: Optional[int] = None, since_time: Optional[str] = None,
+                 output_dir: str = "logs") -> str:
+    """
+    Generalized function to get pod logs and save them to a file.
+    
+    Args:
+        pod_name: Name of the pod to get logs from
+        namespace: Kubernetes namespace (default: memgraph)  
+        tail_lines: Number of recent lines to get (optional)
+        since_time: RFC3339 time to get logs since (optional)
+        output_dir: Directory to save log files (default: logs)
+        
+    Returns:
+        Absolute path to the saved log file
+    """
+    try:
+        # Create output directory if it doesn't exist
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Generate timestamp for unique filename
+        timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[:-3]  # microseconds to milliseconds
+        log_filename = f"{pod_name}_{timestamp}.log"
+        log_filepath = os.path.abspath(os.path.join(output_dir, log_filename))
+        
+        # Build kubectl logs command
+        cmd = ["kubectl", "logs", pod_name, "-n", namespace]
+        
+        if tail_lines is not None:
+            cmd.extend([f"--tail={tail_lines}"])
+        if since_time is not None:
+            cmd.extend([f"--since-time={since_time}"])
+            
+        print(f"📄 Getting logs from {pod_name}, saving to: {log_filepath}")
+        
+        # Execute command and capture logs
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        
+        if result.returncode != 0:
+            raise E2ETestError(f"Failed to get logs from {pod_name}: {result.stderr}")
+        
+        # Write logs to file
+        with open(log_filepath, 'w') as f:
+            f.write(f"# Pod logs from: {pod_name} (namespace: {namespace})\n")
+            f.write(f"# Retrieved at: {datetime.now(timezone.utc).isoformat()}\n")
+            if tail_lines:
+                f.write(f"# Tail lines: {tail_lines}\n")
+            if since_time:
+                f.write(f"# Since time: {since_time}\n")
+            f.write(f"# Command: {' '.join(cmd)}\n")
+            f.write("# " + "="*60 + "\n\n")
+            f.write(result.stdout)
+            
+        print(f"✅ Saved {len(result.stdout.splitlines())} log lines to {log_filepath}")
+        return log_filepath
+        
+    except Exception as e:
+        raise E2ETestError(f"Failed to get logs from pod {pod_name}: {e}")
+
+
+def read_log_file(log_filepath: str) -> str:
+    """
+    Read log content from a saved log file.
+    
+    Args:
+        log_filepath: Path to the log file
+        
+    Returns:
+        Log content as string (without header comments)
+    """
+    try:
+        with open(log_filepath, 'r') as f:
+            lines = f.readlines()
+            
+        # Skip header lines starting with '#'
+        content_lines = []
+        for line in lines:
+            if not line.startswith('#'):
+                content_lines.append(line)
+                
+        return ''.join(content_lines)
+        
+    except Exception as e:
+        raise E2ETestError(f"Failed to read log file {log_filepath}: {e}")
+
+
+def detect_failover_in_log_file(log_filepath: str) -> Dict[str, Any]:
+    """
+    Detect failover events in a saved controller log file.
+    
+    Args:
+        log_filepath: Path to the controller log file
+        
+    Returns:
+        dict with failover detection info
+    """
+    try:
+        log_content = read_log_file(log_filepath)
+        return detect_failover_in_controller_logs(log_content)
+    except Exception as e:
+        raise E2ETestError(f"Failed to detect failover in log file {log_filepath}: {e}")
 
 
 def get_controller_logs(tail_lines: int = 50) -> str:

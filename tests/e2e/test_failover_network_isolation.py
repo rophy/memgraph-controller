@@ -26,7 +26,11 @@ from utils import (
     find_main_pod_by_querying,
     monitor_main_pod_changes_enhanced,
     log_info,
-    log_error
+    log_error,
+    get_pod_logs,
+    read_log_file,
+    detect_failover_in_log_file,
+    get_controller_pod
 )
 
 
@@ -165,7 +169,12 @@ def reset_controller_connections():
 def verify_recent_test_client_success(required_consecutive=10):
     """Verify recent test client operations were successful."""
     try:
-        logs = get_test_client_logs(tail_lines=50)
+        # Get test client pod and save logs to file
+        test_client_pod = get_test_client_pod()
+        log_filepath = get_pod_logs(test_client_pod, tail_lines=50)
+        
+        # Read and parse the log file
+        logs = read_log_file(log_filepath)
         lines = logs.strip().split('\n')
         
         # Check last N operations for consecutive successes
@@ -198,10 +207,12 @@ def wait_for_test_client_failures(max_wait=30):
     
     for elapsed in range(0, max_wait, 3):
         try:
-            # Use existing utility function to get test client logs
-            logs = get_test_client_logs(tail_lines=10)
+            # Get test client logs and save to file
+            test_client_pod = get_test_client_pod()
+            log_filepath = get_pod_logs(test_client_pod, tail_lines=10)
             
-            # Parse recent logs to look for failures
+            # Read and parse the log file
+            logs = read_log_file(log_filepath)
             recent_lines = logs.strip().split('\n')[-5:]  # Last 5 lines
             failures = 0
             
@@ -293,8 +304,10 @@ def test_network_partition_failover(network_isolation_manager):
         # Check controller logs for debug information
         print("🔍 Checking controller logs for failover activity...")
         try:
-            controller_logs = get_controller_logs_since(test_start_time)
-            failover_events = detect_failover_in_controller_logs(controller_logs)
+            # Save controller logs to file for debugging
+            controller_pod = get_controller_pod()
+            controller_log_filepath = get_pod_logs(controller_pod, since_time=test_start_time)
+            failover_events = detect_failover_in_log_file(controller_log_filepath)
             print(f"📊 Controller failover events: {len(failover_events.get('events', []))}")
             if failover_events.get('events'):
                 for event in failover_events['events'][:3]:  # Show first 3 events
@@ -363,8 +376,9 @@ def test_network_partition_failover(network_isolation_manager):
         print("✅ Test client operational after recovery")
     
     # Get controller logs for analysis
-    controller_logs = get_controller_logs_since(test_start_time)
-    failover_events = detect_failover_in_controller_logs(controller_logs)
+    controller_pod = get_controller_pod()
+    final_controller_log_filepath = get_pod_logs(controller_pod, since_time=test_start_time)
+    failover_events = detect_failover_in_log_file(final_controller_log_filepath)
     
     print(f"📊 Test Summary:")
     print(f"  - Initial main: {initial_main}")

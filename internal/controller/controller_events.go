@@ -63,13 +63,13 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			c.leaderMu.Unlock()
 
 			logger.Info("⏹️  Lost leadership - stopping operations")
-			
+
 			// Stop health prober
 			if c.healthProber != nil {
 				logger.Info("Stopping health prober")
 				c.healthProber.Stop()
 			}
-			
+
 			// Stop reconciliation operations but keep the process running
 		},
 		func(identity string) {
@@ -88,6 +88,11 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 
 // onPodAdd handles pod addition events
 func (c *MemgraphController) onPodAdd(obj interface{}) {
+
+	if !c.IsLeader() {
+		return
+	}
+
 	pod := obj.(*v1.Pod)
 	// No manual filtering needed - informer is already filtered to memgraph pods
 	c.enqueueReconcileEvent("pod-add", "pod-added", pod.Name)
@@ -95,6 +100,11 @@ func (c *MemgraphController) onPodAdd(obj interface{}) {
 
 // onPodUpdate handles pod update events with immediate processing for critical changes
 func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
+
+	if !c.IsLeader() {
+		return
+	}
+
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
 
@@ -108,31 +118,18 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 	}
 
 	// IMMEDIATE ANALYSIS: Check for critical main pod health changes
-	if c.IsLeader() {
-		// Use current cluster state directly
-		lastState := c.cluster
-		stateAge := time.Duration(0) // Immediate state, not cached
-		// Get current main from target index to check if this is the main pod
-		targetMainIndex, err := c.GetTargetMainIndex(context.Background())
-		if err == nil {
-			currentMain := c.config.GetPodName(targetMainIndex)
-			if currentMain == newPod.Name {
-				// This is the current main pod - check for immediate health issues
-				if c.isPodBecomeUnhealthy(oldPod, newPod) {
-					logger.Info("🚨 IMMEDIATE EVENT: Main pod became unhealthy, triggering failover check", "pod_name", newPod.Name)
+	targetMainIndex, err := c.GetTargetMainIndex(context.Background())
+	if err == nil {
+		currentMain := c.config.GetPodName(targetMainIndex)
+		if currentMain == newPod.Name {
+			// This is the current main pod - check for immediate health issues
+			if c.isPodBecomeUnhealthy(oldPod, newPod) {
+				logger.Info("🚨 IMMEDIATE EVENT: Main pod became unhealthy, triggering failover check", "pod_name", newPod.Name)
 
-					// Queue failover check event
-					c.enqueueFailoverCheckEvent("pod-update", "main-pod-unhealthy", newPod.Name)
+				// Queue failover check event
+				c.enqueueFailoverCheckEvent("pod-update", "main-pod-unhealthy", newPod.Name)
 
-					// Still queue regular reconciliation for other updates
-				}
 			}
-		}
-
-		// Log cluster state age for debugging
-		if lastState != nil {
-			logger.Info("🔍 Event analysis", 
-				"state_age", stateAge, "current_main", c.config.GetPodName(targetMainIndex), "event_pod", newPod.Name)
 		}
 	}
 
@@ -146,6 +143,11 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 
 // onPodDelete handles pod deletion events
 func (c *MemgraphController) onPodDelete(obj interface{}) {
+
+	if !c.IsLeader() {
+		return
+	}
+
 	pod := obj.(*v1.Pod)
 
 	// Invalidate connection for deleted pod through memgraph client connection pool

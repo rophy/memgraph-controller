@@ -101,7 +101,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		return nil // Retry on next tick
 	}
 
-	logger.Info("Starting DESIGN.md compliant reconcile actions...")
+	logger.Info("performReconciliationActions started")
 
 	// List all memgraph pods with kubernetes status
 	err = c.cluster.Refresh(ctx)

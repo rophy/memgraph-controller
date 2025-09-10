@@ -13,6 +13,7 @@ import (
 	v1 "k8s.io/api/core/v1"
 
 	"memgraph-controller/internal/common"
+	"memgraph-controller/internal/metrics"
 )
 
 var logger = common.GetLogger()
@@ -68,6 +69,9 @@ type Server struct {
 	// Production features
 	rateLimiter         *RateLimiter
 	rateLimitRejections int64
+
+	// Prometheus metrics
+	promMetrics *metrics.Metrics
 }
 
 // NewServer creates a new gateway server with the given configuration
@@ -165,6 +169,11 @@ func (s *Server) SetUpstreamAddress(address string) {
 	s.upstreamAddress = address
 }
 
+// SetPrometheusMetrics sets the Prometheus metrics instance
+func (s *Server) SetPrometheusMetrics(m *metrics.Metrics) {
+	s.promMetrics = m
+}
+
 // acceptConnections runs the main accept loop for incoming connections
 func (s *Server) acceptConnections() {
 	defer s.wg.Done()
@@ -232,6 +241,11 @@ func (s *Server) acceptConnections() {
 		go s.handleConnection(conn)
 
 		atomic.AddInt64(&s.totalConnections, 1)
+		
+		// Update Prometheus metrics
+		if s.promMetrics != nil {
+			s.promMetrics.RecordGatewayConnection()
+		}
 	}
 }
 
@@ -247,7 +261,18 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	defer s.rateLimiter.Release(clientIP)
 
 	atomic.AddInt64(&s.activeConnections, 1)
-	defer atomic.AddInt64(&s.activeConnections, -1)
+	defer func() {
+		atomic.AddInt64(&s.activeConnections, -1)
+		// Update active connections metric
+		if s.promMetrics != nil {
+			s.promMetrics.UpdateGatewayConnections(int(atomic.LoadInt64(&s.activeConnections)))
+		}
+	}()
+	
+	// Update active connections metric
+	if s.promMetrics != nil {
+		s.promMetrics.UpdateGatewayConnections(int(atomic.LoadInt64(&s.activeConnections)))
+	}
 
 	logger.Debug("established", "client_ip", clientIP)
 
@@ -332,11 +357,22 @@ func (s *Server) proxyConnections(clientConn, backendConn net.Conn, session *Pro
 	duration := time.Since(startTime)
 	totalBytes := session.GetBytesSent() + session.GetBytesReceived()
 
+	// Update Prometheus metrics for bytes transferred
+	if s.promMetrics != nil {
+		s.promMetrics.RecordGatewayBytes(session.GetBytesSent(), session.GetBytesReceived())
+	}
+
 	if clientToBackendErr != nil && clientToBackendErr != io.EOF {
 		atomic.AddInt64(&s.errors, 1)
+		if s.promMetrics != nil {
+			s.promMetrics.RecordGatewayError()
+		}
 	}
 	if backendToClientErr != nil && backendToClientErr != io.EOF {
 		atomic.AddInt64(&s.errors, 1)
+		if s.promMetrics != nil {
+			s.promMetrics.RecordGatewayError()
+		}
 	}
 
 	logger.Info("proxy session completed",

@@ -42,8 +42,18 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 		func(ctx context.Context) {
 			// OnStartedLeading: This controller instance became leader
 			c.leaderMu.Lock()
+			wasLeader := c.isLeader
 			c.isLeader = true
 			c.leaderMu.Unlock()
+
+			// Record leadership metrics
+			if c.promMetrics != nil {
+				c.promMetrics.UpdateLeadershipStatus(true)
+				if !wasLeader {
+					c.promMetrics.RecordLeadershipChange()
+				}
+				c.promMetrics.RecordElection()
+			}
 
 			logger.Info("🎯 Became leader - loading state and starting controller operations")
 
@@ -61,6 +71,11 @@ func (c *MemgraphController) setupLeaderElectionCallbacks() {
 			c.leaderMu.Lock()
 			c.isLeader = false
 			c.leaderMu.Unlock()
+
+			// Record leadership metrics
+			if c.promMetrics != nil {
+				c.promMetrics.UpdateLeadershipStatus(false)
+			}
 
 			logger.Info("⏹️  Lost leadership - stopping operations")
 

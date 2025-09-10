@@ -82,8 +82,28 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 
 func (c *MemgraphController) performReconciliationActions(ctx context.Context) error {
 	start := time.Now()
+	var reconcileErr error
 	defer func() {
-		logger.Info("performReconciliationActions completed", "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
+		duration := time.Since(start)
+		logger.Info("performReconciliationActions completed", "duration_ms", float64(duration.Nanoseconds())/1e6)
+		
+		// Record Prometheus metrics
+		if c.promMetrics != nil {
+			c.promMetrics.RecordReconciliation(reconcileErr == nil, duration.Seconds())
+		}
+		
+		// Update legacy metrics
+		if c.metrics != nil {
+			c.metrics.TotalReconciliations++
+			if reconcileErr == nil {
+				c.metrics.SuccessfulReconciliations++
+			} else {
+				c.metrics.FailedReconciliations++
+				c.metrics.LastReconciliationError = reconcileErr.Error()
+			}
+			c.metrics.LastReconciliationTime = time.Now()
+			c.metrics.AverageReconciliationTime = duration
+		}
 	}()
 
 	// Ensure only one reconciliation runs at a time
@@ -94,6 +114,10 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {
 		logger.Info("Failed to get target main index", "error", err)
+		reconcileErr = err
+		if c.promMetrics != nil {
+			c.promMetrics.RecordError("reconciliation")
+		}
 		return nil // Retry on next tick
 	}
 	if targetMainIndex == -1 {
@@ -107,6 +131,10 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	err = c.cluster.Refresh(ctx)
 	if err != nil {
 		logger.Info("Failed to refresh cluster state", "error", err)
+		reconcileErr = err
+		if c.promMetrics != nil {
+			c.promMetrics.RecordError("reconciliation")
+		}
 		return nil // Retry on next tick
 	}
 
@@ -114,11 +142,19 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	err = c.performFailoverCheck(ctx)
 	if err != nil {
 		logger.Info("Failover check failed", "error", err)
+		reconcileErr = err
+		if c.promMetrics != nil {
+			c.promMetrics.RecordError("reconciliation")
+		}
 		return nil // Retry on next tick
 	}
 	targetMainNode, err := c.getTargetMainNode(ctx)
 	if err != nil {
 		logger.Info("Failed to get target main node", "error", err)
+		reconcileErr = err
+		if c.promMetrics != nil {
+			c.promMetrics.RecordError("reconciliation")
+		}
 		return nil // Retry on next tick
 	}
 
@@ -260,13 +296,26 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*httpapi.Sta
 
 	// Count healthy vs unhealthy pods and find sync replica
 	healthyCount := 0
+	syncReplicaHealthy := false
 	for podName := range clusterState.MemgraphNodes {
 		if cachedPod, err := c.getPodFromCache(podName); err == nil && isPodReady(cachedPod) {
 			healthyCount++
+			// Check if this is the sync replica
+			if targetSyncReplica, err := c.getTargetSyncReplicaNode(ctx); err == nil && podName == targetSyncReplica.GetName() {
+				syncReplicaHealthy = true
+				statusResponse.CurrentSyncReplica = podName
+			}
 		}
 	}
 	statusResponse.HealthyPods = healthyCount
 	statusResponse.UnhealthyPods = statusResponse.TotalPods - healthyCount
+	statusResponse.SyncReplicaHealthy = syncReplicaHealthy
+	
+	// Update Prometheus cluster state metrics
+	if c.promMetrics != nil {
+		clusterHealthy := healthyCount == statusResponse.TotalPods && currentMain != ""
+		c.promMetrics.UpdateClusterState(clusterHealthy, statusResponse.TotalPods, healthyCount, syncReplicaHealthy)
+	}
 
 	// Convert pods to API format
 	var pods []httpapi.PodStatus

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"memgraph-controller/internal/common"
+	"memgraph-controller/internal/metrics"
 )
 
 // HTTPServer manages the status API HTTP server
@@ -40,6 +41,7 @@ func NewHTTPServer(controller ControllerInterface, config *common.Config) *HTTPS
 	mux.HandleFunc("/health", httpServer.handleHealth)
 	mux.HandleFunc("/livez", httpServer.handleLiveness)
 	mux.HandleFunc("/readyz", httpServer.handleReadiness)
+	mux.Handle("/metrics", metrics.Handler())
 	mux.HandleFunc("/", httpServer.handleRoot)
 
 	// Admin endpoints (only enabled if ENABLE_ADMIN_API=true)

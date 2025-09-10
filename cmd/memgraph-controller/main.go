@@ -9,6 +9,7 @@ import (
 
 	"memgraph-controller/internal/common"
 	"memgraph-controller/internal/controller"
+	"memgraph-controller/internal/metrics"
 
 	"k8s.io/client-go/kubernetes"
 )
@@ -44,7 +45,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize Prometheus metrics
+	promMetrics := metrics.New()
+	logger.Info("Prometheus metrics initialized")
+
 	ctrl := controller.NewMemgraphController(clientset, config)
+	ctrl.SetPrometheusMetrics(promMetrics)
 
 	if err := ctrl.TestConnection(); err != nil {
 		logger.Error("Failed to connect to Kubernetes API", "error", err)

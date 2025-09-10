@@ -17,6 +17,7 @@ import (
 	"memgraph-controller/internal/common"
 	"memgraph-controller/internal/gateway"
 	"memgraph-controller/internal/httpapi"
+	"memgraph-controller/internal/metrics"
 )
 
 var logger = common.GetLogger()
@@ -60,8 +61,11 @@ type MemgraphController struct {
 	informerFactory informers.SharedInformerFactory
 	stopCh          chan struct{}
 
-	// Reconciliation metrics
+	// Reconciliation metrics (deprecated - kept for compatibility)
 	metrics *ReconciliationMetrics
+
+	// Prometheus metrics
+	promMetrics *metrics.Metrics
 
 	// Health prober for blackbox monitoring
 	healthProber *HealthProber
@@ -268,6 +272,12 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 		}
 	}
 
+	// Check if main node changed
+	oldIndex := c.targetMainIndex
+	if oldIndex != index && oldIndex != -1 && c.promMetrics != nil {
+		c.promMetrics.RecordMainChange()
+	}
+	
 	// Update in-memory value
 	c.targetMainIndex = index
 	logger.Info("Updated TargetMainIndex", "index", index)
@@ -555,6 +565,18 @@ func (c *MemgraphController) stop() {
 	logger.Info("Gateway: Cleanup will be handled by process termination")
 
 	logger.Info("Memgraph Controller stopped")
+}
+
+// SetPrometheusMetrics sets the Prometheus metrics instance
+func (c *MemgraphController) SetPrometheusMetrics(m *metrics.Metrics) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.promMetrics = m
+	
+	// Also set metrics on the gateway server if it exists
+	if c.gatewayServer != nil {
+		c.gatewayServer.SetPrometheusMetrics(m)
+	}
 }
 
 // GetControllerStatus returns the current status of the controller

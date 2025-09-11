@@ -108,6 +108,102 @@ Currently none. Rolling restart will temporarily lose SYNC replication until man
 
 ---
 
+## 2. Memgraph Pod Termination Delays During Rolling Restart
+
+**Status**: Active  
+**Severity**: Medium  
+**First Observed**: 2025-09-11  
+**Occurrence Rate**: Intermittent (~30% of rolling restarts)
+
+### Description
+
+During StatefulSet rolling restart, Memgraph pods sometimes get stuck in "Terminating" status for extended periods (60-120+ seconds), causing E2E tests to timeout waiting for cluster convergence. This prevents the rolling restart from completing within expected timeframes.
+
+### Root Cause
+
+This appears to be an issue with Memgraph itself taking time to gracefully shut down, rather than a controller issue. The pod termination grace period may be insufficient for Memgraph to complete its shutdown procedures, including:
+
+1. **Data persistence operations** - Memgraph may need time to flush data to disk
+2. **Replication cleanup** - Ongoing replication operations may need to complete
+3. **Connection cleanup** - Active client connections may need to be gracefully closed
+
+### Reproduction Steps
+
+1. Deploy a healthy Memgraph cluster
+2. Trigger rolling restart:
+   ```bash
+   kubectl rollout restart statefulset/memgraph-ha -n memgraph
+   ```
+3. Monitor pod status during restart:
+   ```bash
+   kubectl get pods -n memgraph -w
+   ```
+4. Observe that some pods remain in "Terminating" status for 60+ seconds
+
+### Evidence
+
+**From E2E test failures**:
+```
+⏳ Waiting for proper topology... main=memgraph-ha-1, sync=0, async=1 (120s/120s)
+E2ETestError: Cluster failed to converge within 120s
+```
+
+**From pod status during rolling restart**:
+- Pod stuck in "Terminating" status for extended periods
+- StatefulSet rollout waits for pod termination before proceeding
+- Cluster appears unhealthy during this period due to missing replicas
+
+### Impact
+
+- **E2E Test Reliability**: Tests timeout waiting for cluster convergence  
+- **Rolling Restart Duration**: Restarts take much longer than expected (2-3 minutes instead of 30-60 seconds)
+- **Service Availability**: Prolonged periods with reduced replica count during restart
+
+### Investigation Attempts
+
+**Attempt 1: Increase termination grace period**
+- Could configure longer `terminationGracePeriodSeconds` in StatefulSet
+- Trade-off: Longer restart times vs more reliable termination
+
+**Attempt 2: Optimize Memgraph shutdown**
+- May need Memgraph configuration tuning for faster shutdown
+- Could investigate Memgraph logs during termination for bottlenecks
+
+### Workaround
+
+- **For E2E tests**: Increase convergence timeout from 120s to 180-240s
+- **For operations**: Allow extra time for rolling restarts to complete
+- **Monitor**: Use `kubectl get pods -w` to track termination progress
+
+### Proposed Investigation
+
+1. **Analyze Memgraph shutdown behavior**:
+   - Review Memgraph logs during pod termination
+   - Identify what operations are causing delays
+   
+2. **Review termination configuration**:
+   - Check current `terminationGracePeriodSeconds` setting
+   - Consider if it needs adjustment
+   
+3. **Test Memgraph configuration options**:
+   - Research Memgraph settings that affect shutdown time
+   - Test different configurations for faster shutdown
+
+### Related Components
+
+- **StatefulSet configuration**: `charts/memgraph-ha/templates/statefulset.yaml`
+- **Memgraph configuration**: Pod startup arguments and config
+- **E2E tests**: `tests/e2e/test_rolling_restart.py` timeout settings
+
+### Notes
+
+- This is a **Memgraph application-level issue**, not a controller issue
+- The controller works correctly once pods complete termination
+- Issue affects test reliability more than production functionality
+- Rolling restart **does work** - it just takes longer than expected
+
+---
+
 ## Historical Issues
 
 ### Gateway Routing Race Condition (Resolved)

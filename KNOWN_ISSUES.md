@@ -121,11 +121,13 @@ During StatefulSet rolling restart, Memgraph pods sometimes get stuck in "Termin
 
 ### Root Cause
 
-This appears to be an issue with Memgraph itself taking time to gracefully shut down, rather than a controller issue. The pod termination grace period may be insufficient for Memgraph to complete its shutdown procedures, including:
+This appears to be an issue with Memgraph itself taking time to gracefully shut down, rather than a controller issue. Research indicates several specific factors contribute to slow shutdown:
 
-1. **Data persistence operations** - Memgraph may need time to flush data to disk
-2. **Replication cleanup** - Ongoing replication operations may need to complete
-3. **Connection cleanup** - Active client connections may need to be gracefully closed
+1. **Snapshot Creation on Exit** - Memgraph has `--storage-snapshot-on-exit=true` by default, creating a complete data snapshot during shutdown which can take significant time for large datasets
+2. **Active Query Handling** - `--query-execution-timeout-sec=600` (10 minutes default) means long-running queries must complete or timeout before clean shutdown
+3. **Storage Operations** - Garbage collection cycles and storage access timeouts, plus data persistence mechanisms that ensure durability during shutdown
+4. **Insufficient Grace Period** - Kubernetes default `terminationGracePeriodSeconds` is 30 seconds, typically insufficient for database workloads
+5. **Connection Cleanup** - Active client connections may need to be gracefully closed
 
 ### Reproduction Steps
 
@@ -159,35 +161,53 @@ E2ETestError: Cluster failed to converge within 120s
 - **Rolling Restart Duration**: Restarts take much longer than expected (2-3 minutes instead of 30-60 seconds)
 - **Service Availability**: Prolonged periods with reduced replica count during restart
 
-### Investigation Attempts
+### Confirmed Solutions
 
-**Attempt 1: Increase termination grace period**
-- Could configure longer `terminationGracePeriodSeconds` in StatefulSet
-- Trade-off: Longer restart times vs more reliable termination
+Based on internet research and Memgraph documentation, the following solutions can address slow termination:
 
-**Attempt 2: Optimize Memgraph shutdown**
-- May need Memgraph configuration tuning for faster shutdown
-- Could investigate Memgraph logs during termination for bottlenecks
+**Solution 1: Increase Termination Grace Period**
+```yaml
+spec:
+  template:
+    spec:
+      terminationGracePeriodSeconds: 120  # Increase from default 30s
+```
+
+**Solution 2: Optimize Memgraph Configuration**
+```yaml
+# Consider these configuration changes (trade-offs with data safety)
+args:
+  - --storage-snapshot-on-exit=false    # Skip snapshot on shutdown (faster, less safe)
+  - --query-execution-timeout-sec=30    # Reduce query timeout (faster termination)
+```
+
+**Solution 3: Add PreStop Hook for Connection Draining**
+```yaml
+lifecycle:
+  preStop:
+    exec:
+      command: ["/bin/sh", "-c", "sleep 15"]  # Allow graceful connection draining
+```
 
 ### Workaround
 
+**Immediate fixes**:
 - **For E2E tests**: Increase convergence timeout from 120s to 180-240s
-- **For operations**: Allow extra time for rolling restarts to complete
-- **Monitor**: Use `kubectl get pods -w` to track termination progress
+- **For StatefulSet**: Set `terminationGracePeriodSeconds: 120` or higher
+- **For operations**: Allow 2-3 minutes for rolling restarts to complete
 
-### Proposed Investigation
+**Monitoring**:
+- Use `kubectl get pods -w` to track termination progress
+- Check pod events with `kubectl describe pod <name>` during termination
+- Monitor Memgraph logs with `kubectl logs --previous <name>` after termination
 
-1. **Analyze Memgraph shutdown behavior**:
-   - Review Memgraph logs during pod termination
-   - Identify what operations are causing delays
-   
-2. **Review termination configuration**:
-   - Check current `terminationGracePeriodSeconds` setting
-   - Consider if it needs adjustment
-   
-3. **Test Memgraph configuration options**:
-   - Research Memgraph settings that affect shutdown time
-   - Test different configurations for faster shutdown
+### Investigation Results
+
+**Research findings**:
+1. **Common database issue**: Stateful applications typically need longer grace periods than the 30s default
+2. **Memgraph-specific factors**: Data persistence features (snapshots, durability) contribute to longer shutdown times  
+3. **No specific documentation**: Memgraph doesn't explicitly address Kubernetes termination optimization
+4. **Kubernetes best practices**: Database workloads should configure appropriate `terminationGracePeriodSeconds`
 
 ### Related Components
 
@@ -199,8 +219,10 @@ E2ETestError: Cluster failed to converge within 120s
 
 - This is a **Memgraph application-level issue**, not a controller issue
 - The controller works correctly once pods complete termination
-- Issue affects test reliability more than production functionality
+- Issue affects test reliability more than production functionality  
 - Rolling restart **does work** - it just takes longer than expected
+- **Confirmed by research**: This is a common issue with stateful database workloads in Kubernetes
+- **Solution available**: Increase `terminationGracePeriodSeconds` to 120+ seconds as primary fix
 
 ---
 

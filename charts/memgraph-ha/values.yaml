@@ -29,6 +29,7 @@ memgraph:
   - "--data-directory=/var/lib/memgraph/mg_data"
   - "--also-log-to-stderr=true"
   - "--replication-restore-state-on-startup=true"
+  - "--storage-snapshot-on-exit=false"
 
   # Resource configuration
   resources:

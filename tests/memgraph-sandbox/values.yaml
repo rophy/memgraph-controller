@@ -21,7 +21,6 @@ test-client:
   command: ["python", "/app/client.py"]
   args: ["idle"]
   env:
-    NEO4J_URI: ""  # Not needed in idle mode
     NEO4J_USERNAME: "memgraph"
     NEO4J_PASSWORD: ""
     WRITE_INTERVAL: "1000"

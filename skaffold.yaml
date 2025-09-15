@@ -36,7 +36,6 @@ deploy:
       createNamespace: false
       wait: false
       setValues:
-        env.NEO4J_URI: "bolt://memgraph-controller:7687"
         env.WRITE_INTERVAL: "1000"
   logs:
     prefix: podAndContainer

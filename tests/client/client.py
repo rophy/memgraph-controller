@@ -456,11 +456,11 @@ async def main():
         return await run_idle_mode()
 
     elif command == "write":
-        # If no address provided, use default
-        if len(args) > 1:
-            bolt_address = args[1]
-        else:
-            bolt_address = os.getenv('NEO4J_URI', 'bolt://memgraph-controller:7687')
+        if len(args) < 2:
+            print("Error: write command requires bolt_address", file=sys.stderr)
+            print("Usage: client.py write <bolt_address>", file=sys.stderr)
+            return 1
+        bolt_address = args[1]
         return await run_write_mode(bolt_address)
 
     elif command == "query":
@@ -482,12 +482,9 @@ async def main():
         return await run_log_collector(websocket_address, output_file)
 
     else:
-        # Backward compatibility: treat as query for one-shot mode
-        # This maintains compatibility with existing usage
-        query = ' '.join(args)
-        logger.info("Running in backward compatibility mode - executing as query", extra={"query": query})
-        bolt_address = os.getenv('NEO4J_URI', 'bolt://localhost:7687')
-        return await run_query(bolt_address, query)
+        print(f"Error: Unknown command '{command}'", file=sys.stderr)
+        print_usage()
+        return 1
 
 
 if __name__ == '__main__':

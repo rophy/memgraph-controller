@@ -29,8 +29,6 @@ spec:
         args: {{ .Values.args | toJson }}
         {{- end }}
         env:
-        - name: NEO4J_URI
-          value: {{ .Values.env.NEO4J_URI | quote }}
         - name: NEO4J_USERNAME
           value: {{ .Values.env.NEO4J_USERNAME | quote }}
         - name: NEO4J_PASSWORD

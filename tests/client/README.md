@@ -1,80 +1,88 @@
-# Neo4j Client with Metrics
+# Test Client with Command-Driven Architecture
 
-A Node.js client for Neo4j/Memgraph that continuously writes data and tracks performance metrics.
+A Python client for Memgraph that supports multiple modes: write, query, logs, and idle.
 
 ## Features
 
-- **Continuous Write Loop**: Writes data to Neo4j/Memgraph at configurable intervals
+- **Command-Driven**: Supports write, query, logs, and idle modes
+- **Continuous Write Loop**: Writes data to Memgraph at configurable intervals
 - **Comprehensive Metrics**: Tracks success/error counts, latencies (min/max/avg/median/p95/p99)
+- **WebSocket Logs**: Collect Memgraph logs via WebSocket
+- **Query Mode**: Execute single Cypher queries
 - **Resilient**: Automatically retries connection on failures
 - **Containerized**: Includes Dockerfile for easy deployment
-- **Kubernetes Ready**: Deployment manifests for single and multi-instance deployments
+- **Kubernetes Ready**: Deployment manifests for flexible usage
 
 ## Configuration
 
 Environment variables:
-- `NEO4J_URI`: Neo4j/Memgraph Bolt URI (default: `bolt://localhost:7687`)
-- `NEO4J_USERNAME`: Username for authentication (optional)
-- `NEO4J_PASSWORD`: Password for authentication (optional)
+- `NEO4J_USERNAME`: Username for authentication (default: `memgraph`)
+- `NEO4J_PASSWORD`: Password for authentication (default: empty)
 - `WRITE_INTERVAL`: Milliseconds between writes (default: `1000`)
 
-## Local Development
+## Usage
 
 ```bash
 # Install dependencies
-npm install
+pip install -r requirements.txt
 
-# Run locally (connect to localhost:7687)
-npm start
+# Default: write to memgraph-controller:7687
+python client.py
 
-# Run with custom server
-NEO4J_URI=bolt://192.168.1.100:7687 npm start
+# Write to specific address
+python client.py write bolt://memgraph-ha-0:7687
+
+# Execute single query
+python client.py query bolt://memgraph-ha-0:7687 "SHOW REPLICATION ROLE"
+
+# Collect WebSocket logs
+python client.py logs ws://10.244.0.5:7444 /tmp/logs.jsonl
+
+# Idle mode (sleep forever)
+python client.py idle
 
 # Run with faster writes
-WRITE_INTERVAL=500 npm start
+WRITE_INTERVAL=500 python client.py write bolt://memgraph-ha-0:7687
 ```
 
 ## Docker Build & Run
 
 ```bash
 # Build image
-docker build -t neo4j-client .
+docker build -t test-client .
 
-# Run container (connect to host network)
-docker run --rm -it \
-  -e NEO4J_URI=bolt://host.docker.internal:7687 \
-  neo4j-client
+# Run container in write mode
+docker run --rm -it test-client write bolt://host.docker.internal:7687
 
 # Run with custom settings
 docker run --rm -it \
-  -e NEO4J_URI=bolt://memgraph.example.com:7687 \
   -e WRITE_INTERVAL=500 \
-  neo4j-client
+  test-client write bolt://memgraph.example.com:7687
+
+# Run in idle mode
+docker run --rm -it test-client idle
 ```
 
 ## Kubernetes Deployment
 
 ```bash
 # Build and load image (for local testing with kind/minikube)
-docker build -t neo4j-client .
-kind load docker-image neo4j-client  # for kind
+docker build -t test-client .
+kind load docker-image test-client  # for kind
 # or
-minikube image load neo4j-client     # for minikube
+minikube image load test-client     # for minikube
 
-# Deploy single instance
-kubectl apply -f deployment.yaml
+# Deploy using helm charts
+helm install test-client tests/client/charts/test-client
 
 # Check logs
-kubectl logs -n memgraph deployment/neo4j-client -f
+kubectl logs -n memgraph deployment/test-client -f
 
-# Deploy load test (3 parallel clients)
-kubectl apply -f deployment.yaml  # includes neo4j-client-loadtest
-
-# Scale load test
-kubectl scale deployment neo4j-client-loadtest -n memgraph --replicas=10
+# Deploy in sandbox mode (idle)
+helm install sandbox tests/memgraph-sandbox
 
 # Delete deployments
-kubectl delete -f deployment.yaml
+helm uninstall test-client
 ```
 
 ## Metrics Output

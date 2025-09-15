@@ -24,8 +24,7 @@ RUN chown -R python:python /app
 USER python
 
 # Set default environment variables
-ENV NEO4J_URI=bolt://localhost:7687 \
-    NEO4J_USERNAME="" \
+ENV NEO4J_USERNAME="" \
     NEO4J_PASSWORD="" \
     WRITE_INTERVAL=1000
 

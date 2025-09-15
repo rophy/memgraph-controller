@@ -19,7 +19,6 @@ args: []     # e.g., ["idle"] or ["write", "bolt://memgraph-ha-0:7687"]
 # Environment variables
 env:
   # Neo4j/Memgraph connection settings
-  NEO4J_URI: "bolt://memgraph-controller:7687"  # Default: connect via controller
   NEO4J_USERNAME: "memgraph"
   NEO4J_PASSWORD: ""
   WRITE_INTERVAL: "1000"  # Write interval in milliseconds

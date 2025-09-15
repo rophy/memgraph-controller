@@ -13,7 +13,7 @@ build:
     context: .
     docker:
       dockerfile: Dockerfile
-  - image: neo4j-client
+  - image: test-client
     context: tests/client
     docker:
       dockerfile: Dockerfile
@@ -36,8 +36,8 @@ deploy:
       createNamespace: false
       wait: false
       setValues:
-        neo4j.uri: "bolt://memgraph-controller:7687"
-        writeInterval: "1000"
+        env.NEO4J_URI: "bolt://memgraph-controller:7687"
+        env.WRITE_INTERVAL: "1000"
   logs:
     prefix: podAndContainer
 

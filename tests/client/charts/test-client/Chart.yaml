@@ -1,8 +1,8 @@
 apiVersion: v2
 name: test-client
-description: A Neo4j/Memgraph test client for load testing and metrics collection
+description: A unified Memgraph test client supporting multiple deployment modes
 type: application
-version: 0.1.0
+version: 1.0.0
 appVersion: "1.0.0"
 keywords:
   - neo4j

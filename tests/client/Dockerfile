@@ -4,7 +4,7 @@ FROM python:3.12-alpine
 WORKDIR /app
 
 # Install system utilities for debugging
-RUN apk add --no-cache curl jq
+RUN apk add --no-cache bash curl jq
 
 # Copy requirements and install dependencies
 COPY requirements.txt ./
@@ -33,5 +33,8 @@ ENV NEO4J_URI=bolt://localhost:7687 \
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
   CMD python -c "import sys; sys.exit(0)" || exit 1
 
-# Run the application
-CMD ["python", "client.py"]
+# Entry point for the application
+ENTRYPOINT ["python", "/app/client.py"]
+
+# Default command for e2e tests - write to controller
+CMD ["write", "bolt://memgraph-controller:7687"]

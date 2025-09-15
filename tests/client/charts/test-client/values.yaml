@@ -1,21 +1,28 @@
 # Default values for test-client
-# This is a placeholder values file for the test client
+# Supports both main deployment (with controller) and sandbox mode
 
+# Basic configuration
 replicaCount: 1
+enabled: true
 
+# Container configuration
 image:
-  repository: neo4j-client
+  repository: test-client
   tag: latest
   pullPolicy: IfNotPresent
 
-# Neo4j/Memgraph connection settings
-neo4j:
-  uri: "bolt://memgraph-controller:7687"  # Connect via gateway
-  username: ""
-  password: ""
+# Custom command and args support (for sandbox flexibility)
+# Leave empty for default behavior
+command: []  # e.g., ["python", "/app/client.py"]
+args: []     # e.g., ["idle"] or ["write", "bolt://memgraph-ha-0:7687"]
 
-# Write interval in milliseconds
-writeInterval: 1000
+# Environment variables
+env:
+  # Neo4j/Memgraph connection settings
+  NEO4J_URI: "bolt://memgraph-controller:7687"  # Default: connect via controller
+  NEO4J_USERNAME: "memgraph"
+  NEO4J_PASSWORD: ""
+  WRITE_INTERVAL: "1000"  # Write interval in milliseconds
 
 # Resource limits
 resources:
@@ -26,5 +33,5 @@ resources:
     memory: "256Mi"
     cpu: "200m"
 
-# Namespace
+# Namespace (optional)
 namespace: memgraph

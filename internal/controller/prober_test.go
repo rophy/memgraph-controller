@@ -215,18 +215,19 @@ func TestHealthProber_FailureThresholdReset(t *testing.T) {
 		t.Error("Should have 2 failures and be unhealthy")
 	}
 	
-	// 3rd failure should trigger failover and reset counter
+	// 3rd failure should trigger failover but NOT reset counter
 	// Note: We can't easily test the actual failover trigger without complex mocking,
 	// but we can test that the failure logic works correctly
-	prober.recordFailure() // 3rd failure - should reset
+	prober.recordFailure() // 3rd failure - triggers failover
 	
 	// Give some time for potential goroutine execution
 	time.Sleep(20 * time.Millisecond)
 	
-	// The consecutive failures should have been reset to 0 after threshold
+	// The consecutive failures should stay at threshold (not reset)
+	// This prevents repeated failover triggers
 	healthy, failures = prober.GetHealthStatus()
-	if healthy || failures != 0 {
-		t.Errorf("Should have 0 failures after threshold reset, got %d", failures)
+	if healthy || failures != 3 {
+		t.Errorf("Should have 3 failures (at threshold) after trigger, got %d", failures)
 	}
 }
 

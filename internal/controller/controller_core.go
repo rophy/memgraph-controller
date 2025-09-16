@@ -42,9 +42,11 @@ type MemgraphController struct {
 
 	// Event-driven reconciliation
 	reconcileQueue     *ReconcileQueue
-	reconcileMu        sync.Mutex // Mutex to prevent concurrent reconciliations
 	failoverCheckQueue *FailoverCheckQueue
-	failoverMu         sync.Mutex // Mutex to prevent concurrent failover checks
+	
+	// Shared mutex for reconciliation and failover operations
+	// This prevents race conditions between these operations
+	operationMu sync.Mutex
 
 	// Cluster operations
 	cluster *MemgraphCluster

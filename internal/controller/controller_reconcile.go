@@ -106,9 +106,10 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		}
 	}()
 
-	// Ensure only one reconciliation runs at a time
-	c.reconcileMu.Lock()
-	defer c.reconcileMu.Unlock()
+	// Ensure only one reconciliation or failover runs at a time
+	// This shared mutex prevents race conditions with failover operations
+	c.operationMu.Lock()
+	defer c.operationMu.Unlock()
 
 	// Skip reconciliation if TargetMainIndex is still not set.
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)

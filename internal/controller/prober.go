@@ -162,18 +162,17 @@ func (p *HealthProber) recordFailure() {
 	p.lastHealthStatus = false
 	
 	// Check if we've reached the failure threshold
-	if p.consecutiveFailures >= p.config.FailureThreshold {
+	if p.consecutiveFailures == p.config.FailureThreshold {
 		logger.Error("🚨 Health prober: failure threshold reached, triggering failover",
 			"consecutive_failures", p.consecutiveFailures,
 			"failure_threshold", p.config.FailureThreshold)
 		
-		// Trigger failover by calling executeFailover directly
+		// Trigger failover by submitting event to failoverCheckQueue
 		// We use a separate goroutine to avoid blocking the health check loop
 		go p.triggerFailover()
 		
-		// Reset consecutive failures to prevent repeated failover attempts
-		// until health status changes
-		p.consecutiveFailures = 0
+		// Don't reset the counter - we should only trigger failover once
+		// The counter will be reset when the pod recovers (recordSuccess)
 	}
 }
 
@@ -195,7 +194,7 @@ func (p *HealthProber) recordSuccess(podName string) {
 	}
 }
 
-// triggerFailover triggers a failover by calling the controller's executeFailover function
+// triggerFailover triggers a failover by submitting event to failoverCheckQueue
 func (p *HealthProber) triggerFailover() {
 	// Guard against nil controller (for testing)
 	if p.controller == nil {
@@ -203,15 +202,38 @@ func (p *HealthProber) triggerFailover() {
 		return
 	}
 	
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	// Guard against nil failoverCheckQueue
+	if p.controller.failoverCheckQueue == nil || p.controller.failoverCheckQueue.events == nil {
+		logger.Warn("Health prober: failoverCheckQueue not initialized")
+		return
+	}
+	
+	logger.Info("Health prober: queueing failover check event")
+	
+	// Get current target main pod name
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	
-	logger.Info("Health prober triggering failover execution")
-	
-	err := p.controller.executeFailover(ctx)
+	targetMainIndex, err := p.controller.GetTargetMainIndex(ctx)
 	if err != nil {
-		logger.Error("Health prober: failover execution failed", "error", err)
-	} else {
-		logger.Info("Health prober: failover execution completed successfully")
+		logger.Error("Health prober: cannot get target main index", "error", err)
+		return
+	}
+	targetMainPodName := p.controller.config.GetPodName(targetMainIndex)
+	
+	// Submit event to failoverCheckQueue instead of direct execution
+	// This ensures proper synchronization and deduplication
+	event := FailoverCheckEvent{
+		Reason:    "health-check-failure",
+		PodName:   targetMainPodName,
+		Timestamp: time.Now(),
+	}
+	
+	// Non-blocking send to avoid deadlock if queue is full
+	select {
+	case p.controller.failoverCheckQueue.events <- event:
+		logger.Info("Health prober: successfully queued failover check event")
+	default:
+		logger.Error("Health prober: failover check queue is full, event dropped")
 	}
 }

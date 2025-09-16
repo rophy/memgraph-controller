@@ -7,6 +7,12 @@ import (
 	"time"
 )
 
+// contextKey is a type for context keys to avoid collisions
+type contextKey string
+
+// failoverCheckEventKey is the context key for passing FailoverCheckEvent
+const failoverCheckEventKey contextKey = "failover-check-event"
+
 // FailoverCheckEvent represents an event that triggers failover checking
 type FailoverCheckEvent struct {
 	Type           string
@@ -82,8 +88,15 @@ func (c *MemgraphController) handleFailoverCheckEvent(event FailoverCheckEvent) 
 
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
+	
+	// Pass the event through context
+	ctx = context.WithValue(ctx, failoverCheckEventKey, event)
 
+	// Acquire shared mutex before performing failover check
+	// This prevents race conditions with reconciliation
+	c.operationMu.Lock()
 	err := c.performFailoverCheck(ctx)
+	c.operationMu.Unlock()
 	if err != nil {
 		logger.Warn("failed failover check", "reason", event.Reason, "error", err)
 	} else {
@@ -114,16 +127,46 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 		return fmt.Errorf("cannot get target main index: %w", err)
 	}
 	targetMainPodName := c.config.GetPodName(targetMainIndex)
-	role, isHealthy := c.getHealthyRole(ctx, targetMainPodName)
-
-	if isHealthy && role == "main" {
-		logger.Info("failover check: current target main pod is healthy and in 'main' role, no failover needed", "pod_name", targetMainPodName)
-		return nil // No failover needed
+	
+	// Check if this failover check was triggered by health check failure
+	if eventValue := ctx.Value(failoverCheckEventKey); eventValue != nil {
+		if event, ok := eventValue.(FailoverCheckEvent); ok && event.Reason == "health-check-failure" {
+			// For health-check-failure events, run a fresh health check to verify failure
+			logger.Info("failover check triggered by health failure, verifying with fresh health check", "pod_name", targetMainPodName)
+			
+			// Try to ping the pod with a fresh connection
+			if node, exists := c.cluster.MemgraphNodes[targetMainPodName]; exists {
+				if err := node.Ping(ctx); err == nil {
+					logger.Info("failover check: pod recovered, no failover needed", "pod_name", targetMainPodName)
+					return nil
+				}
+				logger.Warn("failover check: health check still failing, proceeding with failover", "pod_name", targetMainPodName, "error", err)
+				// Continue with failover - will execute failover below
+			}
+			logger.Warn("🚨 FAILOVER NEEDED: Target main pod health check failed", "pod_name", targetMainPodName)
+		} else {
+			// For other event reasons, use the original logic
+			role, isHealthy := c.getHealthyRole(ctx, targetMainPodName)
+		
+			if isHealthy && role == "main" {
+				logger.Info("failover check: current target main pod is healthy and in 'main' role, no failover needed", "pod_name", targetMainPodName)
+				return nil // No failover needed
+			}
+			logger.Warn("🚨 FAILOVER NEEDED: Target main pod is unhealthy or not in 'main' role", "pod_name", targetMainPodName, "role", role, "healthy", isHealthy)
+		}
+	} else {
+		// No event context (direct call), use original logic
+		role, isHealthy := c.getHealthyRole(ctx, targetMainPodName)
+	
+		if isHealthy && role == "main" {
+			logger.Info("failover check: current target main pod is healthy and in 'main' role, no failover needed", "pod_name", targetMainPodName)
+			return nil // No failover needed
+		}
+		logger.Warn("🚨 FAILOVER NEEDED: Target main pod is unhealthy or not in 'main' role", "pod_name", targetMainPodName, "role", role, "healthy", isHealthy)
 	}
 
-	logger.Warn("🚨 FAILOVER NEEDED: Target main pod is unhealthy or not in 'main' role", "pod_name", targetMainPodName, "role", role, "healthy", isHealthy)
-
-	err = c.executeFailover(ctx)
+	// Call internal version since caller should hold operationMu
+	err = c.executeFailoverInternal(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to execute failover: %w", err)
 	}
@@ -131,11 +174,8 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 	return nil
 }
 
-// executeFailover executes the failover logic
-func (c *MemgraphController) executeFailover(ctx context.Context) error {
-	// mutex to prevent concurrent failover executions
-	c.failoverMu.Lock()
-	defer c.failoverMu.Unlock()
+// executeFailoverInternal executes the failover logic (internal version, caller must hold operationMu)
+func (c *MemgraphController) executeFailoverInternal(ctx context.Context) error {
 
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {

@@ -419,6 +419,58 @@ def wait_for_cluster_ready(timeout: int = 60) -> bool:
       f"Timeout waiting for cluster to be ready after {timeout}s")
 
 
+def wait_for_statefulset_ready(statefulset_name: str = "memgraph-ha", 
+                              expected_replicas: int = 3, 
+                              timeout: int = 120) -> bool:
+  """
+  Wait for StatefulSet to have all replicas ready and updated.
+  This helps prevent test flakiness by ensuring StatefulSet is fully stable.
+  
+  Args:
+      statefulset_name: Name of the StatefulSet
+      expected_replicas: Expected number of ready replicas
+      timeout: Maximum wait time in seconds
+  
+  Returns:
+      True if StatefulSet is ready, False on timeout
+  """
+  start_time = time.time()
+  
+  while time.time() - start_time < timeout:
+    try:
+      # Get StatefulSet status
+      cmd = ["kubectl", "get", "statefulset", statefulset_name, 
+             "-n", MEMGRAPH_NS, "-o", "json"]
+      result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+      
+      if result.returncode != 0:
+        time.sleep(2)
+        continue
+        
+      sts_data = json.loads(result.stdout)
+      status = sts_data.get('status', {})
+      
+      replicas = status.get('replicas', 0)
+      ready_replicas = status.get('readyReplicas', 0)
+      updated_replicas = status.get('updatedReplicas', 0)
+      
+      # Check if StatefulSet is fully ready
+      if (replicas == expected_replicas and 
+          ready_replicas == expected_replicas and 
+          updated_replicas == expected_replicas):
+        return True
+        
+      elapsed = int(time.time() - start_time)
+      log_info(f"⏳ Waiting for StatefulSet: {ready_replicas}/{expected_replicas} ready ({elapsed}s/{timeout}s)")
+      
+    except Exception as e:
+      log_info(f"Error checking StatefulSet: {e}")
+      
+    time.sleep(3)
+  
+  return False
+
+
 def wait_for_cluster_convergence(timeout: int = 60) -> bool:
   """
   Wait for cluster to converge to main-sync-async topology by checking pods directly

@@ -49,3 +49,36 @@ def unique_test_id():
     """Generate unique test ID for each test"""
     from utils import generate_test_id
     return generate_test_id()
+
+
+@pytest.fixture(autouse=True)
+def ensure_cluster_stable():
+    """
+    Ensure cluster is stable before each test.
+    This fixture runs before every test to prevent test interference.
+    """
+    from utils import wait_for_statefulset_ready, log_info
+    import subprocess
+    
+    # Before test: Clean up any leftover NetworkPolicies and ensure StatefulSet is stable
+    try:
+        # Clean up any NetworkPolicies that might be left from failed tests
+        result = subprocess.run(
+            ["kubectl", "delete", "networkpolicies", "--all", "-n", "memgraph"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if "deleted" in result.stdout:
+            log_info("🧹 Cleaned up leftover NetworkPolicies before test")
+    except:
+        pass  # Ignore cleanup errors
+    
+    # Ensure StatefulSet is stable
+    if not wait_for_statefulset_ready(timeout=60):
+        log_info("⚠️ StatefulSet not fully ready before test, attempting to wait longer...")
+        wait_for_statefulset_ready(timeout=120)
+    
+    yield  # Run the test
+    
+    # After test: nothing needed here as we check before next test

@@ -1,8 +1,90 @@
 # Known Issues
 
-## 1. ASYNC/SYNC Replica Registration During Rolling Restart
+## 1. Race Condition Between Reconciliation and Failover
 
 **Status**: Active  
+**Severity**: Critical  
+**First Observed**: 2025-09-16  
+**Occurrence Rate**: Intermittent but can cause complete replication topology corruption
+
+### Description
+
+The controller has a critical race condition where reconciliation and failover operations can execute concurrently, causing reconciliation to undo failovers and corrupt the replication topology. This results in clusters with no SYNC replicas (only ASYNC), making safe failover impossible.
+
+### Root Cause
+
+**Different mutexes for concurrent operations**:
+- `performReconciliationActions()` uses `reconcileMu`
+- `executeFailover()` uses `failoverMu`
+- These different mutexes allow concurrent execution
+
+**The race condition sequence**:
+1. Reconciliation starts, reads `targetMainIndex=0` from ConfigMap
+2. Reconciliation calls `performFailoverCheck()` (no mutex held during this call)
+3. Meanwhile, health prober triggers failover in separate goroutine
+4. Failover promotes pod-1 to main, updates ConfigMap to `targetMainIndex=1`
+5. Reconciliation continues with stale `targetMainNode=pod-0`
+6. Reconciliation sees pod-1 has role="main" but thinks it should be replica
+7. **Reconciliation demotes the newly promoted main back to replica**
+8. When registering replicas, sync/async calculation is wrong due to state mismatch
+
+### Evidence
+
+**From controller logs during rolling restart**:
+```
+11:45:23.776 performReconciliationActions started
+11:45:23.779 promoting sync replica to main pod_name=memgraph-ha-1
+11:45:23.900 failover: updated target main index target_main_index=1
+11:45:24.337 Pod has wrong role, demoting to replica pod_name=memgraph-ha-1 current_role=main
+11:45:24.340 Registered replication replica_name=memgraph_ha_1 sync_mode=ASYNC
+```
+
+The reconciliation that started at 11:45:23.776 with `targetMainIndex=0` continued executing after failover updated ConfigMap to `targetMainIndex=1`, causing it to demote the newly promoted main.
+
+### Impact
+
+- **Complete replication topology corruption**: All replicas become ASYNC, no SYNC replica
+- **Failover failures**: Controller cannot perform safe failover without SYNC replica
+- **Data consistency risk**: Without SYNC replica, data loss possible during failures
+- **Rolling restart failures**: E2E tests fail due to incorrect topology after restart
+
+### Multiple Entry Points Compound the Problem
+
+Three different code paths can trigger these operations:
+1. **Reconciliation loop** → `performReconciliationActions` → `performFailoverCheck`
+2. **FailoverCheckQueue** → `performFailoverCheck` → `executeFailover`
+3. **Health Prober** → `executeFailover` (directly, bypassing performFailoverCheck)
+
+The health prober's direct call to `executeFailover` is particularly problematic as it can cause double failovers if not properly synchronized.
+
+### Proposed Solution
+
+**Use a single shared mutex** for all reconciliation and failover operations:
+
+1. Replace both `reconcileMu` and `failoverMu` with a single `sharedMutex`
+2. Acquire mutex at entry points, not inside functions:
+   - In `performReconciliationActions()` - hold for entire reconciliation
+   - In `FailoverCheckQueue.processEvent()` - before calling performFailoverCheck
+   - In health prober - before any failover operations
+3. Have health prober submit events to `FailoverCheckQueue` instead of direct execution
+4. Always re-validate conditions after acquiring mutex (prevent stale decisions)
+
+### Related Code
+
+- `internal/controller/controller_reconcile.go:110-111` - Uses reconcileMu
+- `internal/controller/queue_failover.go:137-138` - Uses failoverMu  
+- `internal/controller/prober.go:211` - Direct executeFailover call
+- `internal/controller/queue_failover.go:86` - No mutex before performFailoverCheck
+
+### Workaround
+
+None available. The race condition can occur at any time when reconciliation and failover triggers overlap.
+
+---
+
+## 2. ASYNC/SYNC Replica Registration During Rolling Restart
+
+**Status**: Active (caused by race condition above)
 **Severity**: High  
 **First Observed**: 2025-09-11  
 **Occurrence Rate**: 100% during rolling restart
@@ -13,13 +95,13 @@ During StatefulSet rolling restart, replicas are incorrectly registered with wro
 
 ### Root Cause
 
-The controller has a fundamental confusion between "target main" (from ConfigMap - the desired state) and "actual main" (current reality) during replica registration:
+This is a **symptom of the race condition described in Issue #1**. During rolling restart:
 
 1. **ConfigMap is source of truth**: Says pod-0 should be main (targetMainIndex=0)
 2. **Rolling restart occurs**: Pod-0 restarts, pod-1 temporarily becomes main via failover
-3. **Reconciliation confusion**: Controller tries to reconcile to ConfigMap's desired state
-4. **Wrong registration target**: Controller attempts to register replicas to `targetMainNode` (pod-0) even when pod-0 is not actually main
-5. **SYNC/ASYNC logic error**: The sync replica determination uses inconsistent logic between target and actual main
+3. **Race condition occurs**: Reconciliation with stale state undoes the failover
+4. **Wrong sync calculation**: Sync replica calculated from ConfigMap doesn't match actual main
+5. **SYNC/ASYNC logic error**: All replicas registered as ASYNC
 
 ### Reproduction Steps
 

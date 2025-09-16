@@ -38,6 +38,7 @@ run: ## Deploy full memgraph-ha cluster with controller (background)
 down: ## Remove all skaffold resources and PVCs
 	skaffold delete
 	kubectl delete pvc --all -n memgraph
+	kubectl delete networkpolicies --all -n memgraph
 	rm -rf logs/*
 
 check: ## Run project checks and validations

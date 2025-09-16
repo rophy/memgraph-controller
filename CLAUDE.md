@@ -19,7 +19,7 @@ make test
 2. Run `make run`, which should buils and deploy a memgraph-ha cluster with skaffold.
 3. Wait for the memgraph-ha cluster to stablize. Docker build takes around 120s, other parts around 30s.
    Can check memgraph-controller pod logs to assist.
-4. Run `make test-e2e`, which builds E2E test container and runs tests as Kubernetes Job.
+4. Run `make test-e2e` as a background job using run_in_background parameter (E2E tests take >2 minutes to complete).
 5. For single test execution: `make test-e2e ARGS="test_file.py"` or `make test-e2e ARGS="test_file.py::test_function"`
 6. If asked to run e2e tests repeatly, use `tests/scripts/repeat-e2e-tests.sh`
 

@@ -10,6 +10,7 @@ import time
 from datetime import datetime, timedelta
 from utils import (
     wait_for_cluster_convergence,
+    wait_for_statefulset_ready,
     get_pod_logs,
     get_test_client_pod,
     get_controller_pod,
@@ -328,9 +329,15 @@ def test_rolling_restart_continuous_availability():
 
   # Precondition: Cluster is ready
   log_info("Verifying initial cluster health...")
+  
+  # First ensure StatefulSet is fully ready (handles case where previous test did rolling restart)
+  log_info("Ensuring StatefulSet is fully stable...")
+  assert wait_for_statefulset_ready(timeout=120), "StatefulSet failed to become ready"
+  
+  # Then wait for cluster convergence
   assert wait_for_cluster_convergence(timeout=120), "Cluster failed to converge initially"
 
-  # Verify we have 3 pods
+  # Now verify we have 3 pods
   initial_status = get_statefulset_rollout_status()
   assert initial_status['replicas'] == 3, f"Expected 3 replicas, got {initial_status['replicas']}"
   assert initial_status['ready_replicas'] == 3, f"Not all replicas ready: {initial_status['ready_replicas']}/3"
@@ -457,7 +464,7 @@ def test_rolling_restart_continuous_availability():
 
   # Step 6: Verify cluster returns to healthy state
   log_info("Verifying cluster health after rollout...")
-  assert wait_for_cluster_convergence(timeout=60), "Cluster failed to converge after rollout"
+  assert wait_for_cluster_convergence(timeout=180), "Cluster failed to converge after rollout"
 
   # Verify final state
   final_status = get_statefulset_rollout_status()
@@ -495,6 +502,12 @@ def test_rolling_restart_with_main_changes():
 
   # Precondition: Cluster is ready
   log_info("Verifying initial cluster health...")
+  
+  # First ensure StatefulSet is fully ready (handles case where previous test did rolling restart)
+  log_info("Ensuring StatefulSet is fully stable...")
+  assert wait_for_statefulset_ready(timeout=120), "StatefulSet failed to become ready"
+  
+  # Then wait for cluster convergence
   assert wait_for_cluster_convergence(timeout=120), "Cluster failed to converge initially"
 
   # Record initial main

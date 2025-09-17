@@ -29,16 +29,16 @@ The `make test-e2e` command supports the `ARGS` parameter for running specific t
 
 ```bash
 # Run a specific test file
-make test-e2e ARGS="test_failover_pod_deletion.py"
+make test-e2e ARGS="tests/e2e/test_rolling_restart.py"
 
 # Run a specific test function  
-make test-e2e ARGS="test_failover_pod_deletion.py::test_pod_deletion_failover"
+make test-e2e ARGS="tests/e2e/test_failover_pod_deletion.py::test_pod_deletion_failover"
 
 # Run multiple test patterns
 make test-e2e ARGS="-k failover -v"
 
 # Run tests with verbose output
-make test-e2e ARGS="test_failover_network_isolation.py -v -s"
+make test-e2e ARGS="tests/e2e/test_rolling_restart.py -v -s"
 ```
 
 ### Reliability Testing

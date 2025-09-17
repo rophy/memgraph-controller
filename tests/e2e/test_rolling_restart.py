@@ -7,7 +7,7 @@ throughout the entire rollout process.
 """
 
 import time
-from datetime import datetime, timedelta
+import datetime
 from utils import (
     wait_for_cluster_convergence,
     wait_for_statefulset_ready,
@@ -189,7 +189,7 @@ def monitor_pod_restarts_during_rollout(duration: int = 300) -> Dict[str, Any]:
 
 
 def analyze_client_operations_during_rollout(logs: str,
-                                             rollout_start: datetime,
+                                             rollout_start: datetime.datetime,
                                              rollout_duration: int) -> Dict[str, Any]:
   """
   Analyze test-client operations during a rollout period.
@@ -202,7 +202,7 @@ def analyze_client_operations_during_rollout(logs: str,
   Returns:
       Dict with analysis results
   """
-  rollout_end = rollout_start + timedelta(seconds=rollout_duration)
+  rollout_end = rollout_start + datetime.timedelta(seconds=rollout_duration)
 
   operations = []
   failures = []
@@ -223,7 +223,7 @@ def analyze_client_operations_during_rollout(logs: str,
         continue
 
       # Handle timezone-aware timestamps
-      timestamp = datetime.fromisoformat(timestamp_str)
+      timestamp = datetime.datetime.fromisoformat(timestamp_str)
       timestamp_naive = timestamp.replace(tzinfo=None)
 
       # Skip logs outside rollout window
@@ -362,7 +362,7 @@ def test_rolling_restart_continuous_availability():
 
   # Step 3: Trigger rolling restart
   log_info("Triggering rolling restart of StatefulSet...")
-  rollout_start_time = datetime.utcnow()
+  rollout_start_time = datetime.datetime.now(datetime.UTC)
   
   # Get initial pod UIDs before triggering rollout
   initial_pods_json = kubectl_get("pods", namespace=MEMGRAPH_NS, selector="app.kubernetes.io/name=memgraph", output="json")
@@ -396,7 +396,7 @@ def test_rolling_restart_continuous_availability():
 
   # Get test-client logs during rollout period
   log_info("Analyzing test-client operations during rollout...")
-  since_time = (rollout_start_time - timedelta(seconds=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
+  since_time = (rollout_start_time - datetime.timedelta(seconds=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
   client_logs = get_pod_logs(test_client_pod, since_time=since_time)
 
   # Analyze client operations
@@ -516,7 +516,7 @@ def test_rolling_restart_with_main_changes():
 
   # Trigger rolling restart
   log_info("Triggering rolling restart...")
-  rollout_start_time = datetime.utcnow()
+  rollout_start_time = datetime.datetime.now(datetime.UTC)
   trigger_statefulset_rollout()
 
   # Monitor main changes during rollout

@@ -4,6 +4,8 @@ import (
 	"context"
 	"sync"
 	"time"
+	
+	"memgraph-controller/internal/common"
 )
 
 // ProberConfig holds configuration for the health prober
@@ -54,12 +56,12 @@ func (p *HealthProber) Start(ctx context.Context) {
 	defer p.mu.Unlock()
 	
 	if p.running {
-		logger.Warn("Health prober already running")
+		common.GetLogger().Warn("Health prober already running")
 		return
 	}
 	
 	p.running = true
-	logger.Info("Starting health prober", 
+	common.GetLogger().Info("Starting health prober", 
 		"check_interval", p.config.CheckInterval,
 		"timeout", p.config.Timeout,
 		"failure_threshold", p.config.FailureThreshold)
@@ -76,7 +78,7 @@ func (p *HealthProber) Stop() {
 		return
 	}
 	
-	logger.Info("Stopping health prober")
+	common.GetLogger().Info("Stopping health prober")
 	p.running = false
 	close(p.stopCh)
 }
@@ -97,16 +99,21 @@ func (p *HealthProber) GetHealthStatus() (healthy bool, consecutiveFailures int)
 
 // runHealthCheckLoop is the main health checking loop
 func (p *HealthProber) runHealthCheckLoop(ctx context.Context) {
+	// Add goroutine context for health checker
+	ctx = context.WithValue(ctx, "goroutine", "health-check")
+	logger := common.GetLogger().WithContext(ctx)
+	ctx = common.WithLogger(ctx, logger)
+	
 	ticker := time.NewTicker(p.config.CheckInterval)
 	defer ticker.Stop()
 	
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("Health prober stopped due to context cancellation")
+			common.GetLogger().Info("Health prober stopped due to context cancellation")
 			return
 		case <-p.stopCh:
-			logger.Info("Health prober stopped")
+			common.GetLogger().Info("Health prober stopped")
 			return
 		case <-ticker.C:
 			p.performHealthCheck(ctx)
@@ -116,6 +123,7 @@ func (p *HealthProber) runHealthCheckLoop(ctx context.Context) {
 
 // performHealthCheck performs a single health check against the main pod
 func (p *HealthProber) performHealthCheck(ctx context.Context) {
+	
 	// Create timeout context for this specific health check
 	checkCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
 	defer cancel()
@@ -123,8 +131,8 @@ func (p *HealthProber) performHealthCheck(ctx context.Context) {
 	// Get current target main pod
 	targetMainIndex, err := p.controller.GetTargetMainIndex(checkCtx)
 	if err != nil {
-		logger.Error("Health check failed: cannot get target main index", "error", err)
-		p.recordFailure()
+		common.GetLogger().Error("Health check failed: cannot get target main index", "error", err)
+		p.recordFailure(ctx)
 		return
 	}
 	
@@ -133,28 +141,29 @@ func (p *HealthProber) performHealthCheck(ctx context.Context) {
 	// Perform blackbox health check - try to ping the main pod  
 	targetMainNode, err := p.controller.getTargetMainNode(checkCtx)
 	if err != nil || targetMainNode == nil {
-		logger.Error("Health check failed: cannot get main node", "pod_name", targetMainPodName, "error", err)
-		p.recordFailure()
+		common.GetLogger().Error("Health check failed: cannot get main node", "pod_name", targetMainPodName, "error", err)
+		p.recordFailure(ctx)
 		return
 	}
 	
 	err = targetMainNode.Ping(checkCtx)
 	if err != nil {
-		logger.Warn("Health check failed: cannot ping main pod", 
+		common.GetLogger().Warn("Health check failed: cannot ping main pod", 
 			"pod_name", targetMainPodName,
 			"error", err,
 			"consecutive_failures", p.consecutiveFailures+1,
 			"failure_threshold", p.config.FailureThreshold)
-		p.recordFailure()
+		p.recordFailure(ctx)
 		return
 	}
 	
 	// Health check succeeded
-	p.recordSuccess(targetMainPodName)
+	p.recordSuccess(ctx, targetMainPodName)
 }
 
 // recordFailure records a health check failure and triggers failover if threshold is reached
-func (p *HealthProber) recordFailure() {
+func (p *HealthProber) recordFailure(ctx context.Context) {
+	logger := common.LoggerFromContext(ctx)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	
@@ -177,7 +186,8 @@ func (p *HealthProber) recordFailure() {
 }
 
 // recordSuccess records a health check success
-func (p *HealthProber) recordSuccess(podName string) {
+func (p *HealthProber) recordSuccess(ctx context.Context, podName string) {
+	logger := common.LoggerFromContext(ctx)
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	
@@ -198,17 +208,17 @@ func (p *HealthProber) recordSuccess(podName string) {
 func (p *HealthProber) triggerFailover() {
 	// Guard against nil controller (for testing)
 	if p.controller == nil {
-		logger.Warn("Health prober: cannot trigger failover with nil controller")
+		common.GetLogger().Warn("Health prober: cannot trigger failover with nil controller")
 		return
 	}
 	
 	// Guard against nil failoverCheckQueue
 	if p.controller.failoverCheckQueue == nil || p.controller.failoverCheckQueue.events == nil {
-		logger.Warn("Health prober: failoverCheckQueue not initialized")
+		common.GetLogger().Warn("Health prober: failoverCheckQueue not initialized")
 		return
 	}
 	
-	logger.Info("Health prober: queueing failover check event")
+	common.GetLogger().Info("Health prober: queueing failover check event")
 	
 	// Get current target main pod name
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -216,7 +226,7 @@ func (p *HealthProber) triggerFailover() {
 	
 	targetMainIndex, err := p.controller.GetTargetMainIndex(ctx)
 	if err != nil {
-		logger.Error("Health prober: cannot get target main index", "error", err)
+		common.GetLogger().Error("Health prober: cannot get target main index", "error", err)
 		return
 	}
 	targetMainPodName := p.controller.config.GetPodName(targetMainIndex)
@@ -232,8 +242,8 @@ func (p *HealthProber) triggerFailover() {
 	// Non-blocking send to avoid deadlock if queue is full
 	select {
 	case p.controller.failoverCheckQueue.events <- event:
-		logger.Info("Health prober: successfully queued failover check event")
+		common.GetLogger().Info("Health prober: successfully queued failover check event")
 	default:
-		logger.Error("Health prober: failover check queue is full, event dropped")
+		common.GetLogger().Error("Health prober: failover check queue is full, event dropped")
 	}
 }

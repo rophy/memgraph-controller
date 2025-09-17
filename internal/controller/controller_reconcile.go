@@ -6,12 +6,18 @@ import (
 	"strings"
 	"time"
 
+	"memgraph-controller/internal/common"
 	"memgraph-controller/internal/httpapi"
 )
 
 // Run starts the controller reconciliation loop
 // This assumes all components (informers, servers, leader election) have been started
 func (c *MemgraphController) Run(ctx context.Context) error {
+	// Add goroutine context for reconciliation loop
+	ctx = context.WithValue(ctx, "goroutine", "reconciliation")
+	logger := common.GetLogger().WithContext(ctx)
+	ctx = common.WithLogger(ctx, logger)
+	
 	c.mu.Lock()
 	if c.isRunning {
 		c.mu.Unlock()
@@ -24,28 +30,28 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	ticker := time.NewTicker(c.config.ReconcileInterval)
 	defer ticker.Stop()
 
-	logger.Info("Starting reconciliation loop", "interval", c.config.ReconcileInterval)
+	common.GetLogger().Info("Starting reconciliation loop", "interval", c.config.ReconcileInterval)
 
 	// Main reconciliation loop - implements DESIGN.md simplified flow
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("Context cancelled, stopping controller...")
+			common.GetLogger().Info("Context cancelled, stopping controller...")
 			c.stop()
 			return ctx.Err()
 
 		case <-ticker.C:
 			if !c.IsLeader() {
-				logger.Info("Not leader, skipping reconciliation cycle")
+				common.GetLogger().Info("Not leader, skipping reconciliation cycle")
 				continue
 			}
 
-			logger.Info("Starting reconciliation cycle...")
+			common.GetLogger().Info("Starting reconciliation cycle...")
 
 			// Check if ConfigMap is ready by trying to get the target main index
 			_, err := c.GetTargetMainIndex(ctx)
 			if err != nil {
-				logger.Info("ConfigMap not ready - performing discovery...")
+				common.GetLogger().Info("ConfigMap not ready - performing discovery...")
 
 				// Use DESIGN.md compliant discovery logic to determine target main index
 				targetMainIndex, err := c.cluster.discoverClusterState(ctx)
@@ -54,7 +60,7 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				}
 				if targetMainIndex == -1 {
 					// -1 without error means cluster is not ready to be discovered
-					logger.Info("Cluster is not ready to be discovered")
+					common.GetLogger().Info("Cluster is not ready to be discovered")
 					continue
 				}
 
@@ -62,18 +68,18 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				if err := c.SetTargetMainIndex(ctx, targetMainIndex); err != nil {
 					return fmt.Errorf("failed to set target main index in ConfigMap: %w", err)
 				}
-				logger.Info("✅ Cluster discovered with target main index", "index", targetMainIndex)
+				common.GetLogger().Info("✅ Cluster discovered with target main index", "index", targetMainIndex)
 			}
 
 			// Enable gateway connections.
 			if targetMainNode, err := c.getTargetMainNode(ctx); err == nil {
 				c.gatewayServer.SetUpstreamAddress(targetMainNode.GetBoltAddress())
 			} else {
-				logger.Error("Failed to get target main node", "error", err)
+				common.GetLogger().Error("Failed to get target main node", "error", err)
 			}
 
 			if err := c.performReconciliationActions(ctx); err != nil {
-				logger.Error("Error during reconciliation", "error", err)
+				common.GetLogger().Error("Error during reconciliation", "error", err)
 				// Retry on next tick
 			}
 		}
@@ -81,6 +87,7 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 }
 
 func (c *MemgraphController) performReconciliationActions(ctx context.Context) error {
+	logger := common.LoggerFromContext(ctx)
 	start := time.Now()
 	var reconcileErr error
 	defer func() {
@@ -358,7 +365,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*httpapi.Sta
 		Pods:         pods,
 	}
 
-	logger.Info("Generated cluster status",
+	common.GetLogger().Info("Generated cluster status",
 		"pod_count", len(pods), "current_main", currentMain, "healthy_pods", healthyCount, "total_pods", statusResponse.TotalPods)
 
 	return response, nil

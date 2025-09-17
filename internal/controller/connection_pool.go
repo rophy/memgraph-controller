@@ -48,7 +48,7 @@ func (cp *ConnectionPool) GetDriver(ctx context.Context, boltAddress string) (ne
 			return driver, nil
 		} else {
 			// Driver is no longer valid, remove it and create a new one
-			logger.Warn("driver is no longer valid", "bolt_address", boltAddress, "error", err)
+			common.GetLogger().Warn("driver is no longer valid", "bolt_address", boltAddress, "error", err)
 			cp.removeDriver(boltAddress)
 		}
 	}
@@ -81,7 +81,7 @@ func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) 
 	}
 
 	cp.drivers[boltAddress] = driver
-	logger.Debug("created new driver", "bolt_address", boltAddress)
+	common.GetLogger().Debug("created new driver", "bolt_address", boltAddress)
 	return driver, nil
 }
 
@@ -110,7 +110,7 @@ func (cp *ConnectionPool) UpdatePodIP(podName, newIP string) {
 		if driver, exists := cp.drivers[oldBoltAddress]; exists {
 			driver.Close(context.Background())
 			delete(cp.drivers, oldBoltAddress)
-			logger.Debug("invalidated connection for pod", "pod", podName, "old_ip", existingIP, "new_ip", newIP)
+			common.GetLogger().Debug("invalidated connection for pod", "pod", podName, "old_ip", existingIP, "new_ip", newIP)
 		}
 	}
 
@@ -127,7 +127,7 @@ func (cp *ConnectionPool) InvalidatePodConnection(podName string) {
 		if driver, exists := cp.drivers[boltAddress]; exists {
 			driver.Close(context.Background())
 			delete(cp.drivers, boltAddress)
-			logger.Debug("invalidated connection: IP changed", "pod_name", podName, "old_ip", ip)
+			common.GetLogger().Debug("invalidated connection: IP changed", "pod_name", podName, "old_ip", ip)
 		}
 	}
 }
@@ -143,7 +143,7 @@ func (cp *ConnectionPool) Close(ctx context.Context) {
 
 	for boltAddress, driver := range cp.drivers {
 		driver.Close(ctx)
-		logger.Debug("closed driver", "bolt_address", boltAddress)
+		common.GetLogger().Debug("closed driver", "bolt_address", boltAddress)
 	}
 	cp.drivers = make(map[string]neo4j.DriverWithContext)
 	cp.podIPs = make(map[string]string)
@@ -176,7 +176,7 @@ func WithRetry(ctx context.Context, operation func() error, retryConfig RetryCon
 			delay = retryConfig.MaxDelay
 		}
 
-		logger.Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
+		common.GetLogger().Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
 
 		select {
 		case <-ctx.Done():
@@ -214,7 +214,7 @@ func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfi
 		if strings.Contains(err.Error(), "ConnectivityError") || strings.Contains(err.Error(), "i/o timeout") {
 			if refreshFunc != nil {
 				if refreshErr := refreshFunc(); refreshErr != nil {
-					logger.Warn("failed to refresh pod info", "error", refreshErr)
+					common.GetLogger().Warn("failed to refresh pod info", "error", refreshErr)
 				}
 			}
 		}
@@ -225,7 +225,7 @@ func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfi
 			delay = retryConfig.MaxDelay
 		}
 
-		logger.Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
+		common.GetLogger().Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
 
 		select {
 		case <-ctx.Done():

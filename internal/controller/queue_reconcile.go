@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"sync"
 	"time"
+	
+	"memgraph-controller/internal/common"
 )
 
 // ReconcileEvent represents an event that triggers reconciliation
@@ -43,22 +45,28 @@ func (c *MemgraphController) newReconcileQueue() *ReconcileQueue {
 
 // processReconcileQueue processes events from the reconciliation queue
 func (c *MemgraphController) processReconcileQueue(rq *ReconcileQueue) {
+	// Add goroutine context for event queue
+	ctx := context.WithValue(rq.ctx, "goroutine", "eventQueue")
+	logger := common.GetLogger().WithContext(ctx)
+	ctx = common.WithLogger(ctx, logger)
+	
 	for {
 		select {
 		case event := <-rq.events:
-			c.handleReconcileEvent(event)
+			c.handleReconcileEvent(ctx, event)
 		case <-rq.ctx.Done():
-			logger.Debug("reconcile queue processor stopped")
+			common.GetLogger().Debug("reconcile queue processor stopped")
 			return
 		}
 	}
 }
 
 // handleReconcileEvent processes a single reconciliation event with deduplication
-func (c *MemgraphController) handleReconcileEvent(event ReconcileEvent) {
+func (c *MemgraphController) handleReconcileEvent(ctx context.Context, event ReconcileEvent) {
+	
 	// Only leaders process reconciliation events
 	if !c.IsLeader() {
-		logger.Debug("non-leader ignoring reconcile event", "reason", event.Reason)
+		common.GetLogger().Debug("non-leader ignoring reconcile event", "reason", event.Reason)
 		return
 	}
 
@@ -70,22 +78,22 @@ func (c *MemgraphController) handleReconcileEvent(event ReconcileEvent) {
 	lastEventTime, exists := rq.dedup[dedupKey]
 	if exists && time.Since(lastEventTime) < 2*time.Second {
 		rq.dedupMu.Unlock()
-		logger.Debug("deduplicating reconcile event", "reason", event.Reason, "within", 2*time.Second)
+		common.GetLogger().Debug("deduplicating reconcile event", "reason", event.Reason, "within", 2*time.Second)
 		return
 	}
 	rq.dedup[dedupKey] = event.Timestamp
 	rq.dedupMu.Unlock()
 
 	// Process the event immediately
-	logger.Info("processing immediate reconcile event", "reason", event.Reason)
+	common.GetLogger().Info("processing immediate reconcile event", "reason", event.Reason)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
 	if err := c.performReconciliationActions(ctx); err != nil {
-		logger.Error("failed immediate reconciliation", "reason", event.Reason, "error", err)
+		common.GetLogger().Error("failed immediate reconciliation", "reason", event.Reason, "error", err)
 	} else {
-		logger.Info("completed immediate reconciliation", "reason", event.Reason)
+		common.GetLogger().Info("completed immediate reconciliation", "reason", event.Reason)
 	}
 }
 
@@ -108,8 +116,8 @@ func (c *MemgraphController) enqueueReconcileEvent(eventType, reason, podName st
 	// Non-blocking send with overflow protection
 	select {
 	case c.reconcileQueue.events <- event:
-		logger.Debug("enqueued reconcile event", "reason", reason, "pod", podName)
+		common.GetLogger().Debug("enqueued reconcile event", "reason", reason, "pod", podName)
 	default:
-		logger.Debug("reconcile queue full, dropping event", "reason", reason)
+		common.GetLogger().Debug("reconcile queue full, dropping event", "reason", reason)
 	}
 }

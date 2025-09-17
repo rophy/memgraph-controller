@@ -26,6 +26,29 @@ var (
 	once         sync.Once
 )
 
+// loggerContextKey is the context key for storing loggers
+type loggerContextKey struct{}
+
+// WithLogger stores a logger in the context
+func WithLogger(ctx context.Context, logger *Logger) context.Context {
+	return context.WithValue(ctx, loggerContextKey{}, logger)
+}
+
+// LoggerFromContext retrieves a logger from context, or returns a default logger
+func LoggerFromContext(ctx context.Context) *Logger {
+	if logger, ok := ctx.Value(loggerContextKey{}).(*Logger); ok {
+		return logger
+	}
+	// Return default logger if none found in context
+	return GetLogger()
+}
+
+// CtxLogger is a convenience function to get logger from context
+// This provides a shorter way to write common.LoggerFromContext(ctx)
+func CtxLogger(ctx context.Context) *Logger {
+	return LoggerFromContext(ctx)
+}
+
 // NewLogger creates a new structured logger with configurable output
 func NewLogger(config LoggingConfig) *Logger {
 	level := parseLevel(config.Level)
@@ -104,6 +127,11 @@ func (l *Logger) WithFields(fields map[string]any) *Logger {
 // extractContextAttrs extracts logging attributes from context
 func extractContextAttrs(ctx context.Context) []any {
 	var attrs []any
+
+	// Put goroutine first for better visibility
+	if goroutine := ctx.Value("goroutine"); goroutine != nil {
+		attrs = append(attrs, "goroutine", goroutine)
+	}
 
 	if reqID := ctx.Value("request_id"); reqID != nil {
 		attrs = append(attrs, "request_id", reqID)

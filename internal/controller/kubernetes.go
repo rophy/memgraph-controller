@@ -5,11 +5,12 @@ import (
 
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
+	"memgraph-controller/internal/common"
 )
 
 func GetKubernetesConfig() (*rest.Config, error) {
 	if config, err := rest.InClusterConfig(); err == nil {
-		logger.Info("using in-cluster configuration")
+		common.GetLogger().Info("using in-cluster configuration")
 		return config, nil
 	}
 
@@ -18,6 +19,6 @@ func GetKubernetesConfig() (*rest.Config, error) {
 		kubeconfig = os.Getenv("HOME") + "/.kube/config"
 	}
 
-	logger.Info("using kubeconfig", "kubeconfig", kubeconfig)
+	common.GetLogger().Info("using kubeconfig", "kubeconfig", kubeconfig)
 	return clientcmd.BuildConfigFromFlags("", kubeconfig)
 }

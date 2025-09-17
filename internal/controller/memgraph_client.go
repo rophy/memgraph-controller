@@ -414,7 +414,7 @@ func (mc *MemgraphClient) TestConnection(ctx context.Context, boltAddress string
 		return fmt.Errorf("failed to verify connectivity to %s: %w", boltAddress, err)
 	}
 
-	logger.Info("Successfully connected to Memgraph", "bolt_address", boltAddress)
+	common.GetLogger().Info("Successfully connected to Memgraph", "bolt_address", boltAddress)
 	return nil
 }
 
@@ -434,7 +434,7 @@ func (mc *MemgraphClient) QueryReplicationRoleWithRetry(ctx context.Context, bol
 		session := driver.NewSession(ctx, neo4j.SessionConfig{})
 		defer func() {
 			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+				common.GetLogger().Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
 			}
 		}()
 
@@ -467,7 +467,7 @@ func (mc *MemgraphClient) QueryReplicationRoleWithRetry(ctx context.Context, bol
 		return nil, fmt.Errorf("failed to query replication role from %s after retries: %w", boltAddress, err)
 	}
 
-	logger.Info("Queried replication role", "bolt_address", boltAddress, "role", result.Role)
+	common.GetLogger().Info("Queried replication role", "bolt_address", boltAddress, "role", result.Role)
 	return result, nil
 }
 
@@ -487,7 +487,7 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 		session := driver.NewSession(ctx, neo4j.SessionConfig{})
 		defer func() {
 			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+				common.GetLogger().Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
 			}
 		}()
 
@@ -536,7 +536,7 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 
 					// Parse the data_info field for health assessment
 					if parsed, err := parseDataInfo(dataInfoStr); err != nil {
-						logger.Warn("Failed to parse data_info for replica", "replica_name", replica.Name, "error", err)
+						common.GetLogger().Warn("Failed to parse data_info for replica", "replica_name", replica.Name, "error", err)
 						// Create fallback status
 						replica.ParsedDataInfo = &DataInfoStatus{
 							Status:      "parse_error",
@@ -559,7 +559,7 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 
 					// Parse the map directly for health assessment
 					if parsed, err := parseDataInfoMap(dataInfoMap); err != nil {
-						logger.Warn("Failed to parse data_info map for replica", "replica_name", replica.Name, "error", err)
+						common.GetLogger().Warn("Failed to parse data_info map for replica", "replica_name", replica.Name, "error", err)
 						replica.ParsedDataInfo = &DataInfoStatus{
 							Status:      "parse_error",
 							Behind:      -1,
@@ -600,9 +600,9 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 		return nil, fmt.Errorf("failed to query replicas from %s after retries: %w", boltAddress, err)
 	}
 
-	logger.Info("Queried replicas", "bolt_address", boltAddress, "replica_count", len(result.Replicas))
+	common.GetLogger().Info("Queried replicas", "bolt_address", boltAddress, "replica_count", len(result.Replicas))
 	for _, replica := range result.Replicas {
-		logger.Info("Replica found", "name", replica.Name, "socket_address", replica.SocketAddress, "sync_mode", replica.SyncMode)
+		common.GetLogger().Info("Replica found", "name", replica.Name, "socket_address", replica.SocketAddress, "sync_mode", replica.SyncMode)
 	}
 
 	return result, nil
@@ -622,7 +622,7 @@ func (mc *MemgraphClient) Ping(ctx context.Context, boltAddress string) error {
 	session := driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer func() {
 		if closeErr := session.Close(ctx); closeErr != nil {
-			logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+			common.GetLogger().Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
 		}
 	}()
 
@@ -648,7 +648,7 @@ func (mc *MemgraphClient) SetReplicationRoleToMainWithRetry(ctx context.Context,
 		session := driver.NewSession(ctx, neo4j.SessionConfig{})
 		defer func() {
 			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+				common.GetLogger().Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
 			}
 		}()
 
@@ -658,7 +658,7 @@ func (mc *MemgraphClient) SetReplicationRoleToMainWithRetry(ctx context.Context,
 			return fmt.Errorf("failed to execute SET REPLICATION ROLE TO MAIN: %w", err)
 		}
 
-		logger.Info("Successfully set replication role to MAIN", "bolt_address", boltAddress)
+		common.GetLogger().Info("Successfully set replication role to MAIN", "bolt_address", boltAddress)
 		return nil
 	}, mc.retryConfig)
 
@@ -683,7 +683,7 @@ func (mc *MemgraphClient) SetReplicationRoleToMain(ctx context.Context, boltAddr
 	session := driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer func() {
 		if closeErr := session.Close(ctx); closeErr != nil {
-			logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+			common.GetLogger().Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
 		}
 	}()
 
@@ -693,7 +693,7 @@ func (mc *MemgraphClient) SetReplicationRoleToMain(ctx context.Context, boltAddr
 		return fmt.Errorf("failed to execute SET REPLICATION ROLE TO MAIN: %w", err)
 	}
 
-	logger.Info("Successfully set replication role to MAIN (fast failover)", "bolt_address", boltAddress)
+	common.GetLogger().Info("Successfully set replication role to MAIN (fast failover)", "bolt_address", boltAddress)
 	return nil
 }
 
@@ -712,7 +712,7 @@ func (mc *MemgraphClient) SetReplicationRoleToReplicaWithRetry(ctx context.Conte
 		session := driver.NewSession(ctx, neo4j.SessionConfig{})
 		defer func() {
 			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+				common.GetLogger().Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
 			}
 		}()
 
@@ -722,7 +722,7 @@ func (mc *MemgraphClient) SetReplicationRoleToReplicaWithRetry(ctx context.Conte
 			return fmt.Errorf("failed to execute SET REPLICATION ROLE TO REPLICA: %w", err)
 		}
 
-		logger.Info("Successfully set replication role to REPLICA", "bolt_address", boltAddress)
+		common.GetLogger().Info("Successfully set replication role to REPLICA", "bolt_address", boltAddress)
 		return nil
 	}, mc.retryConfig)
 
@@ -755,7 +755,7 @@ func (mc *MemgraphClient) RegisterReplica(ctx context.Context, mainBoltAddress, 
 	session := driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer func() {
 		if closeErr := session.Close(ctx); closeErr != nil {
-			logger.Warn("Failed to close session", "bolt_address", mainBoltAddress, "error", closeErr)
+			common.GetLogger().Warn("Failed to close session", "bolt_address", mainBoltAddress, "error", closeErr)
 		}
 	}()
 
@@ -786,7 +786,7 @@ func (mc *MemgraphClient) DropReplicaWithRetry(ctx context.Context, mainBoltAddr
 		session := driver.NewSession(ctx, neo4j.SessionConfig{})
 		defer func() {
 			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", mainBoltAddress, "error", closeErr)
+				common.GetLogger().Warn("Failed to close session", "bolt_address", mainBoltAddress, "error", closeErr)
 			}
 		}()
 
@@ -797,7 +797,7 @@ func (mc *MemgraphClient) DropReplicaWithRetry(ctx context.Context, mainBoltAddr
 			return fmt.Errorf("failed to execute DROP REPLICA: %w", err)
 		}
 
-		logger.Info("Successfully dropped replica from main", "replica_name", replicaName, "main_bolt_address", mainBoltAddress)
+		common.GetLogger().Info("Successfully dropped replica from main", "replica_name", replicaName, "main_bolt_address", mainBoltAddress)
 		return nil
 	}, mc.retryConfig)
 
@@ -825,7 +825,7 @@ func (mc *MemgraphClient) QueryStorageInfoWithRetry(ctx context.Context, boltAdd
 		session := driver.NewSession(ctx, neo4j.SessionConfig{})
 		defer func() {
 			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+				common.GetLogger().Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
 			}
 		}()
 
@@ -894,7 +894,7 @@ func (mc *MemgraphClient) ExecuteCommandWithRetry(ctx context.Context, boltAddre
 		session := driver.NewSession(ctx, neo4j.SessionConfig{})
 		defer func() {
 			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+				common.GetLogger().Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
 			}
 		}()
 
@@ -911,6 +911,6 @@ func (mc *MemgraphClient) ExecuteCommandWithRetry(ctx context.Context, boltAddre
 		return fmt.Errorf("failed to execute command '%s' on %s after retries: %w", command, boltAddress, err)
 	}
 
-	logger.Info("Successfully executed command", "command", command, "bolt_address", boltAddress)
+	common.GetLogger().Info("Successfully executed command", "command", command, "bolt_address", boltAddress)
 	return nil
 }

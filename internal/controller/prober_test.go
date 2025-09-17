@@ -142,7 +142,7 @@ func TestHealthProber_GetHealthStatus(t *testing.T) {
 	}
 	
 	// Simulate failure
-	prober.recordFailure()
+	prober.recordFailure(context.Background())
 	healthy, failures = prober.GetHealthStatus()
 	if healthy {
 		t.Error("Should not be healthy after failure")
@@ -152,7 +152,7 @@ func TestHealthProber_GetHealthStatus(t *testing.T) {
 	}
 	
 	// Simulate success
-	prober.recordSuccess("test-pod")
+	prober.recordSuccess(context.Background(), "test-pod")
 	healthy, failures = prober.GetHealthStatus()
 	if !healthy {
 		t.Error("Should be healthy after success")
@@ -174,8 +174,8 @@ func TestHealthProber_RecoveryLogging(t *testing.T) {
 	prober := NewHealthProber(mockController, config)
 	
 	// Record some failures
-	prober.recordFailure()
-	prober.recordFailure()
+	prober.recordFailure(context.Background())
+	prober.recordFailure(context.Background())
 	
 	healthy, failures := prober.GetHealthStatus()
 	if healthy || failures != 2 {
@@ -183,7 +183,7 @@ func TestHealthProber_RecoveryLogging(t *testing.T) {
 	}
 	
 	// Recovery should reset failures to 0
-	prober.recordSuccess("test-pod")
+	prober.recordSuccess(context.Background(), "test-pod")
 	healthy, failures = prober.GetHealthStatus()
 	if !healthy || failures != 0 {
 		t.Error("Should be healthy with 0 failures after recovery")
@@ -203,13 +203,13 @@ func TestHealthProber_FailureThresholdReset(t *testing.T) {
 	prober := NewHealthProber(mockController, config)
 	
 	// Test that consecutive failures accumulate
-	prober.recordFailure() // 1st failure
+	prober.recordFailure(context.Background()) // 1st failure
 	healthy, failures := prober.GetHealthStatus()
 	if healthy || failures != 1 {
 		t.Error("Should have 1 failure and be unhealthy")
 	}
 	
-	prober.recordFailure() // 2nd failure
+	prober.recordFailure(context.Background()) // 2nd failure
 	healthy, failures = prober.GetHealthStatus()
 	if healthy || failures != 2 {
 		t.Error("Should have 2 failures and be unhealthy")
@@ -218,7 +218,7 @@ func TestHealthProber_FailureThresholdReset(t *testing.T) {
 	// 3rd failure should trigger failover but NOT reset counter
 	// Note: We can't easily test the actual failover trigger without complex mocking,
 	// but we can test that the failure logic works correctly
-	prober.recordFailure() // 3rd failure - triggers failover
+	prober.recordFailure(context.Background()) // 3rd failure - triggers failover
 	
 	// Give some time for potential goroutine execution
 	time.Sleep(20 * time.Millisecond)

@@ -7,6 +7,7 @@ import (
 	"time"
 
 	v1 "k8s.io/api/core/v1"
+	"memgraph-controller/internal/common"
 )
 
 // MemgraphNode represents a single Memgraph instance in the cluster
@@ -100,7 +101,7 @@ func (node *MemgraphNode) GetReplicationRole(ctx context.Context) (string, error
 		if err != nil {
 			return "", fmt.Errorf("failed to query replication role for node %s: %w", node.name, err)
 		}
-		logger.Info("memgraph role", "pod_name", node.name, "role", roleResp.Role)
+		common.GetLogger().Info("memgraph role", "pod_name", node.name, "role", roleResp.Role)
 		node.memgraphRole = roleResp.Role
 	}
 	return node.memgraphRole, nil
@@ -120,7 +121,7 @@ func (node *MemgraphNode) GetReplicas(ctx context.Context) ([]ReplicaInfo, error
 		if err != nil {
 			return nil, fmt.Errorf("failed to query replicas for node %s: %w", node.name, err)
 		}
-		logger.Info("memgraph replicas", "pod_name", node.name, "replica_count", len(replicasResp.Replicas))
+		common.GetLogger().Info("memgraph replicas", "pod_name", node.name, "replica_count", len(replicasResp.Replicas))
 		node.replicasInfo = replicasResp.Replicas
 		node.hasReplicasInfo = true
 	}
@@ -187,7 +188,7 @@ func (node *MemgraphNode) QueryStorageInfo(ctx context.Context) error {
 		return fmt.Errorf("failed to query storage info for node %s: %w", node.name, err)
 	}
 	node.storageInfo = storageInfo
-	logger.Info("memgraph storage info", "pod_name", node.name, "vertices", storageInfo.VertexCount, "edges", storageInfo.EdgeCount)
+	common.GetLogger().Info("memgraph storage info", "pod_name", node.name, "vertices", storageInfo.VertexCount, "edges", storageInfo.EdgeCount)
 	return nil
 }
 

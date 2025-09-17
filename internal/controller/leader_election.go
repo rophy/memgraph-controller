@@ -49,7 +49,7 @@ func (le *LeaderElection) Run(ctx context.Context) error {
 		return fmt.Errorf("failed to get pod identity: %w", err)
 	}
 
-	logger.Info("starting leader election with identity", "identity", identity)
+	common.GetLogger().Info("starting leader election with identity", "identity", identity)
 
 	// Create resource lock for leader election
 	lock, err := le.createResourceLock(identity)
@@ -66,20 +66,20 @@ func (le *LeaderElection) Run(ctx context.Context) error {
 		ReleaseOnCancel: true,
 		Callbacks: leaderelection.LeaderCallbacks{
 			OnStartedLeading: func(ctx context.Context) {
-				logger.Info("started leading as", "identity", identity)
+				common.GetLogger().Info("started leading as", "identity", identity)
 				if le.onStartedLeading != nil {
 					le.onStartedLeading(ctx)
 				}
 			},
 			OnStoppedLeading: func() {
-				logger.Info("stopped leading as", "identity", identity)
+				common.GetLogger().Info("stopped leading as", "identity", identity)
 				if le.onStoppedLeading != nil {
 					le.onStoppedLeading()
 				}
 			},
 			OnNewLeader: func(currentLeader string) {
 				if currentLeader != identity {
-					logger.Info("new leader elected", "current_leader", currentLeader, "identity", identity)
+					common.GetLogger().Info("new leader elected", "current_leader", currentLeader, "identity", identity)
 				}
 				if le.onNewLeader != nil {
 					le.onNewLeader(currentLeader)
@@ -107,7 +107,7 @@ func (le *LeaderElection) getPodIdentity() (string, error) {
 		return "", fmt.Errorf("failed to get hostname: %w", err)
 	}
 
-	logger.Warn("POD_NAME env var not set, using hostname", "hostname", hostname)
+	common.GetLogger().Warn("POD_NAME env var not set, using hostname", "hostname", hostname)
 	return hostname, nil
 }
 

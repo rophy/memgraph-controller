@@ -20,7 +20,6 @@ import (
 	"memgraph-controller/internal/metrics"
 )
 
-var logger = common.GetLogger()
 
 type MemgraphController struct {
 	clientset        kubernetes.Interface
@@ -145,61 +144,61 @@ func (c *MemgraphController) Initialize(ctx context.Context) error {
 	}
 
 	// STEP 2: Start HTTP server for status API (always running, not leader-dependent)
-	logger.Info("starting HTTP server")
+	common.GetLogger().Info("starting HTTP server")
 	if err := c.StartHTTPServer(); err != nil {
 		return fmt.Errorf("failed to start HTTP server: %w", err)
 	}
-	logger.Info("HTTP server started successfully", "port", c.config.HTTPPort)
+	common.GetLogger().Info("HTTP server started successfully", "port", c.config.HTTPPort)
 
 	// STEP 3: Start gateway server
-	logger.Info("Starting gateway server...")
+	common.GetLogger().Info("Starting gateway server...")
 	if err := c.StartGatewayServer(ctx); err != nil {
 		return fmt.Errorf("failed to start gateway server: %w", err)
 	}
-	logger.Info("Gateway server started successfully")
+	common.GetLogger().Info("Gateway server started successfully")
 
 	// STEP 4: Start leader election (in background goroutine)
-	logger.Info("Starting leader election...")
+	common.GetLogger().Info("Starting leader election...")
 	go func() {
 		if err := c.RunLeaderElection(ctx); err != nil {
-			logger.Info("Leader election failed", "error", err)
+			common.GetLogger().Info("Leader election failed", "error", err)
 		}
 	}()
-	logger.Info("Leader election started successfully")
+	common.GetLogger().Info("Leader election started successfully")
 
-	logger.Info("✅ All controller components initialized successfully")
+	common.GetLogger().Info("✅ All controller components initialized successfully")
 	return nil
 }
 
 // Shutdown stops all controller components gracefully
 func (c *MemgraphController) Shutdown(ctx context.Context) error {
-	logger.Info("Shutting down all controller components...")
+	common.GetLogger().Info("Shutting down all controller components...")
 
 	// Stop health prober
 	if c.healthProber != nil && c.healthProber.IsRunning() {
 		c.healthProber.Stop()
-		logger.Info("Health prober stopped")
+		common.GetLogger().Info("Health prober stopped")
 	}
 
 	// Stop HTTP server
 	if err := c.StopHTTPServer(ctx); err != nil {
-		logger.Info("HTTP server shutdown error", "error", err)
+		common.GetLogger().Info("HTTP server shutdown error", "error", err)
 	} else {
-		logger.Info("HTTP server stopped successfully")
+		common.GetLogger().Info("HTTP server stopped successfully")
 	}
 
 	// Stop gateway server
 	if err := c.StopGatewayServer(ctx); err != nil {
-		logger.Info("Gateway server shutdown error", "error", err)
+		common.GetLogger().Info("Gateway server shutdown error", "error", err)
 	} else {
-		logger.Info("Gateway server stopped successfully")
+		common.GetLogger().Info("Gateway server stopped successfully")
 	}
 
 	// Stop informers
 	c.StopInformers()
-	logger.Info("Informers stopped successfully")
+	common.GetLogger().Info("Informers stopped successfully")
 
-	logger.Info("✅ All controller components shut down successfully")
+	common.GetLogger().Info("✅ All controller components shut down successfully")
 	return nil
 }
 
@@ -242,7 +241,7 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 	// Get owner reference to the controller pod for proper cleanup
 	ownerRef, err := c.getControllerOwnerReference(ctx)
 	if err != nil {
-		logger.Warn("Failed to get controller owner reference - ConfigMap will not be cleaned up automatically", "error", err)
+		common.GetLogger().Warn("Failed to get controller owner reference - ConfigMap will not be cleaned up automatically", "error", err)
 	}
 
 	// Update ConfigMap first
@@ -282,7 +281,7 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 	
 	// Update in-memory value
 	c.targetMainIndex = index
-	logger.Info("Updated TargetMainIndex", "index", index)
+	common.GetLogger().Info("Updated TargetMainIndex", "index", index)
 	return nil
 }
 
@@ -333,7 +332,7 @@ func (c *MemgraphController) isPodBecomeUnhealthy(oldPod, newPod *v1.Pod) bool {
 
 	// Pod became unhealthy if it was ready before and is not ready now
 	if oldReady && !newReady {
-		logger.Info("Pod became unhealthy", "pod", newPod.Name, "old_ready", oldReady, "new_ready", newReady)
+		common.GetLogger().Info("Pod became unhealthy", "pod", newPod.Name, "old_ready", oldReady, "new_ready", newReady)
 		return true
 	}
 
@@ -383,7 +382,7 @@ func (c *MemgraphController) TestConnection() error {
 		return fmt.Errorf("failed to connect to Kubernetes API: %w", err)
 	}
 
-	logger.Info("Successfully connected to Kubernetes API", "app_name", c.config.AppName, "namespace", c.config.Namespace)
+	common.GetLogger().Info("Successfully connected to Kubernetes API", "app_name", c.config.AppName, "namespace", c.config.Namespace)
 	return nil
 }
 
@@ -399,17 +398,17 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 		return fmt.Errorf("no pods found with label app.kubernetes.io/name=%s", c.config.AppName)
 	}
 
-	logger.Info("Testing Memgraph connections", "pod_count", len(pods))
+	common.GetLogger().Info("Testing Memgraph connections", "pod_count", len(pods))
 
 	var lastErr error
 	connectedCount := 0
 	for podName, pod := range pods {
 		endpoint := pod.GetBoltAddress()
 		if err := c.memgraphClient.TestConnection(ctx, endpoint); err != nil {
-			logger.Info("❌ Failed to connect to pod", "pod", podName, "endpoint", endpoint, "error", err)
+			common.GetLogger().Info("❌ Failed to connect to pod", "pod", podName, "endpoint", endpoint, "error", err)
 			lastErr = err
 		} else {
-			logger.Info("✅ Successfully connected to pod", "pod", podName, "endpoint", endpoint)
+			common.GetLogger().Info("✅ Successfully connected to pod", "pod", podName, "endpoint", endpoint)
 			connectedCount++
 		}
 	}
@@ -418,7 +417,7 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 		return fmt.Errorf("failed to connect to any Memgraph pods: %w", lastErr)
 	}
 
-	logger.Info("Successfully tested Memgraph connections", "connected_count", connectedCount, "total_pods", len(pods))
+	common.GetLogger().Info("Successfully tested Memgraph connections", "connected_count", connectedCount, "total_pods", len(pods))
 	return nil
 }
 
@@ -488,13 +487,13 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 
 // StartHTTPServer starts the HTTP server
 func (c *MemgraphController) StartHTTPServer() error {
-	logger.Info("Starting HTTP server...")
+	common.GetLogger().Info("Starting HTTP server...")
 	return c.httpServer.Start()
 }
 
 // StopHTTPServer stops the HTTP server gracefully
 func (c *MemgraphController) StopHTTPServer(ctx context.Context) error {
-	logger.Info("Stopping HTTP server...")
+	common.GetLogger().Info("Stopping HTTP server...")
 	if c.httpServer != nil {
 		return c.httpServer.Stop(ctx)
 	}
@@ -503,7 +502,7 @@ func (c *MemgraphController) StopHTTPServer(ctx context.Context) error {
 
 // StartInformers starts the Kubernetes informers and waits for cache sync
 func (c *MemgraphController) StartInformers() error {
-	logger.Info("starting informers")
+	common.GetLogger().Info("starting informers")
 	c.informerFactory.Start(c.stopCh)
 
 	// Wait for informer caches to sync
@@ -516,7 +515,7 @@ func (c *MemgraphController) StartInformers() error {
 // StopInformers stops the Kubernetes informers
 func (c *MemgraphController) StopInformers() {
 	if c.stopCh != nil {
-		logger.Info("stopping informers")
+		common.GetLogger().Info("stopping informers")
 		close(c.stopCh)
 	}
 }
@@ -528,7 +527,7 @@ func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
 
 // StopGatewayServer stops the gateway server (no-op - process termination handles cleanup)
 func (c *MemgraphController) StopGatewayServer(ctx context.Context) error {
-	logger.Info("Gateway: No explicit shutdown needed - process termination handles cleanup")
+	common.GetLogger().Info("Gateway: No explicit shutdown needed - process termination handles cleanup")
 	return nil
 }
 
@@ -549,7 +548,7 @@ func (c *MemgraphController) stop() {
 		return // Already stopped
 	}
 
-	logger.Info("Stopping Memgraph Controller...")
+	common.GetLogger().Info("Stopping Memgraph Controller...")
 	c.isRunning = false
 
 	// Stop informers
@@ -564,9 +563,9 @@ func (c *MemgraphController) stop() {
 	c.stopFailoverCheckQueue()
 
 	// Gateway cleanup handled by process termination
-	logger.Info("Gateway: Cleanup will be handled by process termination")
+	common.GetLogger().Info("Gateway: Cleanup will be handled by process termination")
 
-	logger.Info("Memgraph Controller stopped")
+	common.GetLogger().Info("Memgraph Controller stopped")
 }
 
 // SetPrometheusMetrics sets the Prometheus metrics instance
@@ -651,7 +650,7 @@ func (c *MemgraphController) getControllerOwnerReference(ctx context.Context) (*
 
 // ResetAllConnections closes all existing Neo4j connections and clears the connection pool
 func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, error) {
-	logger.Info("Admin API: Resetting all Memgraph connections")
+	common.GetLogger().Info("Admin API: Resetting all Memgraph connections")
 
 	totalConnections := 0
 
@@ -663,19 +662,19 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 
 		c.memgraphClient.connectionPool.Close(ctx)
 		totalConnections += controllerConnections
-		logger.Info("Admin API: Reset singleton MemgraphClient connection pool", "count", controllerConnections)
+		common.GetLogger().Info("Admin API: Reset singleton MemgraphClient connection pool", "count", controllerConnections)
 	} else {
-		logger.Warn("Admin API: No MemgraphClient connection pool to reset")
+		common.GetLogger().Warn("Admin API: No MemgraphClient connection pool to reset")
 	}
 
 	// Reset gateway connections
 	if c.gatewayServer != nil {
 		c.gatewayServer.DisconnectAll()
-		logger.Info("Admin API: Reset gateway connections")
+		common.GetLogger().Info("Admin API: Reset gateway connections")
 	} else {
-		logger.Warn("Admin API: No gateway server to reset")
+		common.GetLogger().Warn("Admin API: No gateway server to reset")
 	}
 
-	logger.Info("Admin API: Successfully reset all connections", "total_count", totalConnections)
+	common.GetLogger().Info("Admin API: Successfully reset all connections", "total_count", totalConnections)
 	return totalConnections, nil
 }

@@ -164,7 +164,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	c.gatewayServer.SetUpstreamAddress(mainBoltAddress)
 
 	// Run SHOW REPLICA to TargetMainPod
-	// targetMainNode.ClearCachedInfo()
+	targetMainNode.ClearCachedInfo()
 	replicas, err := targetMainNode.GetReplicas(ctx)
 	if err != nil {
 		logger.Info("Failed to get replicas from main node", "main_node", targetMainNode.GetName(), "error", err)

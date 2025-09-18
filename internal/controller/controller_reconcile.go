@@ -73,7 +73,11 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 
 			// Enable gateway connections.
 			if targetMainNode, err := c.getTargetMainNode(ctx); err == nil {
-				c.gatewayServer.SetUpstreamAddress(targetMainNode.GetBoltAddress())
+				if boltAddress, err := targetMainNode.GetBoltAddress(); err == nil {
+					c.gatewayServer.SetUpstreamAddress(boltAddress)
+				} else {
+					common.GetLogger().Error("Failed to get bolt address for main node", "error", err)
+				}
 			} else {
 				common.GetLogger().Error("Failed to get target main node", "error", err)
 			}
@@ -167,7 +171,11 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	}
 
 	// SetUpstreamAddress() reconiles on changes, just pass latest address.
-	mainBoltAddress := targetMainNode.GetBoltAddress()
+	mainBoltAddress, err := targetMainNode.GetBoltAddress()
+	if err != nil {
+		logger.Info("Failed to get bolt address for target main node", "error", err)
+		return err
+	}
 	c.gatewayServer.SetUpstreamAddress(mainBoltAddress)
 
 	// Run SHOW REPLICA to TargetMainPod

@@ -403,7 +403,12 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 	var lastErr error
 	connectedCount := 0
 	for podName, pod := range pods {
-		endpoint := pod.GetBoltAddress()
+		endpoint, err := pod.GetBoltAddress()
+		if err != nil {
+			common.GetLogger().Info("❌ Pod has no IP address", "pod", podName, "error", err)
+			lastErr = err
+			continue
+		}
 		if err := c.memgraphClient.TestConnection(ctx, endpoint); err != nil {
 			common.GetLogger().Info("❌ Failed to connect to pod", "pod", podName, "endpoint", endpoint, "error", err)
 			lastErr = err

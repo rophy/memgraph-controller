@@ -300,7 +300,11 @@ func (c *MemgraphController) executeFailoverInternal(ctx context.Context) error 
 	)
 
 	// Set the new upstream address
-	c.gatewayServer.SetUpstreamAddress(syncReplicaNode.GetBoltAddress())
+	if boltAddress, err := syncReplicaNode.GetBoltAddress(); err == nil {
+		c.gatewayServer.SetUpstreamAddress(boltAddress)
+	} else {
+		common.GetLogger().Error("Failed to get bolt address for new main node", "error", err)
+	}
 
 	return nil
 }

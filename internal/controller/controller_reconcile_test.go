@@ -224,7 +224,11 @@ func testGetReplicasFromNode(t *testing.T, node *MemgraphNode, ctx context.Conte
 // testGetReplicasWithMockClient simulates GetReplicas with fresh mock data
 func testGetReplicasWithMockClient(t *testing.T, node *MemgraphNode, mockClient *MockReplicaQuerier, ctx context.Context) []ReplicaInfo {
 	// Check role first
-	role, err := mockClient.QueryReplicationRoleWithRetry(ctx, node.GetBoltAddress())
+	boltAddress, err := node.GetBoltAddress()
+	if err != nil {
+		t.Fatalf("Failed to get bolt address: %v", err)
+	}
+	role, err := mockClient.QueryReplicationRoleWithRetry(ctx, boltAddress)
 	if err != nil {
 		t.Fatalf("Mock role query failed: %v", err)
 	}
@@ -238,7 +242,11 @@ func testGetReplicasWithMockClient(t *testing.T, node *MemgraphNode, mockClient 
 	// Check if we have cached replica info (should be false after ClearCachedInfo)
 	if !node.hasReplicasInfo {
 		// Query replicas using mock (fresh data)
-		replicasResp, err := mockClient.QueryReplicasWithRetry(ctx, node.GetBoltAddress())
+		boltAddress, err := node.GetBoltAddress()
+		if err != nil {
+			t.Fatalf("Failed to get bolt address: %v", err)
+		}
+		replicasResp, err := mockClient.QueryReplicasWithRetry(ctx, boltAddress)
 		if err != nil {
 			t.Fatalf("Mock replicas query failed: %v", err)
 		}

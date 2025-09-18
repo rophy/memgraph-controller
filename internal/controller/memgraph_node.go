@@ -66,8 +66,11 @@ func (node *MemgraphNode) ClearCachedInfo() {
 }
 
 // GetBoltAddress returns the Bolt connection address for the node
-func (node *MemgraphNode) GetBoltAddress() string {
-	return node.ipAddress + ":7687"
+func (node *MemgraphNode) GetBoltAddress() (string, error) {
+	if node.ipAddress == "" {
+		return "", fmt.Errorf("cannot get bolt address: pod %s has no IP address", node.name)
+	}
+	return node.ipAddress + ":7687", nil
 }
 
 // convertPodNameForReplica converts pod name to replica name by replacing dashes with underscores
@@ -97,7 +100,11 @@ func (node *MemgraphNode) GetIpAddress() string {
 // GetReplicationRole returns the cached replication role, querying it if not already known
 func (node *MemgraphNode) GetReplicationRole(ctx context.Context) (string, error) {
 	if node.memgraphRole == "" {
-		roleResp, err := node.client.QueryReplicationRoleWithRetry(ctx, node.GetBoltAddress())
+		boltAddress, err := node.GetBoltAddress()
+		if err != nil {
+			return "", err
+		}
+		roleResp, err := node.client.QueryReplicationRoleWithRetry(ctx, boltAddress)
 		if err != nil {
 			return "", fmt.Errorf("failed to query replication role for node %s: %w", node.name, err)
 		}
@@ -117,7 +124,11 @@ func (node *MemgraphNode) GetReplicas(ctx context.Context) ([]ReplicaInfo, error
 		return nil, fmt.Errorf("cannot get replicas from non-main node %s", node.name)
 	}
 	if !node.hasReplicasInfo {
-		replicasResp, err := node.client.QueryReplicasWithRetry(ctx, node.GetBoltAddress())
+		boltAddress, err := node.GetBoltAddress()
+		if err != nil {
+			return nil, err
+		}
+		replicasResp, err := node.client.QueryReplicasWithRetry(ctx, boltAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query replicas for node %s: %w", node.name, err)
 		}
@@ -135,7 +146,11 @@ func (node *MemgraphNode) SetToMainRole(ctx context.Context) error {
 	if node.client == nil {
 		return fmt.Errorf("client not injected for node %s", node.name)
 	}
-	err := node.client.SetReplicationRoleToMainWithRetry(ctx, node.GetBoltAddress())
+	boltAddress, err := node.GetBoltAddress()
+	if err != nil {
+		return err
+	}
+	err = node.client.SetReplicationRoleToMainWithRetry(ctx, boltAddress)
 	if err != nil {
 		return err
 	}
@@ -147,7 +162,11 @@ func (node *MemgraphNode) SetToMainRole(ctx context.Context) error {
 
 // RegisterReplica registers a replica on this MAIN node
 func (node *MemgraphNode) RegisterReplica(ctx context.Context, replicaName, replicationAddress string, syncMode string) error {
-	err := node.client.RegisterReplica(ctx, node.GetBoltAddress(), replicaName, replicationAddress, syncMode)
+	boltAddress, err := node.GetBoltAddress()
+	if err != nil {
+		return err
+	}
+	err = node.client.RegisterReplica(ctx, boltAddress, replicaName, replicationAddress, syncMode)
 	if err != nil {
 		return err
 	}
@@ -161,7 +180,11 @@ func (node *MemgraphNode) SetToReplicaRole(ctx context.Context) error {
 	if node.client == nil {
 		return fmt.Errorf("client not injected for node %s", node.name)
 	}
-	err := node.client.SetReplicationRoleToReplicaWithRetry(ctx, node.GetBoltAddress())
+	boltAddress, err := node.GetBoltAddress()
+	if err != nil {
+		return err
+	}
+	err = node.client.SetReplicationRoleToReplicaWithRetry(ctx, boltAddress)
 	if err != nil {
 		return err
 	}
@@ -173,17 +196,29 @@ func (node *MemgraphNode) SetToReplicaRole(ctx context.Context) error {
 
 // Ping verifies that this node is reachable
 func (node *MemgraphNode) Ping(ctx context.Context) error {
-	return node.client.Ping(ctx, node.GetBoltAddress())
+	boltAddress, err := node.GetBoltAddress()
+	if err != nil {
+		return err
+	}
+	return node.client.Ping(ctx, boltAddress)
 }
 
 // InvalidateConnection closes existing connections to this node
 func (node *MemgraphNode) InvalidateConnection() error {
-	return node.client.connectionPool.InvalidateConnection(node.GetBoltAddress())
+	boltAddress, err := node.GetBoltAddress()
+	if err != nil {
+		return err
+	}
+	return node.client.connectionPool.InvalidateConnection(boltAddress)
 }
 
 // QueryStorageInfo queries the storage information (vertex/edge count) from this node
 func (node *MemgraphNode) QueryStorageInfo(ctx context.Context) error {
-	storageInfo, err := node.client.QueryStorageInfoWithRetry(ctx, node.GetBoltAddress())
+	boltAddress, err := node.GetBoltAddress()
+	if err != nil {
+		return err
+	}
+	storageInfo, err := node.client.QueryStorageInfoWithRetry(ctx, boltAddress)
 	if err != nil {
 		return fmt.Errorf("failed to query storage info for node %s: %w", node.name, err)
 	}
@@ -197,7 +232,11 @@ func (node *MemgraphNode) DropReplica(ctx context.Context, replicaName string) e
 	if node.client == nil {
 		return fmt.Errorf("client not injected for node %s", node.name)
 	}
-	err := node.client.DropReplicaWithRetry(ctx, node.GetBoltAddress(), replicaName)
+	boltAddress, err := node.GetBoltAddress()
+	if err != nil {
+		return err
+	}
+	err = node.client.DropReplicaWithRetry(ctx, boltAddress, replicaName)
 	if err != nil {
 		return err
 	}

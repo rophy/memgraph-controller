@@ -1,13 +1,16 @@
 # Known Issues
 
-## Summary (Updated 2025-09-16)
+## Summary (Updated 2025-09-18)
 
 **Major fixes implemented**: 
 - ✅ **Race condition between reconciliation and failover** - Fixed with shared mutex (`operationMu`)
 - ✅ **SYNC/ASYNC replica registration issues** - Resolved as side effect of race condition fix
 - 🔄 **Pod termination delays** - Mitigated by controller improvements, no longer causes test failures
 
-**Current status**: All critical issues have been addressed. E2E tests are passing consistently with the race condition fix.
+**New critical issue discovered**:
+- 🔴 **Empty IP Address Bug** - Controller queries localhost when pod has no IP, causing permanent replica divergence
+
+**Current status**: E2E tests pass but replicas can become permanently diverged due to the empty IP address bug.
 
 ## 1. Race Condition Between Reconciliation and Failover
 
@@ -357,6 +360,126 @@ lifecycle:
 - Rolling restart **does work** - it just takes longer than expected
 - **Confirmed by research**: This is a common issue with stateful database workloads in Kubernetes
 - **Solution available**: Increase `terminationGracePeriodSeconds` to 120+ seconds as primary fix
+
+---
+
+## 4. Empty IP Address Bug - Controller Queries Wrong Endpoint
+
+**Status**: Active  
+**Severity**: Critical  
+**First Observed**: 2025-09-18  
+**Occurrence**: During pod restarts when pods temporarily have no IP address
+
+### Description
+
+When a pod is restarting and temporarily has no IP address (`pod.Status.PodIP` is empty), the controller constructs an invalid bolt address `:7687` (instead of `IP:7687`). This causes the controller to connect to localhost:7687 instead of the actual pod, leading to incorrect role detection and permanent replica divergence.
+
+### Root Cause
+
+**The bug sequence**:
+1. During pod restart/recreation, `pod.Status.PodIP` is empty (pod hasn't been assigned an IP yet)
+2. `MemgraphNode.Refresh(pod)` sets `node.ipAddress = pod.Status.PodIP` (empty string)
+3. `GetBoltAddress()` returns `"" + ":7687"` = `:7687`
+4. When controller calls `node.GetReplicationRole(ctx)`, it connects to `:7687` (localhost)
+5. This connects to the gateway's port-forward or another local service
+6. Controller gets wrong role information and makes incorrect decisions
+
+**Code locations**:
+- `internal/controller/memgraph_node.go`: `Refresh()` method sets `node.ipAddress = pod.Status.PodIP`
+- `internal/controller/memgraph_node.go`: `GetBoltAddress()` returns `node.ipAddress + ":7687"`
+- `internal/controller/controller_reconcile.go:228`: Calls `GetReplicationRole()` without IP validation
+
+### Evidence
+
+**From production incident (2025-09-18)**:
+```
+15:50:09.071 Queried replication role bolt_address=:7687 role=main
+15:50:09.071 memgraph role pod_name=memgraph-ha-2 role=main
+15:50:09.072 Pod has wrong role, demoting to replica pod_name=memgraph-ha-2 current_role=main
+15:50:09.072 Successfully set replication role to REPLICA bolt_address=:7687
+```
+
+**Memgraph rejection**:
+```
+15:51:21.378 You cannot register Replica memgraph_ha_2 to this Main because at one point 
+Replica memgraph_ha_2 acted as the Main instance. Both the Main and Replica memgraph_ha_2 
+now hold unique data. Please resolve data conflicts and start the replication on a clean instance.
+```
+
+### Impact
+
+- **Permanent replica divergence**: Once Memgraph marks a replica as having "acted as Main", it can never be re-registered without data loss
+- **Data inconsistency**: Diverged replicas have different data than the main (335 node difference observed)
+- **Incorrect topology modifications**: Controller may demote actual main instances or promote wrong replicas
+- **Silent failures**: E2E tests pass despite diverged replicas since only sync replica is checked
+
+### Reproduction Steps
+
+1. Deploy a Memgraph HA cluster
+2. Trigger pod recreation (rolling restart or pod deletion)
+3. During the brief window when a pod has no IP:
+   - Controller reconciliation runs
+   - Controller queries `:7687` thinking it's the pod
+   - Gets wrong role information
+4. Check replica status after stabilization:
+   ```bash
+   kubectl exec memgraph-ha-0 -n memgraph -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv'
+   ```
+5. Observe diverged replica with negative "behind" value
+
+### Proposed Solutions
+
+**Solution 1: Add IP validation in reconciliation loop**
+```go
+// In controller_reconcile.go around line 218
+pod, err := c.getPodFromCache(podName)
+if err != nil || !isPodReady(pod) || pod.Status.PodIP == "" {
+    logger.Info("Replica pod is not ready or has no IP", "pod_name", podName)
+    continue // Skip if pod not ready or no IP
+}
+```
+
+**Solution 2: Return error from GetBoltAddress() if IP is empty**
+```go
+func (node *MemgraphNode) GetBoltAddress() (string, error) {
+    if node.ipAddress == "" {
+        return "", fmt.Errorf("pod %s has no IP address", node.name)
+    }
+    return node.ipAddress + ":7687", nil
+}
+```
+
+**Solution 3: Validate in GetReplicationRole()**
+```go
+func (node *MemgraphNode) GetReplicationRole(ctx context.Context) (string, error) {
+    if node.ipAddress == "" {
+        return "", fmt.Errorf("cannot query role: pod %s has no IP address", node.name)
+    }
+    // ... existing code
+}
+```
+
+### Workaround
+
+**To fix diverged replicas**:
+```bash
+# Delete the diverged pod to force fresh data sync
+kubectl delete pod memgraph-ha-2 -n memgraph
+```
+
+### Related Code
+
+- `internal/controller/memgraph_node.go:58-59` - `Refresh()` method
+- `internal/controller/memgraph_node.go:69-71` - `GetBoltAddress()` method  
+- `internal/controller/controller_reconcile.go:218-239` - Reconciliation loop
+- `internal/controller/connection_pool.go` - Connection management
+
+### Notes
+
+- This bug only occurs during the brief window when a pod exists but has no IP
+- The controller mistakenly believes it's querying the pod but is actually querying localhost
+- Once a replica diverges, manual intervention is required (pod deletion)
+- The bug is silent - no errors are logged since the localhost query succeeds
 
 ---
 

@@ -11,6 +11,7 @@ import time
 import sys
 import re
 import os
+import csv
 from io import StringIO
 import logfmt
 from datetime import datetime, timezone
@@ -19,7 +20,7 @@ from typing import Tuple, Dict, Any, Optional, List
 
 # Configuration
 MEMGRAPH_NS = "memgraph"
-TEST_CLIENT_LABEL = "app=neo4j-client"
+TEST_CLIENT_LABEL = "app=test-client"
 EXPECTED_POD_COUNT = 3
 
 
@@ -310,7 +311,7 @@ def memgraph_query_via_client(query: str) -> Dict[str, Any]:
   """
   pod = get_test_client_pod()
   stdout, stderr, code = kubectl_exec(
-      pod, MEMGRAPH_NS, ["python", "client.py", query])
+      pod, MEMGRAPH_NS, ["python", "client.py", "query", "bolt://memgraph-controller:7687", query])
 
   if code != 0:
     raise MemgraphQueryError(f"Query via client failed: {stderr}")
@@ -326,7 +327,7 @@ def memgraph_query_via_client(query: str) -> Dict[str, Any]:
         f"Invalid JSON response: {e}\nResponse: {stdout}")
 
 
-def memgraph_query_direct(pod: str, query: str) -> str:
+def memgraph_query_direct(pod: str, query: str) -> List[Dict[str, str]]:
   """
   Execute Cypher query directly on a specific memgraph pod using mgconsole
 
@@ -335,7 +336,7 @@ def memgraph_query_direct(pod: str, query: str) -> str:
       query: Cypher query string
 
   Returns:
-      Raw CSV output from mgconsole
+      Parsed CSV data as list of dictionaries (each row as a dict with column names as keys)
   """
   command = ["bash", "-c",
              f"echo '{query}' | mgconsole --output-format csv --username=memgraph"]
@@ -345,7 +346,16 @@ def memgraph_query_direct(pod: str, query: str) -> str:
   if code != 0:
     raise MemgraphQueryError(f"Direct query to {pod} failed: {stderr}")
 
-  return stdout.strip()
+  # Parse CSV using proper csv library
+  csv_output = stdout.strip()
+  if not csv_output:
+    return []
+
+  try:
+    reader = csv.DictReader(StringIO(csv_output))
+    return list(reader)
+  except csv.Error as e:
+    raise MemgraphQueryError(f"Failed to parse CSV output from {pod}: {e}\nOutput: {csv_output}")
 
 
 def get_memgraph_pods() -> List[Dict[str, str]]:
@@ -419,55 +429,55 @@ def wait_for_cluster_ready(timeout: int = 60) -> bool:
       f"Timeout waiting for cluster to be ready after {timeout}s")
 
 
-def wait_for_statefulset_ready(statefulset_name: str = "memgraph-ha", 
-                              expected_replicas: int = 3, 
-                              timeout: int = 120) -> bool:
+def wait_for_statefulset_ready(statefulset_name: str = "memgraph-ha",
+                               expected_replicas: int = 3,
+                               timeout: int = 120) -> bool:
   """
   Wait for StatefulSet to have all replicas ready and updated.
   This helps prevent test flakiness by ensuring StatefulSet is fully stable.
-  
+
   Args:
       statefulset_name: Name of the StatefulSet
       expected_replicas: Expected number of ready replicas
       timeout: Maximum wait time in seconds
-  
+
   Returns:
       True if StatefulSet is ready, False on timeout
   """
   start_time = time.time()
-  
+
   while time.time() - start_time < timeout:
     try:
       # Get StatefulSet status
-      cmd = ["kubectl", "get", "statefulset", statefulset_name, 
+      cmd = ["kubectl", "get", "statefulset", statefulset_name,
              "-n", MEMGRAPH_NS, "-o", "json"]
       result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
-      
+
       if result.returncode != 0:
         time.sleep(2)
         continue
-        
+
       sts_data = json.loads(result.stdout)
       status = sts_data.get('status', {})
-      
+
       replicas = status.get('replicas', 0)
       ready_replicas = status.get('readyReplicas', 0)
       updated_replicas = status.get('updatedReplicas', 0)
-      
+
       # Check if StatefulSet is fully ready
-      if (replicas == expected_replicas and 
-          ready_replicas == expected_replicas and 
+      if (replicas == expected_replicas and
+          ready_replicas == expected_replicas and
           updated_replicas == expected_replicas):
         return True
-        
+
       elapsed = int(time.time() - start_time)
       log_info(f"⏳ Waiting for StatefulSet: {ready_replicas}/{expected_replicas} ready ({elapsed}s/{timeout}s)")
-      
+
     except Exception as e:
       log_info(f"Error checking StatefulSet: {e}")
-      
+
     time.sleep(3)
-  
+
   return False
 
 
@@ -518,12 +528,13 @@ def wait_for_cluster_convergence(timeout: int = 60) -> bool:
 
           # Check replication role of this pod
           try:
-            role_output = memgraph_query_direct(
+            role_data = memgraph_query_direct(
                 pod_name, "SHOW REPLICATION ROLE;")
-            # Parse CSV output: first line is header, second line
-            # has the role
-            lines = role_output.strip().split('\n')
-            if len(lines) >= 2 and '"main"' in lines[1]:
+            # Check if pod has main role
+            role_value = role_data[0].get('replication role', '') if role_data else ''
+            # Remove quotes from CSV value
+            role_value = role_value.strip('"')
+            if role_value == 'main':
               main_pod = pod_name
           except MemgraphQueryError:
             # Pod might not be ready for queries yet
@@ -545,36 +556,47 @@ def wait_for_cluster_convergence(timeout: int = 60) -> bool:
 
       # Check replicas from main pod
       try:
-        replicas_output = memgraph_query_direct(
+        replicas_data = memgraph_query_direct(
             main_pod, "SHOW REPLICAS;")
-        lines = replicas_output.strip().split('\n')
 
-        if len(lines) < 2:  # No replicas registered yet
+        if not replicas_data:  # No replicas registered yet
           elapsed = int(time.time() - start_time)
           log_info(
               f"⏳ No replicas registered on main pod {main_pod}, waiting... ({elapsed}s/{timeout}s)")
           time.sleep(2)
           continue
 
-        # Count sync and async replicas from CSV output
+        # Count sync and async replicas and check their status
         sync_count = 0
         async_count = 0
-        for line in lines[1:]:  # Skip header
-          if '"sync"' in line:
-            sync_count += 1
-          elif '"async"' in line:
-            async_count += 1
+        ready_sync_count = 0
+        ready_async_count = 0
 
-        if sync_count == 1 and async_count == 1:
+        for replica in replicas_data:
+          sync_mode = replica.get('sync_mode', '').strip('"')
+          data_info = replica.get('data_info', '')
+
+          if sync_mode == 'sync':
+            sync_count += 1
+            # Check if replica status is "ready" in data_info
+            if 'ready' in data_info:
+              ready_sync_count += 1
+          elif sync_mode == 'async':
+            async_count += 1
+            # Check if replica status is "ready" in data_info
+            if 'ready' in data_info:
+              ready_async_count += 1
+
+        if sync_count == 1 and async_count == 1 and ready_sync_count == 1 and ready_async_count == 1:
           elapsed = int(time.time() - start_time)
           log_info(
-              f"✅ Cluster converged after {elapsed}s: main={main_pod}, 1 sync + 1 async replica")
+              f"✅ Cluster converged after {elapsed}s: main={main_pod}, 1 sync + 1 async replica (all ready)")
           return True
         else:
           elapsed = int(time.time() - start_time)
           log_info(
-              f"⏳ Waiting for proper topology... main={main_pod}, sync={sync_count}, "
-              f"async={async_count} ({elapsed}s/{timeout}s)")
+              f"⏳ Waiting for proper topology... main={main_pod}, sync={sync_count}/{ready_sync_count} ready, "
+              f"async={async_count}/{ready_async_count} ready ({elapsed}s/{timeout}s)")
 
       except MemgraphQueryError as e:
         elapsed = int(time.time() - start_time)
@@ -589,13 +611,6 @@ def wait_for_cluster_convergence(timeout: int = 60) -> bool:
     time.sleep(2)
 
   raise E2ETestError(f"Cluster failed to converge within {timeout}s")
-
-
-
-
-
-
-
 
 
 def write_test_data(test_id: str, test_value: str) -> bool:
@@ -655,22 +670,11 @@ def get_pod_replication_role(pod: str) -> str:
   """
   try:
     result = memgraph_query_direct(pod, "SHOW REPLICATION ROLE;")
-    # Parse CSV output to extract role
-    lines = result.strip().split('\n')
-    if len(lines) >= 2:  # Header + data
-      # Extract role from CSV (usually second column in quotes)
-      data_line = lines[1]
-      if '"main"' in data_line:
-        return "main"
-      elif '"replica"' in data_line:
-        return "replica"
-
-    # Fallback: look for role keywords in output
-    if '"main"' in result:
-      return "main"
-    elif '"replica"' in result:
-      return "replica"
-
+    if result and len(result) > 0:
+      role = result[0].get('replication role', 'unknown')
+      # Remove quotes from CSV value
+      role = role.strip('"')
+      return role
     return "unknown"
 
   except MemgraphQueryError as e:
@@ -709,10 +713,12 @@ def find_main_pod_by_querying() -> str:
       if phase == 'Running':
         try:
           # Query this pod directly for replication role
-          role_output = memgraph_query_direct(
+          role_data = memgraph_query_direct(
               pod_name, "SHOW REPLICATION ROLE;")
-          lines = role_output.strip().split('\n')
-          if len(lines) >= 2 and '"main"' in lines[1]:
+          role_value = role_data[0].get('replication role', '') if role_data else ''
+          # Remove quotes from CSV value
+          role_value = role_value.strip('"')
+          if role_value == 'main':
             return pod_name
         except MemgraphQueryError:
           # Pod might not be ready for queries yet

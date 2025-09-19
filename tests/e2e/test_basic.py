@@ -9,7 +9,9 @@ import pytest
 import time
 from utils import (
   memgraph_query_via_client,
+  memgraph_query_direct,
   wait_for_cluster_convergence,
+  find_main_pod_by_querying,
   count_nodes,
   generate_test_id,
   log_info,
@@ -25,29 +27,30 @@ def test_cluster_topology(cluster_ready):
   # Wait for cluster to converge with retry logic
   wait_for_cluster_convergence()
 
-  # Verify replication role via gateway
-  role_result = memgraph_query_via_client("SHOW REPLICATION ROLE;")
-  role = role_result['records'][0]['replication role']
+  # Verify replication role by querying main pod directly
+  main_pod = find_main_pod_by_querying()
+  role_result = memgraph_query_direct(main_pod, "SHOW REPLICATION ROLE;")
+  role = role_result[0]['replication role'].strip('"')
   assert role == 'main', f"Expected main role, got {role}"
 
-  # Verify replica topology via gateway
-  replicas_result = memgraph_query_via_client("SHOW REPLICAS;")
-  sync_count = len([r for r in replicas_result['records']
-                   if r['sync_mode'] == 'sync'])
-  async_count = len([r for r in replicas_result['records']
-                    if r['sync_mode'] == 'async'])
+  # Verify replica topology by querying main pod directly
+  replicas_result = memgraph_query_direct(main_pod, "SHOW REPLICAS;")
+  sync_count = len([r for r in replicas_result
+                   if r['sync_mode'].strip('"') == 'sync'])
+  async_count = len([r for r in replicas_result
+                    if r['sync_mode'].strip('"') == 'async'])
 
   assert sync_count == 1, f"Expected 1 sync replica, got {sync_count}"
   assert async_count == 1, f"Expected 1 async replica, got {async_count}"
 
   # Log topology details for debugging
   sync_replica = next(
-      (r for r in replicas_result['records'] if r['sync_mode'] == 'sync'), None)
+      (r for r in replicas_result if r['sync_mode'].strip('"') == 'sync'), None)
   async_replica = next(
-      (r for r in replicas_result['records'] if r['sync_mode'] == 'async'), None)
+      (r for r in replicas_result if r['sync_mode'].strip('"') == 'async'), None)
 
-  sync_name = sync_replica['name'] if sync_replica else 'unknown'
-  async_name = async_replica['name'] if async_replica else 'unknown'
+  sync_name = sync_replica['name'].strip('"') if sync_replica else 'unknown'
+  async_name = async_replica['name'].strip('"') if async_replica else 'unknown'
 
   log_info(
       f"📊 Topology verified: Main role confirmed, Sync={sync_name}, Async={async_name}")
@@ -138,8 +141,9 @@ def test_data_replication():
 
   # Get current cluster topology for verification
   try:
-    replicas_result = memgraph_query_via_client("SHOW REPLICAS;")
-    replica_count = len(replicas_result['records'])
+    main_pod = find_main_pod_by_querying()
+    replicas_result = memgraph_query_direct(main_pod, "SHOW REPLICAS;")
+    replica_count = len(replicas_result)
     log_info(f" Active replicas: {replica_count}")
   except E2ETestError:
     log_info("🔗 Could not query replica status")
@@ -187,19 +191,20 @@ def test_multiple_operations():
 def test_cluster_health_queries():
   """Test various health and status queries"""
 
-  # Test SHOW REPLICATION ROLE
-  role_result = memgraph_query_via_client("SHOW REPLICATION ROLE;")
-  assert role_result['records'], "SHOW REPLICATION ROLE returned no records"
-  assert 'replication role' in role_result['records'][0], "Missing replication role field"
+  # Test SHOW REPLICATION ROLE directly on main pod
+  main_pod = find_main_pod_by_querying()
+  role_result = memgraph_query_direct(main_pod, "SHOW REPLICATION ROLE;")
+  assert role_result, "SHOW REPLICATION ROLE returned no records"
+  assert 'replication role' in role_result[0], "Missing replication role field"
 
-  # Test SHOW REPLICAS
-  memgraph_query_via_client("SHOW REPLICAS;")
+  # Test SHOW REPLICAS directly on main pod
+  memgraph_query_direct(main_pod, "SHOW REPLICAS;")
   # Note: result might be empty if no replicas are registered yet, that's
   # okay
 
-  # Test SHOW STORAGE INFO
+  # Test SHOW STORAGE INFO directly on main pod
   try:
-    storage_result = memgraph_query_via_client("SHOW STORAGE INFO;")
+    storage_result = memgraph_query_direct(main_pod, "SHOW STORAGE INFO;")
     assert storage_result is not None, "SHOW STORAGE INFO failed"
     log_info("📊 Storage info query successful")
   except E2ETestError as e:

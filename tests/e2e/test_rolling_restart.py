@@ -240,10 +240,10 @@ def analyze_client_operations_during_rollout(logs: str,
         is_operation = True
         status = log_data.get('status', '')
       elif 'msg' in log_data:
-        msg = log_data.get('msg', '')
-        if msg in ['Success', 'Error']:
+        msg = log_data.get('msg', '').lower()
+        if 'success' in msg or 'error' in msg or 'failed' in msg:
           is_operation = True
-          status = 'success' if msg == 'Success' else 'error'
+          status = 'success' if 'success' in msg else 'error'
 
       if is_operation and status:
         op = {
@@ -353,7 +353,7 @@ def test_rolling_restart_continuous_availability():
     try:
       log_data = parse_logfmt(line)
       # Check for success in either 'status' field or 'msg' field
-      if log_data.get('status') == 'success' or log_data.get('msg') == 'Success':
+      if log_data.get('status') == 'success' or 'success' in log_data.get('msg', '').lower():
         success_count += 1
     except:
       continue

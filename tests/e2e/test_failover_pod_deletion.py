@@ -126,7 +126,7 @@ def monitor_main_pod_changes_enhanced(
 def parse_log_entry(log_line: str) -> tuple:
   """
   Parse logfmt log entry from test-client
-  Expected format: ts=2025-09-07T12:58:34.055123+00:00 at=INFO msg="Success" total=1
+  Expected format: ts=2025-09-07T12:58:34.055123+00:00 at=INFO msg="Write success" total=1
 
   Returns:
       (timestamp, message, is_success, is_failure)
@@ -140,8 +140,8 @@ def parse_log_entry(log_line: str) -> tuple:
     timestamp = datetime.fromisoformat(timestamp_str).replace(tzinfo=None)
 
     # Determine if success or failure based on message content
-    is_success = 'Success' in message
-    is_failure = ('Failed' in message or
+    is_success = 'success' in message.lower()
+    is_failure = ('failed' in message.lower() or
                   log_data.get('at', '').upper() == 'ERROR')
 
     return timestamp, message, is_success, is_failure

@@ -483,6 +483,125 @@ kubectl delete pod memgraph-ha-2 -n memgraph
 
 ---
 
+---
+
+## 5. Design Violation: Controller Drops Unhealthy Sync Replicas
+
+**Status**: Active  
+**Severity**: Critical - Violates core data guarantee  
+**First Observed**: 2025-09-19 (during rolling restart investigation)  
+**Design Doc Issue**: The design itself specifies this problematic behavior
+
+### Description
+
+The controller drops unhealthy sync replicas from the main pod, allowing the main to continue accepting writes without guaranteed replication. This directly violates the fundamental guarantee of the main-sync architecture that "data written to main are guaranteed to exist in sync replica."
+
+### Root Cause
+
+**Design specification (design/reconciliation.md, Step 4)**:
+> "If `data_info` of `TargetSyncReplica` is not "ready", drop the replication."
+
+**Implementation (controller_reconcile.go)**:
+```go
+// Step 4: Drop unhealthy replicas without checking if SYNC or ASYNC
+if !isHealthy {
+    logger.Info("Step 4: Dropping unhealthy or misconfigured replica", "pod_name", podName)
+    if err := targetMainNode.DropReplica(ctx, replicaName); err != nil {
+```
+
+The code drops ANY unhealthy replica (pod not ready or IP mismatch) without distinguishing between SYNC and ASYNC replicas.
+
+### Evidence
+
+**During rolling restart (2025-09-18)**:
+1. Pod-0 was main with pod-1 as sync replica
+2. Pod-0 went down for restart
+3. Controller failed to promote pod-1 immediately (separate issue)
+4. When pod-0 came back, controller registered pod-1 as sync replica
+5. Pod-0 received 14 writes while pod-1 was syncing
+6. During pod-1's restart, it would have been dropped as unhealthy
+7. Main continued without sync replica, violating guarantee
+
+**Memgraph error confirming data divergence**:
+```
+You cannot register Replica memgraph_ha_0 to this Main because at one point 
+Replica memgraph_ha_0 acted as the Main instance. Both the Main and Replica 
+memgraph_ha_0 now hold unique data.
+```
+
+### Impact
+
+- **Data durability loss**: Main can accept writes without sync replication
+- **Violates architecture guarantee**: Breaks the promise that all writes are replicated synchronously
+- **Data divergence**: When sync replica is dropped and later re-registered, data may be inconsistent
+- **Silent data loss risk**: If main fails while sync replica is dropped, recent writes are lost forever
+
+### Why This Is Wrong
+
+The main-sync architecture guarantees:
+1. **Every write to main MUST be replicated to sync replica** before acknowledgment
+2. **If sync replica is unhealthy, main should become read-only** or refuse writes
+3. **Sync replica should NEVER be dropped** while main continues accepting writes
+
+The current design/implementation violates all three guarantees.
+
+### Correct Behavior
+
+When sync replica becomes unhealthy:
+1. **Option A**: Make main read-only until sync replica recovers
+2. **Option B**: Refuse new writes but allow reads
+3. **Option C**: Keep sync replica registered but mark cluster as degraded
+4. **Never**: Drop sync replica and continue accepting writes
+
+### Proposed Solutions
+
+**Solution 1: Never drop sync replicas**
+```go
+// In controller_reconcile.go
+if !isHealthy {
+    // Check if this is the sync replica
+    if podName == targetSyncReplicaName {
+        logger.Error("SYNC replica is unhealthy but will NOT be dropped", 
+                    "pod_name", podName)
+        // Mark cluster as degraded but don't drop
+        continue
+    }
+    // Only drop async replicas
+    logger.Info("Dropping unhealthy ASYNC replica", "pod_name", podName)
+    if err := targetMainNode.DropReplica(ctx, replicaName); err != nil {
+```
+
+**Solution 2: Make main read-only when sync unhealthy**
+```go
+if syncReplicaUnhealthy {
+    // Set main to read-only mode
+    if err := targetMainNode.SetReadOnly(ctx); err != nil {
+        logger.Error("Failed to set main to read-only", "error", err)
+    }
+}
+```
+
+### Design Document Issue
+
+The design document (`design/reconciliation.md`) explicitly specifies this problematic behavior in Step 4. This is a **design flaw**, not just an implementation bug. The design should be updated to specify:
+
+1. SYNC replicas should never be dropped when unhealthy
+2. Main should degrade to read-only or refuse writes when sync replica is unavailable
+3. Only ASYNC replicas should be dropped when unhealthy
+
+### Related Code
+
+- `design/reconciliation.md:30` - Step 4 specifies dropping unhealthy sync replica
+- `internal/controller/controller_reconcile.go:364-377` - Implementation that drops all unhealthy replicas
+- `internal/controller/memgraph_node.go` - `DropReplica()` method
+
+### Notes
+
+- This is a fundamental architecture violation, not a simple bug
+- The design document itself needs correction
+- This issue likely causes data divergence during any period of sync replica unavailability
+- Fixing this requires both design and implementation changes
+
 ## Historical Issues
 
 ### Gateway Routing Race Condition (Resolved)

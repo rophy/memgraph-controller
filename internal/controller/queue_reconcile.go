@@ -46,7 +46,7 @@ func (c *MemgraphController) newReconcileQueue() *ReconcileQueue {
 // processReconcileQueue processes events from the reconciliation queue
 func (c *MemgraphController) processReconcileQueue(rq *ReconcileQueue) {
 	// Add goroutine context for event queue
-	ctx := context.WithValue(rq.ctx, "goroutine", "eventQueue")
+	ctx := context.WithValue(rq.ctx, goroutineKey, "eventQueue")
 	logger := common.GetLogger().WithContext(ctx)
 	ctx = common.WithLogger(ctx, logger)
 	
@@ -87,10 +87,10 @@ func (c *MemgraphController) handleReconcileEvent(ctx context.Context, event Rec
 	// Process the event immediately
 	common.GetLogger().Info("processing immediate reconcile event", "reason", event.Reason)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	if err := c.performReconciliationActions(ctx); err != nil {
+	if err := c.performReconciliationActions(timeoutCtx); err != nil {
 		common.GetLogger().Error("failed immediate reconciliation", "reason", event.Reason, "error", err)
 	} else {
 		common.GetLogger().Info("completed immediate reconciliation", "reason", event.Reason)

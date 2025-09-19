@@ -12,8 +12,11 @@ import (
 // contextKey is a type for context keys to avoid collisions
 type contextKey string
 
-// failoverCheckEventKey is the context key for passing FailoverCheckEvent
-const failoverCheckEventKey contextKey = "failover-check-event"
+// Context keys
+const (
+	failoverCheckEventKey contextKey = "failover-check-event"
+	goroutineKey         contextKey = "goroutine"
+)
 
 // FailoverCheckEvent represents an event that triggers failover checking
 type FailoverCheckEvent struct {
@@ -53,7 +56,7 @@ func (c *MemgraphController) newFailoverCheckQueue() *FailoverCheckQueue {
 // processFailoverCheckQueue processes events from the failover check queue
 func (c *MemgraphController) processFailoverCheckQueue(fq *FailoverCheckQueue) {
 	// Add goroutine context for failover check queue
-	ctx := context.WithValue(fq.ctx, "goroutine", "failoverCheckQueue")
+	ctx := context.WithValue(fq.ctx, goroutineKey, "failoverCheckQueue")
 	logger := common.GetLogger().WithContext(ctx)
 	ctx = common.WithLogger(ctx, logger)
 	
@@ -94,16 +97,16 @@ func (c *MemgraphController) handleFailoverCheckEvent(ctx context.Context, event
 	// Process the failover check
 	common.GetLogger().Info("processing failover check event", "reason", event.Reason)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
 	defer cancel()
-	
+
 	// Pass the event through context
-	ctx = context.WithValue(ctx, failoverCheckEventKey, event)
+	timeoutCtx = context.WithValue(timeoutCtx, failoverCheckEventKey, event)
 
 	// Acquire shared mutex before performing failover check
 	// This prevents race conditions with reconciliation
 	c.operationMu.Lock()
-	err := c.performFailoverCheck(ctx)
+	err := c.performFailoverCheck(timeoutCtx)
 	c.operationMu.Unlock()
 	if err != nil {
 		common.GetLogger().Warn("failed failover check", "reason", event.Reason, "error", err)

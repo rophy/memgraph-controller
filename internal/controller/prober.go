@@ -100,7 +100,7 @@ func (p *HealthProber) GetHealthStatus() (healthy bool, consecutiveFailures int)
 // runHealthCheckLoop is the main health checking loop
 func (p *HealthProber) runHealthCheckLoop(ctx context.Context) {
 	// Add goroutine context for health checker
-	ctx = context.WithValue(ctx, "goroutine", "health-check")
+	ctx = context.WithValue(ctx, goroutineKey, "health-check")
 	logger := common.GetLogger().WithContext(ctx)
 	ctx = common.WithLogger(ctx, logger)
 	

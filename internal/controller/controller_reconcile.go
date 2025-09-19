@@ -14,7 +14,7 @@ import (
 // This assumes all components (informers, servers, leader election) have been started
 func (c *MemgraphController) Run(ctx context.Context) error {
 	// Add goroutine context for reconciliation loop
-	ctx = context.WithValue(ctx, "goroutine", "reconciliation")
+	ctx = context.WithValue(ctx, goroutineKey, "reconciliation")
 	logger := common.GetLogger().WithContext(ctx)
 	ctx = common.WithLogger(ctx, logger)
 	
@@ -193,27 +193,89 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		replicaMap[replica.Name] = replica
 	}
 
-	// Iterate through replicaMap and drop unhealthy ones
+	// Get the target sync replica to ensure we handle it properly
+	targetSyncReplicaNode, _ := c.getTargetSyncReplicaNode(ctx)
+	var targetSyncReplicaName string
+	if targetSyncReplicaNode != nil {
+		targetSyncReplicaName = targetSyncReplicaNode.GetReplicaName()
+	}
+
+	// Iterate through replicaMap and check for issues that require dropping replicas
 	for replicaName, replicaInfo := range replicaMap {
 		ipAddress := strings.Split(replicaInfo.SocketAddress, ":")[0]
 		podName := replicaInfo.GetPodName()
 		pod, err := c.getPodFromCache(podName)
-		isHealthy := true
+
+		// Check pod availability first
 		if err != nil || !isPodReady(pod) {
-			isHealthy = false
-			logger.Info("Step 4: Replica is not healthy (pod missing or not ready)", "pod_name", podName)
-		} else if ipAddress != pod.Status.PodIP {
-			isHealthy = false
-			logger.Info("Step 4: Replica has IP mismatch", "pod_name", podName, "replica_ip", ipAddress, "pod_ip", pod.Status.PodIP)
+			logger.Info("Step 4: Skipping replica check - pod missing or not ready", "pod_name", podName)
+			continue
 		}
-		if !isHealthy {
-			logger.Info("Step 4: Dropping unhealthy or misconfigured replica", "pod_name", podName)
-			if err := targetMainNode.DropReplica(ctx, replicaName); err != nil {
-				logger.Info("Failed to drop replica", "pod_name", podName, "error", err)
-			} else {
-				logger.Info("Dropped replica successfully", "pod_name", podName)
-				delete(replicaMap, replicaName) // Remove from map after dropping
+
+		// Ensure pod has a valid IP address
+		if pod.Status.PodIP == "" {
+			logger.Info("Step 4: Skipping replica check - pod has no IP address", "pod_name", podName)
+			continue
+		}
+
+		// Check replication health (actual Memgraph replication status)
+		replicationHealthy := replicaInfo.IsHealthy()
+
+		// Check IP correctness
+		ipCorrect := (ipAddress == pod.Status.PodIP)
+
+		// Apply the logic: only drop when replication is unhealthy AND IP is incorrect
+		// AND the pod is ready with a valid IP (so we can re-register)
+		if !replicationHealthy && !ipCorrect {
+			isSyncReplica := (replicaName == targetSyncReplicaName || replicaInfo.SyncMode == "sync")
+
+			logger.Info("Step 4: Replica has both unhealthy replication and incorrect IP - will drop and re-register",
+				"pod_name", podName,
+				"replica_name", replicaName,
+				"replica_ip", ipAddress,
+				"pod_ip", pod.Status.PodIP,
+				"replication_healthy", replicationHealthy,
+				"health_reason", replicaInfo.GetHealthReason(),
+				"sync_mode", replicaInfo.SyncMode)
+
+			// For sync replicas, be more cautious but still fix IP issues
+			if isSyncReplica {
+				logger.Warn("Step 4: SYNC replica has both replication and IP issues - dropping to fix",
+					"pod_name", podName,
+					"replica_name", replicaName)
 			}
+
+			// Drop the replica that has both issues
+			if err := targetMainNode.DropReplica(ctx, replicaName); err != nil {
+				logger.Error("Failed to drop replica with replication and IP issues", "pod_name", podName, "error", err)
+				continue
+			}
+			logger.Info("Dropped replica with replication and IP issues", "pod_name", podName)
+			delete(replicaMap, replicaName) // Remove from map to allow re-registration
+
+		} else if !replicationHealthy && ipCorrect {
+			// Replication unhealthy but IP correct - let Memgraph handle retries
+			logger.Info("Step 4: Replica has unhealthy replication but correct IP - trusting Memgraph auto-retry",
+				"pod_name", podName,
+				"replica_name", replicaName,
+				"health_reason", replicaInfo.GetHealthReason(),
+				"sync_mode", replicaInfo.SyncMode)
+
+		} else if replicationHealthy && !ipCorrect {
+			// This should not happen - healthy replication with wrong IP is contradictory
+			logger.Warn("Step 4: Replica reports healthy replication but has incorrect IP - investigating",
+				"pod_name", podName,
+				"replica_name", replicaName,
+				"replica_ip", ipAddress,
+				"pod_ip", pod.Status.PodIP,
+				"health_reason", replicaInfo.GetHealthReason(),
+				"sync_mode", replicaInfo.SyncMode)
+
+		} else {
+			// Both replication healthy and IP correct - perfect state
+			logger.Debug("Step 4: Replica is healthy with correct IP",
+				"pod_name", podName,
+				"replica_name", replicaName)
 		}
 	}
 

@@ -202,7 +202,10 @@ def analyze_client_operations_during_rollout(logs: str,
   Returns:
       Dict with analysis results
   """
-  rollout_end = rollout_start + datetime.timedelta(seconds=rollout_duration)
+  # Convert timezone-aware rollout_start to naive for comparison with log timestamps
+  # Add small buffers to ensure we capture operations at the boundaries
+  rollout_start_naive = rollout_start.replace(tzinfo=None) - datetime.timedelta(seconds=5)
+  rollout_end = rollout_start.replace(tzinfo=None) + datetime.timedelta(seconds=rollout_duration + 5)
 
   operations = []
   failures = []
@@ -210,8 +213,11 @@ def analyze_client_operations_during_rollout(logs: str,
   failure_windows = []
   current_failure_window = None
 
+  # Track metrics over time using total/success/errors fields
+  metrics_snapshots = []
+
   for line in logs.strip().split('\n'):
-    if not line:
+    if not line or line.startswith('#'):
       continue
 
     try:
@@ -227,75 +233,106 @@ def analyze_client_operations_during_rollout(logs: str,
       timestamp_naive = timestamp.replace(tzinfo=None)
 
       # Skip logs outside rollout window
-      if timestamp_naive < rollout_start or timestamp_naive > rollout_end:
+      if timestamp_naive < rollout_start_naive or timestamp_naive > rollout_end:
         continue
 
-      # Extract operation info - handle both log formats
-      # Format 1: operation field with status
-      # Format 2: msg field with Success/Error
-      is_operation = False
-      status = None
+      # Extract metrics if available (total, success, errors)
+      total = log_data.get('total')
+      success = log_data.get('success')
+      errors = log_data.get('errors')
 
-      if 'operation' in log_data:
-        is_operation = True
-        status = log_data.get('status', '')
-      elif 'msg' in log_data:
-        msg = log_data.get('msg', '').lower()
-        if 'success' in msg or 'error' in msg or 'failed' in msg:
-          is_operation = True
-          status = 'success' if 'success' in msg else 'error'
-
-      if is_operation and status:
-        op = {
+      if total is not None and success is not None and errors is not None:
+        try:
+          metrics_snapshots.append({
             'timestamp': timestamp_naive,
-            'type': log_data.get('type', 'write'),
-            'status': status,
-            'latency': log_data.get('latency_ms', 0)
-        }
-        operations.append(op)
-
-        if status == 'success':
-          successes.append(op)
-          # Close any open failure window
-          if current_failure_window:
-            current_failure_window['end'] = timestamp_naive
-            current_failure_window['duration'] = (
-                current_failure_window['end'] - current_failure_window['start']
-            ).total_seconds()
-            failure_windows.append(current_failure_window)
-            current_failure_window = None
-
-        elif status == 'error':
-          failures.append(op)
-          # Start a new failure window if not already in one
-          if not current_failure_window:
-            current_failure_window = {
-                'start': timestamp_naive,
-                'failures': []
-            }
-          current_failure_window['failures'].append(op)
+            'total': int(total),
+            'success': int(success),
+            'errors': int(errors),
+            'latency_ms': log_data.get('latency_ms', 0)
+          })
+        except (ValueError, TypeError):
+          # Skip if metrics can't be converted to integers
+          continue
 
     except Exception as e:
       # Skip malformed log lines
       continue
 
+  # Analyze metrics snapshots to calculate statistics
+  if not metrics_snapshots:
+    return {
+        'total_operations': 0,
+        'successful_operations': 0,
+        'failed_operations': 0,
+        'failure_rate': 0,
+        'failure_windows': [],
+        'max_failure_window_seconds': 0,
+        'had_complete_outage': False
+    }
+
+  # Sort by timestamp to analyze progression
+  metrics_snapshots.sort(key=lambda x: x['timestamp'])
+
+  # Calculate operations during rollout window by comparing first and last snapshots
+  first_snapshot = metrics_snapshots[0]
+  last_snapshot = metrics_snapshots[-1]
+
+  operations_during_rollout = last_snapshot['total'] - first_snapshot['total']
+  successes_during_rollout = last_snapshot['success'] - first_snapshot['success']
+  failures_during_rollout = last_snapshot['errors'] - first_snapshot['errors']
+
+  # Calculate failure rate
+  failure_rate = 0
+  if operations_during_rollout > 0:
+    failure_rate = (failures_during_rollout / operations_during_rollout) * 100
+
+  # Analyze failure windows by looking at error count increases
+  failure_windows = []
+  current_failure_window = None
+  prev_errors = first_snapshot['errors']
+
+  for snapshot in metrics_snapshots[1:]:
+    current_errors = snapshot['errors']
+
+    if current_errors > prev_errors:
+      # New failures detected
+      if not current_failure_window:
+        # Start new failure window
+        current_failure_window = {
+          'start': snapshot['timestamp'],
+          'failures': []
+        }
+
+      # Add failures to current window
+      new_failures = current_errors - prev_errors
+      current_failure_window['failures'].extend([None] * new_failures)  # Placeholder
+
+    else:
+      # No new failures, close current window if exists
+      if current_failure_window:
+        current_failure_window['end'] = snapshot['timestamp']
+        current_failure_window['duration'] = (
+          current_failure_window['end'] - current_failure_window['start']
+        ).total_seconds()
+        failure_windows.append(current_failure_window)
+        current_failure_window = None
+
+    prev_errors = current_errors
+
   # Close any remaining failure window
   if current_failure_window:
     current_failure_window['end'] = rollout_end
     current_failure_window['duration'] = (
-        current_failure_window['end'] - current_failure_window['start']
+      current_failure_window['end'] - current_failure_window['start']
     ).total_seconds()
     failure_windows.append(current_failure_window)
 
-  # Calculate statistics
-  total_operations = len(operations)
-  failure_rate = (len(failures) / total_operations * 100) if total_operations > 0 else 0
   max_failure_window = max([w['duration'] for w in failure_windows], default=0)
 
   return {
-      'total_operations': total_operations,
-      'successful_operations': len(successes),
-      'failed_operations': len(failures),
+      'total_operations': operations_during_rollout,
+      'successful_operations': successes_during_rollout,
+      'failed_operations': failures_during_rollout,
       'failure_rate': failure_rate,
       'failure_windows': failure_windows,
       'max_failure_window_seconds': max_failure_window,
@@ -374,8 +411,15 @@ def test_rolling_restart_continuous_availability():
 
   # Step 4: Monitor the rollout completion
   log_info("Monitoring rollout progress...")
-  rollout_completed = wait_for_rollout_completion(timeout=120)
+  kubernetes_rollout_completed = wait_for_rollout_completion(timeout=120)
+
+  # Wait for actual service convergence (main-sync-async topology ready)
+  log_info("Waiting for cluster service convergence...")
+  service_converged = wait_for_cluster_convergence(timeout=180)
+
+  # Calculate actual rollout duration based on service convergence
   rollout_duration = int(time.time() - rollout_start_time.timestamp())
+  rollout_completed = kubernetes_rollout_completed and service_converged
   
   # Check which pods were recreated
   final_pods_json = kubectl_get("pods", namespace=MEMGRAPH_NS, selector="app.kubernetes.io/name=memgraph", output="json")
@@ -399,7 +443,7 @@ def test_rolling_restart_continuous_availability():
   since_time = (rollout_start_time - datetime.timedelta(seconds=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
   client_logs = get_pod_logs(test_client_pod, since_time=since_time)
 
-  # Analyze client operations
+  # Analyze client operations using actual service convergence duration
   client_analysis = analyze_client_operations_during_rollout(
       client_logs,
       rollout_start_time,
@@ -412,8 +456,10 @@ def test_rolling_restart_continuous_availability():
 
   # Print analysis results
   print("\n=== Rollout Analysis Results ===")
-  print(f"Rollout Duration: {rollout_duration}s")
-  print(f"Rollout Completed: {rollout_completed}")
+  print(f"Kubernetes Rollout Completed: {kubernetes_rollout_completed}")
+  print(f"Service Convergence Completed: {service_converged}")
+  print(f"Total Rollout Duration: {rollout_duration}s")
+  print(f"Overall Success: {rollout_completed}")
 
   print("\nPod Restart Information:")
   print(f"  Pods restarted: {restart_info.get('restart_count', 0)}")

@@ -4,6 +4,7 @@ Notes for running up a memgraph cluster under community edition.
 
 1. For long running tasks such as `make run`, NEVER run as foreground command, NEVER as background command using '&'. ALWAYS run as background process using Claude run_in_background parameter.
 2. After completing your tests, clean up the background processes.
+3. When commiting changs to git, NEVER mention "Happy" in git message.
 
 # Development Workflow
 

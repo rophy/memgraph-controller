@@ -6,7 +6,7 @@ Focuses on measuring actual failover timing and recovery through test-client log
 """
 
 import time
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, UTC
 from utils import (
     wait_for_cluster_convergence,
     get_pod_logs,
@@ -167,8 +167,9 @@ def analyze_logs_for_failover(
   lines = logs.strip().split('\n')
 
   # Time window for analysis
-  window_start = failover_time
-  window_end = failover_time + timedelta(seconds=window_seconds)
+  # Convert failover_time to naive datetime to match parsed log timestamps
+  window_start = failover_time.replace(tzinfo=None) if failover_time.tzinfo else failover_time
+  window_end = window_start + timedelta(seconds=window_seconds)
 
   failure_count = 0
   success_count = 0
@@ -316,7 +317,7 @@ class TestFailoverPodDeletion:
 
     # Step 2: Delete the main node
     print(f"Deleting main pod: {original_main_pod}")
-    failover_start_time = datetime.utcnow()  # Use UTC to match log timestamps
+    failover_start_time = datetime.now(UTC)  # Use UTC to match log timestamps
     delete_pod_forcefully(original_main_pod)
 
     # Step 3: Monitor for actual failover using controller logs and direct

@@ -71,7 +71,7 @@ type MemgraphController struct {
 }
 
 func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, config *common.Config) *MemgraphController {
-
+	ctx, logger := common.WithAttr(ctx, "thread", "newMemgraphController")
 	// Create single MemgraphClient instance with its own connection pool
 	// All components will use this singleton instance
 	memgraphClient := NewMemgraphClient(config)
@@ -134,7 +134,7 @@ func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, 
 	// Initialize leader election
 	leaderElection, err := NewLeaderElection(clientset, config)
 	if err != nil {
-		common.GetLogger().Error("failed to initialize leader election", "error", err)
+		logger.Error("failed to initialize leader election", "error", err)
 		return nil
 	}
 	controller.leaderElection = leaderElection
@@ -145,7 +145,7 @@ func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, 
 // Initialize starts all controller components (informers, servers, leader election)
 // This should be called after NewMemgraphController but before Run
 func (c *MemgraphController) Initialize(ctx context.Context) error {
-
+	ctx, logger := common.WithAttr(ctx, "thread", "initialize")
 	// Initialize event-driven reconciliation queue
 	c.reconcileQueue = c.newReconcileQueue(ctx)
 	c.failoverCheckQueue = c.newFailoverCheckQueue(ctx)
@@ -166,32 +166,33 @@ func (c *MemgraphController) Initialize(ctx context.Context) error {
 	// STEP 4: Start leader election (in background goroutine)
 	c.startLeaderElection(ctx)
 
-	common.GetLogger().Info("✅ All controller components initialized successfully")
+	logger.Info("✅ All controller components initialized successfully")
 	return nil
 }
 
 // Shutdown stops all controller components gracefully
 func (c *MemgraphController) Shutdown(ctx context.Context) error {
-	common.GetLogger().Info("Shutting down all controller components...")
+	ctx, logger := common.WithAttr(ctx, "thread", "shutdown")
+	logger.Info("Shutting down all controller components...")
 
 	// Stop health prober
 	if c.healthProber != nil && c.healthProber.IsRunning() {
 		c.healthProber.Stop()
-		common.GetLogger().Info("Health prober stopped")
+		logger.Info("Health prober stopped")
 	}
 
 	// Stop gateway server
 	if err := c.StopGatewayServer(ctx); err != nil {
-		common.GetLogger().Info("Gateway server shutdown error", "error", err)
+		logger.Info("Gateway server shutdown error", "error", err)
 	} else {
-		common.GetLogger().Info("Gateway server stopped successfully")
+		logger.Info("Gateway server stopped successfully")
 	}
 
 	// Stop informers
 	c.StopInformers()
-	common.GetLogger().Info("Informers stopped successfully")
+	logger.Info("Informers stopped successfully")
 
-	common.GetLogger().Info("✅ All controller components shut down successfully")
+	logger.Info("✅ All controller components shut down successfully")
 	return nil
 }
 
@@ -227,14 +228,14 @@ func (c *MemgraphController) GetTargetMainIndex(ctx context.Context) (int, error
 
 // SetTargetMainIndex updates both in-memory target and ConfigMap
 func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) error {
-
+	ctx, logger := common.WithAttr(ctx, "thread", "setTargetMainIndex")
 	c.targetMutex.Lock()
 	defer c.targetMutex.Unlock()
 
 	// Get owner reference to the controller pod for proper cleanup
 	ownerRef, err := c.getControllerOwnerReference(ctx)
 	if err != nil {
-		common.GetLogger().Warn("Failed to get controller owner reference - ConfigMap will not be cleaned up automatically", "error", err)
+		logger.Warn("Failed to get controller owner reference - ConfigMap will not be cleaned up automatically", "error", err)
 	}
 
 	// Update ConfigMap first
@@ -274,7 +275,7 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 
 	// Update in-memory value
 	c.targetMainIndex = index
-	common.GetLogger().Info("Updated TargetMainIndex", "index", index)
+	logger.Info("Updated TargetMainIndex", "index", index)
 	return nil
 }
 
@@ -325,7 +326,7 @@ func (c *MemgraphController) isPodBecomeUnhealthy(oldPod, newPod *v1.Pod) bool {
 
 	// Pod became unhealthy if it was ready before and is not ready now
 	if oldReady && !newReady {
-		common.GetLogger().Info("Pod became unhealthy", "pod", newPod.Name, "old_ready", oldReady, "new_ready", newReady)
+		logger.Info("Pod became unhealthy", "pod", newPod.Name, "old_ready", oldReady, "new_ready", newReady)
 		return true
 	}
 
@@ -368,12 +369,13 @@ func (c *MemgraphController) TestConnection() error {
 		return fmt.Errorf("failed to connect to Kubernetes API: %w", err)
 	}
 
-	common.GetLogger().Info("Successfully connected to Kubernetes API", "app_name", c.config.AppName, "namespace", c.config.Namespace)
+	logger.Info("Successfully connected to Kubernetes API", "app_name", c.config.AppName, "namespace", c.config.Namespace)
 	return nil
 }
 
 // TestMemgraphConnections tests connections to all discovered Memgraph pods
 func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error {
+	ctx, logger := common.WithAttr(ctx, "thread", "testMemgraphConnections")
 	err := c.cluster.Refresh(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to discover pods: %w", err)
@@ -384,22 +386,22 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 		return fmt.Errorf("no pods found with label app.kubernetes.io/name=%s", c.config.AppName)
 	}
 
-	common.GetLogger().Info("Testing Memgraph connections", "pod_count", len(pods))
+	logger.Info("Testing Memgraph connections", "pod_count", len(pods))
 
 	var lastErr error
 	connectedCount := 0
 	for podName, pod := range pods {
 		endpoint, err := pod.GetBoltAddress()
 		if err != nil {
-			common.GetLogger().Info("❌ Pod has no IP address", "pod", podName, "error", err)
+			logger.Info("❌ Pod has no IP address", "pod", podName, "error", err)
 			lastErr = err
 			continue
 		}
 		if err := c.memgraphClient.TestConnection(ctx, endpoint); err != nil {
-			common.GetLogger().Info("❌ Failed to connect to pod", "pod", podName, "endpoint", endpoint, "error", err)
+			logger.Info("❌ Failed to connect to pod", "pod", podName, "endpoint", endpoint, "error", err)
 			lastErr = err
 		} else {
-			common.GetLogger().Info("✅ Successfully connected to pod", "pod", podName, "endpoint", endpoint)
+			logger.Info("✅ Successfully connected to pod", "pod", podName, "endpoint", endpoint)
 			connectedCount++
 		}
 	}
@@ -408,7 +410,7 @@ func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error 
 		return fmt.Errorf("failed to connect to any Memgraph pods: %w", lastErr)
 	}
 
-	common.GetLogger().Info("Successfully tested Memgraph connections", "connected_count", connectedCount, "total_pods", len(pods))
+	logger.Info("Successfully tested Memgraph connections", "connected_count", connectedCount, "total_pods", len(pods))
 	return nil
 }
 
@@ -478,7 +480,7 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 
 // StartGatewayServer starts the gateway servers (both read/write and read-only if enabled)
 func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
-	logger := common.GetLoggerFromContext(ctx)
+	ctx, logger := common.WithAttr(ctx, "thread", "gatewayServices")
 	logger.Info("Starting gateway servers...")
 	// Start read/write gateway
 	if err := c.gatewayServer.Start(ctx); err != nil {
@@ -490,7 +492,7 @@ func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
 		if err := c.readGatewayServer.Start(ctx); err != nil {
 			return fmt.Errorf("failed to start read-only gateway: %w", err)
 		}
-		common.GetLogger().Info("Read-only gateway server started on port 7688")
+		logger.Info("Read-only gateway server started on port 7688")
 	}
 	logger.Info("Gateway servers started successfully")
 	return nil
@@ -498,7 +500,8 @@ func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
 
 // StopGatewayServer stops the gateway server (no-op - process termination handles cleanup)
 func (c *MemgraphController) StopGatewayServer(ctx context.Context) error {
-	common.GetLogger().Info("Gateway: No explicit shutdown needed - process termination handles cleanup")
+	ctx, logger := common.WithAttr(ctx, "thread", "gatewayServices")
+	logger.Info("Gateway: No explicit shutdown needed - process termination handles cleanup")
 	return nil
 }
 
@@ -545,6 +548,7 @@ func (c *MemgraphController) selectBestReplica(ctx context.Context) (*MemgraphNo
 
 // updateReadGatewayUpstream updates the read-only gateway's upstream address
 func (c *MemgraphController) updateReadGatewayUpstream(ctx context.Context) {
+	logger := common.GetLoggerFromContext(ctx)
 	// Skip if read gateway is not enabled
 	if c.readGatewayServer == nil {
 		return
@@ -554,42 +558,43 @@ func (c *MemgraphController) updateReadGatewayUpstream(ctx context.Context) {
 	replica, err := c.selectBestReplica(ctx)
 	if err != nil {
 		// Fall back to main if no replicas available
-		common.GetLogger().Warn("No healthy replicas available for read gateway, falling back to main", "error", err)
+		logger.Warn("No healthy replicas available for read gateway, falling back to main", "error", err)
 
 		// Use main pod as fallback
 		targetMainNode, err := c.getTargetMainNode(ctx)
 		if err != nil {
-			common.GetLogger().Error("Failed to get main node for read gateway fallback", "error", err)
+			logger.Error("Failed to get main node for read gateway fallback", "error", err)
 			c.readGatewayServer.SetUpstreamAddress("")
 			return
 		}
 
 		boltAddress, err := targetMainNode.GetBoltAddress()
 		if err != nil {
-			common.GetLogger().Error("Failed to get bolt address for main node", "error", err)
+			logger.Error("Failed to get bolt address for main node", "error", err)
 			c.readGatewayServer.SetUpstreamAddress("")
 			return
 		}
 
 		c.readGatewayServer.SetUpstreamAddress(boltAddress)
-		common.GetLogger().Info("Read gateway using main as fallback", "address", boltAddress)
+		logger.Info("Read gateway using main as fallback", "address", boltAddress)
 		return
 	}
 
 	// Set replica address for read gateway
 	boltAddress, err := replica.GetBoltAddress()
 	if err != nil {
-		common.GetLogger().Error("Failed to get bolt address for replica", "error", err)
+		logger.Error("Failed to get bolt address for replica", "error", err)
 		c.readGatewayServer.SetUpstreamAddress("")
 		return
 	}
 
 	c.readGatewayServer.SetUpstreamAddress(boltAddress)
-	common.GetLogger().Info("Read gateway updated with replica", "replica", replica.GetName(), "address", boltAddress)
+	logger.Info("Read gateway updated with replica", "replica", replica.GetName(), "address", boltAddress)
 }
 
 // stop performs cleanup when the controller stops
 func (c *MemgraphController) stop() {
+	logger := common.GetLogger()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
@@ -597,7 +602,7 @@ func (c *MemgraphController) stop() {
 		return // Already stopped
 	}
 
-	common.GetLogger().Info("Stopping Memgraph Controller...")
+	logger.Info("Stopping Memgraph Controller...")
 	c.isRunning = false
 
 	// Stop informers
@@ -612,9 +617,9 @@ func (c *MemgraphController) stop() {
 	c.stopFailoverCheckQueue()
 
 	// Gateway cleanup handled by process termination
-	common.GetLogger().Info("Gateway: Cleanup will be handled by process termination")
+	logger.Info("Gateway: Cleanup will be handled by process termination")
 
-	common.GetLogger().Info("Memgraph Controller stopped")
+	logger.Info("Memgraph Controller stopped")
 }
 
 // SetPrometheusMetrics sets the Prometheus metrics instance
@@ -701,7 +706,8 @@ func (c *MemgraphController) getControllerOwnerReference(ctx context.Context) (*
 
 // ResetAllConnections closes all existing Neo4j connections and clears the connection pool
 func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, error) {
-	common.GetLogger().Info("Admin API: Resetting all Memgraph connections")
+	logger := common.GetLoggerFromContext(ctx)
+	logger.Info("Admin API: Resetting all Memgraph connections")
 
 	totalConnections := 0
 
@@ -713,25 +719,25 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 
 		c.memgraphClient.connectionPool.Close(ctx)
 		totalConnections += controllerConnections
-		common.GetLogger().Info("Admin API: Reset singleton MemgraphClient connection pool", "count", controllerConnections)
+		logger.Info("Admin API: Reset singleton MemgraphClient connection pool", "count", controllerConnections)
 	} else {
-		common.GetLogger().Warn("Admin API: No MemgraphClient connection pool to reset")
+		logger.Warn("Admin API: No MemgraphClient connection pool to reset")
 	}
 
 	// Reset gateway connections (both read/write and read-only)
 	if c.gatewayServer != nil {
 		c.gatewayServer.DisconnectAll()
-		common.GetLogger().Info("Admin API: Reset read/write gateway connections")
+		logger.Info("Admin API: Reset read/write gateway connections")
 	}
 	if c.readGatewayServer != nil {
 		c.readGatewayServer.DisconnectAll()
-		common.GetLogger().Info("Admin API: Reset read-only gateway connections")
+		logger.Info("Admin API: Reset read-only gateway connections")
 	}
 	if c.gatewayServer == nil && c.readGatewayServer == nil {
-		common.GetLogger().Warn("Admin API: No gateway server to reset")
+		logger.Warn("Admin API: No gateway server to reset")
 	}
 
-	common.GetLogger().Info("Admin API: Successfully reset all connections", "total_count", totalConnections)
+	logger.Info("Admin API: Successfully reset all connections", "total_count", totalConnections)
 	return totalConnections, nil
 }
 

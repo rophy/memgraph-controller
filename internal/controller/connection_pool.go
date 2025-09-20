@@ -34,6 +34,7 @@ func NewConnectionPool(config *common.Config) *ConnectionPool {
 }
 
 func (cp *ConnectionPool) GetDriver(ctx context.Context, boltAddress string) (neo4j.DriverWithContext, error) {
+	ctx, logger := common.WithAttr(ctx, "thread", "getDriver")
 	if boltAddress == "" {
 		return nil, fmt.Errorf("bolt address is empty")
 	}
@@ -48,7 +49,7 @@ func (cp *ConnectionPool) GetDriver(ctx context.Context, boltAddress string) (ne
 			return driver, nil
 		} else {
 			// Driver is no longer valid, remove it and create a new one
-			common.GetLogger().Warn("driver is no longer valid", "bolt_address", boltAddress, "error", err)
+			logger.Warn("driver is no longer valid", "bolt_address", boltAddress, "error", err)
 			cp.removeDriver(boltAddress)
 		}
 	}
@@ -58,6 +59,7 @@ func (cp *ConnectionPool) GetDriver(ctx context.Context, boltAddress string) (ne
 }
 
 func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) (neo4j.DriverWithContext, error) {
+	ctx, logger := common.WithAttr(ctx, "thread", "createDriver")
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 
@@ -81,7 +83,7 @@ func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) 
 	}
 
 	cp.drivers[boltAddress] = driver
-	common.GetLogger().Debug("created new driver", "bolt_address", boltAddress)
+	logger.Debug("created new driver", "bolt_address", boltAddress)
 	return driver, nil
 }
 
@@ -100,7 +102,8 @@ func (cp *ConnectionPool) removeDriver(boltAddress string) error {
 }
 
 // UpdatePodIP tracks pod IP changes and invalidates connections when IP changes
-func (cp *ConnectionPool) UpdatePodIP(podName, newIP string) {
+func (cp *ConnectionPool) UpdatePodIP(ctx context.Context, podName, newIP string) {
+	ctx, logger := common.WithAttr(ctx, "thread", "updatePodIP")
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 
@@ -110,7 +113,7 @@ func (cp *ConnectionPool) UpdatePodIP(podName, newIP string) {
 		if driver, exists := cp.drivers[oldBoltAddress]; exists {
 			driver.Close(context.Background())
 			delete(cp.drivers, oldBoltAddress)
-			common.GetLogger().Debug("invalidated connection for pod", "pod", podName, "old_ip", existingIP, "new_ip", newIP)
+			logger.Debug("invalidated connection for pod", "pod", podName, "old_ip", existingIP, "new_ip", newIP)
 		}
 	}
 
@@ -118,7 +121,8 @@ func (cp *ConnectionPool) UpdatePodIP(podName, newIP string) {
 }
 
 // InvalidatePodConnection removes connections for a specific pod
-func (cp *ConnectionPool) InvalidatePodConnection(podName string) {
+func (cp *ConnectionPool) InvalidatePodConnection(ctx context.Context, podName string) {
+	ctx, logger := common.WithAttr(ctx, "thread", "invalidatePodConnection")
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 
@@ -127,7 +131,7 @@ func (cp *ConnectionPool) InvalidatePodConnection(podName string) {
 		if driver, exists := cp.drivers[boltAddress]; exists {
 			driver.Close(context.Background())
 			delete(cp.drivers, boltAddress)
-			common.GetLogger().Debug("invalidated connection: IP changed", "pod_name", podName, "old_ip", ip)
+			logger.Debug("invalidated connection: IP changed", "pod_name", podName, "old_ip", ip)
 		}
 	}
 }
@@ -138,18 +142,20 @@ func (cp *ConnectionPool) InvalidateConnection(boltAddress string) error {
 }
 
 func (cp *ConnectionPool) Close(ctx context.Context) {
+	ctx, logger := common.WithAttr(ctx, "thread", "close")
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 
 	for boltAddress, driver := range cp.drivers {
 		driver.Close(ctx)
-		common.GetLogger().Debug("closed driver", "bolt_address", boltAddress)
+		logger.Debug("closed driver", "bolt_address", boltAddress)
 	}
 	cp.drivers = make(map[string]neo4j.DriverWithContext)
 	cp.podIPs = make(map[string]string)
 }
 
 func WithRetry(ctx context.Context, operation func() error, retryConfig RetryConfig) error {
+	ctx, logger := common.WithAttr(ctx, "thread", "withRetry")
 	var lastErr error
 
 	for attempt := 0; attempt <= retryConfig.MaxRetries; attempt++ {
@@ -176,7 +182,7 @@ func WithRetry(ctx context.Context, operation func() error, retryConfig RetryCon
 			delay = retryConfig.MaxDelay
 		}
 
-		common.GetLogger().Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
+		logger.Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
 
 		select {
 		case <-ctx.Done():
@@ -190,6 +196,7 @@ func WithRetry(ctx context.Context, operation func() error, retryConfig RetryCon
 
 // WithRetryAndRefresh performs retry with pod IP refresh on connection failures
 func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfig RetryConfig, refreshFunc func() error) error {
+	ctx, logger := common.WithAttr(ctx, "thread", "withRetryAndRefresh")
 	var lastErr error
 
 	for attempt := 0; attempt <= retryConfig.MaxRetries; attempt++ {
@@ -214,7 +221,7 @@ func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfi
 		if strings.Contains(err.Error(), "ConnectivityError") || strings.Contains(err.Error(), "i/o timeout") {
 			if refreshFunc != nil {
 				if refreshErr := refreshFunc(); refreshErr != nil {
-					common.GetLogger().Warn("failed to refresh pod info", "error", refreshErr)
+					logger.Warn("failed to refresh pod info", "error", refreshErr)
 				}
 			}
 		}
@@ -225,7 +232,7 @@ func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfi
 			delay = retryConfig.MaxDelay
 		}
 
-		common.GetLogger().Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
+		logger.Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
 
 		select {
 		case <-ctx.Done():

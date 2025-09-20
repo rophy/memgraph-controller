@@ -99,8 +99,7 @@ func (p *HealthProber) GetHealthStatus() (healthy bool, consecutiveFailures int)
 
 // runHealthCheckLoop is the main health checking loop
 func (p *HealthProber) runHealthCheckLoop(ctx context.Context) {
-	logger := common.GetLoggerFromContext(ctx)
-	ctx = context.WithValue(ctx, goroutineKey, "healthCheck")
+	ctx, logger := common.WithAttr(ctx, "thread", "healthCheck")
 
 	ticker := time.NewTicker(p.config.CheckInterval)
 	defer ticker.Stop()

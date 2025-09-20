@@ -5,7 +5,7 @@ version: 1.0.0
 
 dependencies:
 - name: memgraph
-  version: "0.2.5"
+  version: "0.2.7"
   repository: "https://memgraph.github.io/helm-charts"
 - name: test-client
   version: "1.0.0"

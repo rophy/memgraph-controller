@@ -602,10 +602,263 @@ The design document (`design/reconciliation.md`) explicitly specifies this probl
 - This issue likely causes data divergence during any period of sync replica unavailability
 - Fixing this requires both design and implementation changes
 
+## 6. Rolling Restart Replication Failure - Epoch Divergence
+
+**Status**: Active - Critical
+**Severity**: Critical
+**First Observed**: 2025-09-20
+**Occurrence**: During rolling restart operations in both Memgraph 3.4.0 and 3.5.1
+**Affects**: Both tested Memgraph versions (not a version regression)
+
+### Description
+
+During rolling restart operations, the cluster experiences a critical replication failure where memgraph-ha-2 gets permanently rejected with "unique data" error. The root cause is WAL file corruption and epoch divergence between pods, not a Memgraph version issue as initially suspected.
+
+### Root Cause
+
+**Dual Main Promotion During Rolling Restart**:
+The controller's rolling restart sequence creates a critical race condition where two pods simultaneously act as main, causing epoch divergence and replication conflicts.
+
+**The Sequence:**
+1. **Initial State**: pod-0 (main), pod-1 (sync replica), pod-2 (async replica)
+2. **Pod-0 Deleted**: During rolling restart, pod-0 gets terminated
+3. **Pod-1 Promoted**: Controller promotes pod-1 to main, registers pod-2 as replica
+4. **Data Written**: While pod-1 is main, new data gets written and replicated
+5. **Pod-0 Returns**: Pod-0 comes back as main but retains old replica registrations
+6. **Dual Main State**: Both pod-0 and pod-1 are simultaneously MAIN
+7. **Epoch Conflicts**: Pod-2 has witnessed both pods as main, creating conflicting data lineages
+8. **Replication Failure**: Memgraph's split-brain protection prevents unsafe replica registration
+
+**WAL File Evidence**:
+- pod-0 (confused main): Fresh WAL `000009.log` after restart, missing data from pod-1's main period
+- pod-1 (actual main): Original WAL `000004.log`, contains all data including writes during main period
+- pod-2 (confused replica): Original WAL `000004.log`, synchronized with pod-1 but cannot register to pod-0
+
+**SYNC Replication Mode Enables Data Divergence**:
+The issue is amplified by Memgraph's SYNC replication mode behavior:
+
+1. **SYNC Mode Flexibility**: Unlike STRICT_SYNC, SYNC mode allows main to continue writes even when SYNC replicas are invalid/unreachable
+2. **Error vs Reality Gap**: Pod-0 reports "At least one SYNC replica has not confirmed committing last transaction" but **the write actually succeeds locally**
+3. **Partial Replication**: Invalid SYNC replica (pod-1) doesn't receive writes, but ASYNC replica (pod-2) still does
+4. **Data Divergence**: Results in different data states across cluster:
+   - Pod-0: Has writes from both main periods (original + confused state)
+   - Pod-1: Missing writes from pod-0's confused main period
+   - Pod-2: Receives writes from both mains at different times
+
+**Verified Behavior**:
+```
+# After dual main promotion:
+Pod-0 data: [initial, pod0_attempt]  # Reports error but write succeeds
+Pod-1 data: [initial]                # New main, missing pod-0's writes
+Pod-2 data: [initial, pod0_attempt]  # ASYNC replica gets pod-0's writes
+```
+
+This SYNC mode behavior creates exactly the "unique data" conflicts that trigger Memgraph's split-brain protection and prevent replica re-registration.
+
+### Evidence
+
+**Memgraph Rejection Message**:
+```
+You cannot register Replica memgraph_ha_2 to this Main because at one point
+Replica memgraph_ha_2 acted as the Main instance. Both the Main and Replica
+memgraph_ha_2 now hold unique data. Please resolve data conflicts and start
+the replication on a clean instance.
+```
+
+**WAL File Analysis**:
+```bash
+# memgraph-ha-0 (healthy main)
+kubectl exec memgraph-ha-0 -n memgraph -- hexdump -C /var/lib/memgraph/mg_data/databases/.durability/000014.log | head -1
+00000000  56 31 32 42 01 00 00 00  # V12B (valid WAL version)
+
+# memgraph-ha-2 (corrupted replica)
+kubectl exec memgraph-ha-2 -n memgraph -- hexdump -C /var/lib/memgraph/mg_data/databases/.durability/000009.log | head -1
+00000000  56 31 56 01 00 00 00 00  # V1V (corrupted WAL version)
+```
+
+**E2E Test Failure Pattern**:
+```
+AssertionError: Sync replica status should be 'ready'
+Expected: ready
+Actual: invalid (behind: -5)
+
+Rolling restart test fails at: test_rolling_restart_continuous_availability.py
+Consistent failure across multiple test runs
+```
+
+### Impact
+
+- **E2E Test Reliability**: Rolling restart test fails consistently (100% failure rate observed)
+- **Data Integrity**: WAL corruption indicates potential data loss scenarios
+- **Operational Risk**: Rolling restarts in production would result in permanent replica divergence
+- **Split-Brain Protection**: Memgraph correctly prevents corrupted replica registration but cluster becomes degraded
+- **High Availability Loss**: Cluster operates with only one sync replica instead of full HA setup
+
+### Investigation Timeline
+
+1. **Initial Hypothesis**: Suspected Memgraph 3.5.1 regression (user experience: "e2e tests used to work very reliability when I use memgraph 3.4.0")
+2. **Version Testing**: Downgraded to Memgraph 3.4.0 and re-ran tests
+3. **Critical Discovery**: Same failure occurred in 3.4.0, proving this is NOT a version regression
+4. **Root Cause Analysis**: WAL file analysis revealed corruption in memgraph-ha-2
+5. **Conclusion**: This is a controller orchestration issue, not a Memgraph database issue
+
+### Affected Configurations
+
+- **Both Memgraph Versions**: 3.4.0 and 3.5.1 show identical behavior
+- **Consistent Pod**: memgraph-ha-2 consistently affected (pattern suggests controller-specific logic)
+- **Rolling Restart Context**: Only occurs during StatefulSet rolling restart operations
+- **Persistent**: Issue persists across cluster recreation cycles
+
+### Proposed Solutions
+
+**Solution 1: Storage Corruption Prevention**
+- Investigate controller's storage handling during pod recreation
+- Ensure proper PVC cleanup and reattachment sequences
+- Review StatefulSet update strategy for data consistency
+
+**Solution 2: WAL File Recovery**
+- Implement automatic WAL corruption detection in controller
+- Add replica data reset mechanism when corruption detected
+- Force clean slate registration for corrupted replicas
+
+**Solution 3: Enhanced Orchestration**
+- Improve rolling restart sequence to prevent epoch divergence
+- Add validation checks before replica registration attempts
+- Implement backup/restore mechanism for corrupted replicas
+
+### Immediate Workarounds
+
+**For Testing**:
+```bash
+# Delete corrupted replica to force fresh start
+kubectl delete pod memgraph-ha-2 -n memgraph
+# Wait for recreation with clean storage
+kubectl wait --for=condition=Ready pod/memgraph-ha-2 -n memgraph --timeout=300s
+```
+
+**For Monitoring**:
+```bash
+# Check WAL file versions across pods
+for pod in memgraph-ha-0 memgraph-ha-1 memgraph-ha-2; do
+  echo "=== $pod ==="
+  kubectl exec $pod -n memgraph -- find /var/lib/memgraph/mg_data/databases/.durability/ -name "*.log" -exec basename {} \;
+done
+```
+
+### Manual Reproduction Steps
+
+**Using Controller-Free Environment (tests/memgraph-sandbox)**:
+
+**Prerequisites:**
+```bash
+cd tests/memgraph-sandbox
+helm dependency update .
+make init  # Deploys 3-pod cluster: pod-0 (main), pod-1 (sync), pod-2 (async)
+```
+
+**Phase 1: Establish Baseline**
+```bash
+# Add initial data
+kubectl exec memgraph-sandbox-0 -- bash -c 'echo "CREATE (:TestNode {phase: \"initial\", id: 1, timestamp: timestamp()});" | mgconsole --username=memgraph'
+
+# Verify replication
+make check  # All pods should show ready replicas
+
+# Record baseline WAL states
+for pod in memgraph-sandbox-0 memgraph-sandbox-1 memgraph-sandbox-2; do
+  echo "=== $pod ==="
+  kubectl exec $pod -- ls -la /var/lib/memgraph/mg_data/databases/.durability/ | grep ".log"
+done
+```
+
+**Phase 2: Simulate Rolling Restart (Create Dual Main)**
+```bash
+# Delete pod-0 to simulate rolling restart
+kubectl delete pod memgraph-sandbox-0
+
+# Promote pod-1 to main while pod-0 is recreating
+kubectl exec memgraph-sandbox-1 -- bash -c 'echo "SET REPLICATION ROLE TO MAIN;" | mgconsole --username=memgraph'
+
+# Register pod-2 as replica to new main (pod-1)
+POD_2_IP=$(kubectl get pod memgraph-sandbox-2 -o jsonpath='{.status.podIP}')
+kubectl exec memgraph-sandbox-1 -- bash -c "echo \"REGISTER REPLICA replica2 ASYNC TO \\\"$POD_2_IP:10000\\\";\" | mgconsole --username=memgraph"
+
+# Add data while pod-1 is main
+kubectl exec memgraph-sandbox-1 -- bash -c 'echo "CREATE (:TestNode {phase: \"pod1_main\", id: 2, timestamp: timestamp()});" | mgconsole --username=memgraph'
+
+# Wait for pod-0 to return
+kubectl wait --for=condition=Ready pod/memgraph-sandbox-0 --timeout=300s
+```
+
+**Phase 3: Observe Dual Main Chaos**
+```bash
+# Check roles - both pods will claim to be main!
+kubectl exec memgraph-sandbox-0 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=memgraph'
+kubectl exec memgraph-sandbox-1 -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=memgraph'
+
+# Check replica registrations - pod-0 will show invalid replicas
+kubectl exec memgraph-sandbox-0 -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
+kubectl exec memgraph-sandbox-1 -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
+
+# Verify data divergence
+for pod in memgraph-sandbox-0 memgraph-sandbox-1 memgraph-sandbox-2; do
+  echo "=== $pod Data ==="
+  kubectl exec $pod -- bash -c 'echo "MATCH (n:TestNode) RETURN n.phase, n.id, n.timestamp ORDER BY n.id;" | mgconsole --output-format csv --username=memgraph'
+done
+```
+
+**Phase 4: Trigger Replication Failure**
+```bash
+# Try to register pod-2 to pod-0 - this will fail
+kubectl exec memgraph-sandbox-0 -- bash -c "echo \"REGISTER REPLICA replica2_new ASYNC TO \\\"$POD_2_IP:10000\\\";\" | mgconsole --username=memgraph"
+# Expected: "Couldn't register replica" error
+
+# Attempt writes to both mains - observe split behavior
+kubectl exec memgraph-sandbox-0 -- bash -c 'echo "CREATE (:TestNode {phase: \"pod0_attempt\", id: 3, timestamp: timestamp()});" | mgconsole --username=memgraph'
+kubectl exec memgraph-sandbox-1 -- bash -c 'echo "CREATE (:TestNode {phase: \"pod1_continued\", id: 3, timestamp: timestamp()});" | mgconsole --username=memgraph'
+```
+
+**Expected Results:**
+- Both pod-0 and pod-1 claim MAIN role simultaneously
+- Pod-0 shows replica1 with "invalid" status (because pod-1 is also main)
+- Pod-2 cannot register to pod-0 due to epoch conflicts
+- Data divergence: pods have different subsets of data
+- WAL files show divergent states (different file numbers/versions)
+
+**Cleanup:**
+```bash
+make clean
+```
+
+### Related Code Areas
+
+- Controller StatefulSet rolling restart handling
+- PVC management and storage attachment logic
+- Replica registration and validation in `controller_reconcile.go`
+- Storage durability configuration in Memgraph deployment
+
+### Investigation Priority
+
+This is a **critical operational issue** that blocks:
+1. Safe rolling restart operations in production
+2. E2E test reliability and CI/CD pipeline
+3. High availability guarantees during maintenance operations
+
+### Notes
+
+- **Root Cause Identified**: Dual main promotion during rolling restart + SYNC mode's flexibility = data divergence
+- **Not a Memgraph Bug**: This is controller orchestration issue, not database version regression
+- **SYNC Mode Behavior**: Memgraph's SYNC replication allows writes to continue despite invalid replicas, enabling divergence
+- **Reproduction Confirmed**: Issue consistently reproducible using controller-free tests/memgraph-sandbox environment
+- **Critical for Production**: Affects fundamental cluster operations (rolling restart) and data consistency guarantees
+- **Solution Required**: Controller must prevent dual main states or handle them gracefully during rolling restart
+
+---
+
 ## Historical Issues
 
 ### Gateway Routing Race Condition (Resolved)
 
-**Status**: Resolved in recent commits  
+**Status**: Resolved in recent commits
 **Resolution**: Gateway routing and connection handling improvements
 **Note**: Replaced by the reconciliation timing issue documented above

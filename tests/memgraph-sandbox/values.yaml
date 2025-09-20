@@ -4,8 +4,10 @@ memgraph:
     enableBolt: false
   memgraphConfig:
   - "--data-directory=/var/lib/memgraph/mg_data"
+  - "--log-level=INFO"
   - "--also-log-to-stderr=true"
   - "--replication-restore-state-on-startup=true"
+  - "--storage-snapshot-on-exit=false"
   serviceAccount:
     create: false
 

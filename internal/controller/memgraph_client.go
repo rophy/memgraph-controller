@@ -733,7 +733,7 @@ func (mc *MemgraphClient) SetReplicationRoleToReplicaWithRetry(ctx context.Conte
 	return nil
 }
 
-// RegisterReplica registers a replica with the main using specified mode (SYNC or ASYNC)
+// RegisterReplica registers a replica with the main using specified mode (STRICT_SYNC or ASYNC)
 func (mc *MemgraphClient) RegisterReplica(ctx context.Context, mainBoltAddress, replicaName, replicaAddress, syncMode string) error {
 	if mainBoltAddress == "" {
 		return fmt.Errorf("main bolt address is empty")
@@ -744,8 +744,8 @@ func (mc *MemgraphClient) RegisterReplica(ctx context.Context, mainBoltAddress, 
 	if replicaAddress == "" {
 		return fmt.Errorf("replica address is empty")
 	}
-	if syncMode != "SYNC" && syncMode != "ASYNC" {
-		return fmt.Errorf("invalid sync mode: %s (must be SYNC or ASYNC)", syncMode)
+	if syncMode != "STRICT_SYNC" && syncMode != "ASYNC" {
+		return fmt.Errorf("invalid sync mode: %s (must be STRICT_SYNC or ASYNC)", syncMode)
 	}
 
 	driver, err := mc.connectionPool.GetDriver(ctx, mainBoltAddress)

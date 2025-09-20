@@ -240,7 +240,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 
 			// For sync replicas, be more cautious but still fix IP issues
 			if isSyncReplica {
-				logger.Warn("Step 4: SYNC replica has both replication and IP issues - dropping to fix",
+				logger.Warn("Step 4: STRICT_SYNC replica has both replication and IP issues - dropping to fix",
 					"pod_name", podName,
 					"replica_name", replicaName)
 			}
@@ -322,7 +322,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		}
 		syncMode := "ASYNC"
 		if node.GetName() == syncReplicaNode.GetName() {
-			syncMode = "SYNC"
+			syncMode = "STRICT_SYNC"
 		}
 		ipAddress := node.GetIpAddress()
 		// Specifying replication address without port implies port 10000.

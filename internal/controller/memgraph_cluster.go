@@ -253,10 +253,10 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 		return fmt.Errorf("step 1 failed - demote pod-1 to replica: %w", err)
 	}
 
-	// Step 2: Run command against pod-0 to set up sync replication
-	common.GetLogger().Info("step 2: setting up sync replication from pod-0 to pod-1", "pod0_name", pod0Name, "pod1_name", pod1Name)
-	if err := pod0Node.RegisterReplica(ctx, pod1Node.GetReplicaName(), pod1Node.ipAddress, "SYNC"); err != nil {
-		return fmt.Errorf("step 2 failed - register SYNC replica: %w", err)
+	// Step 2: Run command against pod-0 to set up strict sync replication
+	common.GetLogger().Info("step 2: setting up strict sync replication from pod-0 to pod-1", "pod0_name", pod0Name, "pod1_name", pod1Name)
+	if err := pod0Node.RegisterReplica(ctx, pod1Node.GetReplicaName(), pod1Node.ipAddress, "STRICT_SYNC"); err != nil {
+		return fmt.Errorf("step 2 failed - register STRICT_SYNC replica: %w", err)
 	}
 
 	// Step 3: Run command against pod-0 to verify replication
@@ -276,13 +276,13 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 			if replica.ParsedDataInfo != nil && replica.ParsedDataInfo.Status == "ready" && replica.ParsedDataInfo.Behind == 0 {
 				common.GetLogger().Info("sync replica is ready and up-to-date", "replica_name", replica.Name)
 			} else {
-				return fmt.Errorf("SYNC replica %s is not ready: data_info=%s", replica.Name, replica.DataInfo)
+				return fmt.Errorf("STRICT_SYNC replica %s is not ready: data_info=%s", replica.Name, replica.DataInfo)
 			}
 			break
 		}
 	}
 	if !found {
-		return fmt.Errorf("SYNC replica %s not found in SHOW REPLICAS output", pod1Node.GetReplicaName())
+		return fmt.Errorf("STRICT_SYNC replica %s not found in SHOW REPLICAS output", pod1Node.GetReplicaName())
 	}
 
 	common.GetLogger().Info("initialize memgraph cluster completed", "main", pod0Name, "sync_replica", pod1Name)

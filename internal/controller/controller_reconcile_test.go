@@ -161,7 +161,7 @@ func TestPerformReconciliationActionsRequiresCacheClearingToAvoidStaleData(t *te
 	// Pre-populate node with stale cached data (from previous reconciliation)
 	node.memgraphRole = "MAIN"
 	node.replicasInfo = []ReplicaInfo{
-		{Name: "memgraph_ha_1", SyncMode: "SYNC"},
+		{Name: "memgraph_ha_1", SyncMode: "STRICT_SYNC"},
 		{Name: "memgraph_ha_2", SyncMode: "ASYNC"},
 	}
 	node.hasReplicasInfo = true // This is the key - cache is populated with stale data
@@ -176,8 +176,8 @@ func TestPerformReconciliationActionsRequiresCacheClearingToAvoidStaleData(t *te
 	if len(replicas) != 2 {
 		t.Errorf("Expected 2 stale replicas without cache clearing, got %d", len(replicas))
 	}
-	if replicas[0].SyncMode != "SYNC" {
-		t.Errorf("Expected stale SYNC mode without cache clearing, got %s", replicas[0].SyncMode)
+	if replicas[0].SyncMode != "STRICT_SYNC" {
+		t.Errorf("Expected stale STRICT_SYNC mode without cache clearing, got %s", replicas[0].SyncMode)
 	}
 	
 	// Second test: WITH cache clearing (the fix)

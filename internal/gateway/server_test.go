@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
@@ -34,27 +35,27 @@ func TestServer_SetUpstreamAddress(t *testing.T) {
 
 	// Test setting upstream address
 	testAddress := "10.0.0.1:7687"
-	server.SetUpstreamAddress(testAddress)
+	server.SetUpstreamAddress(context.Background(), testAddress)
 	
 	if addr := server.GetUpstreamAddress(); addr != testAddress {
 		t.Errorf("Expected upstream address %s, got %s", testAddress, addr)
 	}
 
 	// Test idempotent behavior - setting same address should not cause change
-	server.SetUpstreamAddress(testAddress)
+	server.SetUpstreamAddress(context.Background(), testAddress)
 	if addr := server.GetUpstreamAddress(); addr != testAddress {
 		t.Errorf("Expected upstream address to remain %s, got %s", testAddress, addr)
 	}
 
 	// Test changing to different address
 	newAddress := "10.0.0.2:7687"
-	server.SetUpstreamAddress(newAddress)
+	server.SetUpstreamAddress(context.Background(), newAddress)
 	if addr := server.GetUpstreamAddress(); addr != newAddress {
 		t.Errorf("Expected upstream address %s, got %s", newAddress, addr)
 	}
 
 	// Test resetting to empty
-	server.SetUpstreamAddress("")
+	server.SetUpstreamAddress(context.Background(), "")
 	if addr := server.GetUpstreamAddress(); addr != "" {
 		t.Errorf("Expected empty upstream address after reset, got %s", addr)
 	}
@@ -108,7 +109,7 @@ func TestServer_ConcurrentUpstreamAccess(t *testing.T) {
 				} else {
 					addr = "10.0.0.2:7687"
 				}
-				server.SetUpstreamAddress(addr)
+				server.SetUpstreamAddress(context.Background(), addr)
 			}
 		}(i)
 	}
@@ -144,7 +145,7 @@ func TestServer_GetUpstreamAddressThreadSafety(t *testing.T) {
 	
 	// Set an initial address
 	testAddress := "10.0.0.1:7687"
-	server.SetUpstreamAddress(testAddress)
+	server.SetUpstreamAddress(context.Background(), testAddress)
 
 	// Test concurrent reads
 	const numReaders = 50

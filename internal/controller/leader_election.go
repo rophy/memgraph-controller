@@ -100,12 +100,6 @@ func (c *MemgraphController) onStartLeading(ctx context.Context) {
 		}
 		c.promMetrics.RecordElection()
 	}
-
-	// Start health prober for blackbox monitoring
-	if c.healthProber != nil {
-		logger.Info("Starting health prober for main pod monitoring")
-		c.healthProber.Start(ctx)
-	}
 }
 
 // onStopLeading is the callback function for when the leader election stops
@@ -117,11 +111,6 @@ func (c *MemgraphController) onStopLeading() {
 	le.currentLeaderMu.Unlock()
 
 	logger.Info("⏹️  Lost leadership - stopping operations", "identity", le.identity)
-
-	// Stop health prober
-	if c.healthProber != nil {
-		c.healthProber.Stop()
-	}
 }
 
 // onNewLeader is the callback function for when the leader election changes

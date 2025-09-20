@@ -16,8 +16,6 @@ import (
 	"memgraph-controller/internal/metrics"
 )
 
-var logger = common.GetLogger()
-
 // MemgraphNode represents a Memgraph node with pod information
 type MemgraphNode struct {
 	Name        string
@@ -96,7 +94,7 @@ func NewServer(config *Config) *Server {
 
 // Start starts the gateway server and begins accepting connections
 func (s *Server) Start(ctx context.Context) error {
-
+	logger := common.GetLoggerFromContext(ctx)
 	if err := s.config.Validate(); err != nil {
 		return fmt.Errorf("gateway configuration invalid: %w", err)
 	}
@@ -142,8 +140,8 @@ func (s *Server) Start(ctx context.Context) error {
 
 	// Start background goroutines
 	s.wg.Add(3)
-	go s.acceptConnections()
-	go s.periodicCleanup()
+	go s.acceptConnections(ctx)
+	go s.periodicCleanup(ctx)
 
 	return nil
 }
@@ -155,17 +153,18 @@ func (s *Server) GetUpstreamAddress() string {
 	return s.upstreamAddress
 }
 
-func (s *Server) SetUpstreamAddress(address string) {
-	oldAddress := s.GetUpstreamAddress()
+func (s *Server) SetUpstreamAddress(ctx context.Context, address string) {
+	s.upstreamAddressMu.Lock()
+	defer s.upstreamAddressMu.Unlock()
+	logger := common.GetLoggerFromContext(ctx)
+	oldAddress := s.upstreamAddress // Read directly instead of calling GetUpstreamAddress()
 	if oldAddress == address {
 		return
 	}
 
-	s.upstreamAddressMu.Lock()
-	defer s.upstreamAddressMu.Unlock()
-	logger.Info("Setting upstream address", "old_address", oldAddress, "new_address", address)
+	logger.Info("Changing upstream address", "old_address", oldAddress, "new_address", address)
 	// Updating upstream address implies disconnecting all existing connections.
-	s.DisconnectAll()
+	s.DisconnectAll(ctx)
 	s.upstreamAddress = address
 }
 
@@ -175,7 +174,8 @@ func (s *Server) SetPrometheusMetrics(m *metrics.Metrics) {
 }
 
 // acceptConnections runs the main accept loop for incoming connections
-func (s *Server) acceptConnections() {
+func (s *Server) acceptConnections(ctx context.Context) {
+	logger := common.GetLoggerFromContext(ctx)
 	defer s.wg.Done()
 	defer logger.Info("accept loop terminated")
 
@@ -238,10 +238,10 @@ func (s *Server) acceptConnections() {
 
 		// Handle connection in a goroutine
 		s.wg.Add(1)
-		go s.handleConnection(conn)
+		go s.handleConnection(ctx, conn)
 
 		atomic.AddInt64(&s.totalConnections, 1)
-		
+
 		// Update Prometheus metrics
 		if s.promMetrics != nil {
 			s.promMetrics.RecordGatewayConnection()
@@ -250,7 +250,8 @@ func (s *Server) acceptConnections() {
 }
 
 // handleConnection handles a single client connection
-func (s *Server) handleConnection(clientConn net.Conn) {
+func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
+	logger := common.GetLoggerFromContext(ctx)
 	defer s.wg.Done()
 	defer clientConn.Close()
 
@@ -268,7 +269,7 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 			s.promMetrics.UpdateGatewayConnections(int(atomic.LoadInt64(&s.activeConnections)))
 		}
 	}()
-	
+
 	// Update active connections metric
 	if s.promMetrics != nil {
 		s.promMetrics.UpdateGatewayConnections(int(atomic.LoadInt64(&s.activeConnections)))
@@ -307,11 +308,12 @@ func (s *Server) handleConnection(clientConn net.Conn) {
 	logger.Info("Connection established to main", "client_addr", clientAddr, "session_id", session.ID)
 
 	// Start bidirectional proxy
-	s.proxyConnections(clientConn, backendConn, session)
+	s.proxyConnections(ctx, clientConn, backendConn, session)
 }
 
 // proxyConnections handles bidirectional data transfer between client and backend
-func (s *Server) proxyConnections(clientConn, backendConn net.Conn, session *ProxySession) {
+func (s *Server) proxyConnections(ctx context.Context, clientConn, backendConn net.Conn, session *ProxySession) {
+	logger := common.GetLoggerFromContext(ctx)
 	startTime := time.Now()
 	clientAddr := clientConn.RemoteAddr().String()
 	backendAddr := backendConn.RemoteAddr().String()
@@ -390,7 +392,8 @@ func (s *Server) copyWithBuffer(dst, src net.Conn) (int64, error) {
 }
 
 // periodicCleanup runs periodic cleanup tasks for connections
-func (s *Server) periodicCleanup() {
+func (s *Server) periodicCleanup(ctx context.Context) {
+	logger := common.GetLoggerFromContext(ctx)
 	defer s.wg.Done()
 
 	ticker := time.NewTicker(s.config.CleanupInterval)
@@ -425,7 +428,8 @@ func (s *Server) periodicCleanup() {
 }
 
 // DisconnectAll disconnects all active connections
-func (s *Server) DisconnectAll() {
+func (s *Server) DisconnectAll(ctx context.Context) {
+	logger := common.GetLoggerFromContext(ctx)
 	activeConnections := s.connections.GetCount()
 	if activeConnections == 0 {
 		logger.Info("no active connections to disconnect")

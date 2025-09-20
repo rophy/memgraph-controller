@@ -34,7 +34,7 @@ func NewConnectionPool(config *common.Config) *ConnectionPool {
 }
 
 func (cp *ConnectionPool) GetDriver(ctx context.Context, boltAddress string) (neo4j.DriverWithContext, error) {
-	ctx, logger := common.WithAttr(ctx, "thread", "getDriver")
+	logger := common.GetLoggerFromContext(ctx)
 	if boltAddress == "" {
 		return nil, fmt.Errorf("bolt address is empty")
 	}
@@ -59,7 +59,7 @@ func (cp *ConnectionPool) GetDriver(ctx context.Context, boltAddress string) (ne
 }
 
 func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) (neo4j.DriverWithContext, error) {
-	ctx, logger := common.WithAttr(ctx, "thread", "createDriver")
+	logger := common.GetLoggerFromContext(ctx)
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 

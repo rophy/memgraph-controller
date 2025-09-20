@@ -2,6 +2,7 @@ package gateway
 
 import (
 	"fmt"
+	"memgraph-controller/internal/common"
 	"net"
 	"sync"
 	"sync/atomic"
@@ -152,6 +153,7 @@ func (ct *ConnectionTracker) CleanupIdle(idleTimeout time.Duration) int {
 
 	for sessionID, session := range ct.sessions {
 		if session.IsActive() && now.Sub(session.GetLastActivity()) > idleTimeout {
+			logger := common.GetLogger()
 			logger.Info("closing idle session", "session_id", sessionID, "duration", now.Sub(session.GetLastActivity()))
 			session.Close()
 			delete(ct.sessions, sessionID)

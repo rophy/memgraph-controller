@@ -71,7 +71,7 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 			// Enable gateway connections.
 			if targetMainNode, err := c.getTargetMainNode(ctx); err == nil {
 				if boltAddress, err := targetMainNode.GetBoltAddress(); err == nil {
-					c.gatewayServer.SetUpstreamAddress(boltAddress)
+					c.gatewayServer.SetUpstreamAddress(ctx, boltAddress)
 
 					// Update read-only gateway if enabled
 					c.updateReadGatewayUpstream(ctx)
@@ -80,6 +80,11 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				}
 			} else {
 				logger.Error("Failed to get target main node", "error", err)
+			}
+
+			// Start probers
+			if c.healthProber != nil {
+				c.healthProber.Start(ctx)
 			}
 
 			if err := c.performReconciliationActions(ctx); err != nil {
@@ -176,7 +181,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		logger.Info("Failed to get bolt address for target main node", "error", err)
 		return err
 	}
-	c.gatewayServer.SetUpstreamAddress(mainBoltAddress)
+	c.gatewayServer.SetUpstreamAddress(ctx, mainBoltAddress)
 
 	// Update read-only gateway if enabled
 	c.updateReadGatewayUpstream(ctx)

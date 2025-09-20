@@ -32,8 +32,7 @@ type HealthProber struct {
 	controller          *MemgraphController
 	config              ProberConfig
 	mu                  sync.RWMutex
-	running             bool
-	stopCh              chan struct{}
+	runningCh           chan struct{}
 	consecutiveFailures int
 	lastHealthStatus    bool
 }
@@ -43,8 +42,7 @@ func NewHealthProber(controller *MemgraphController, config ProberConfig) *Healt
 	return &HealthProber{
 		controller:          controller,
 		config:              config,
-		running:             false,
-		stopCh:              make(chan struct{}),
+		runningCh:           nil, // Will be initialized in Start()
 		consecutiveFailures: 0,
 		lastHealthStatus:    true,
 	}
@@ -55,17 +53,16 @@ func (p *HealthProber) Start(ctx context.Context) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if p.running {
+	if p.runningCh != nil {
 		common.GetLogger().Warn("Health prober already running")
 		return
 	}
 
-	p.running = true
 	common.GetLogger().Info("Starting health prober",
 		"check_interval", p.config.CheckInterval,
 		"timeout", p.config.Timeout,
 		"failure_threshold", p.config.FailureThreshold)
-
+	p.runningCh = make(chan struct{})
 	go p.runHealthCheckLoop(ctx)
 }
 
@@ -74,20 +71,20 @@ func (p *HealthProber) Stop() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	if !p.running {
+	if p.runningCh == nil {
 		return
 	}
 
 	common.GetLogger().Info("Stopping health prober")
-	p.running = false
-	close(p.stopCh)
+	close(p.runningCh)
+	p.runningCh = nil
 }
 
 // IsRunning returns whether the prober is currently running
 func (p *HealthProber) IsRunning() bool {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
-	return p.running
+	return p.runningCh != nil
 }
 
 // GetHealthStatus returns the current health status and consecutive failure count
@@ -109,7 +106,7 @@ func (p *HealthProber) runHealthCheckLoop(ctx context.Context) {
 		case <-ctx.Done():
 			logger.Info("Health prober stopped due to context cancellation")
 			return
-		case <-p.stopCh:
+		case <-p.runningCh:
 			logger.Info("Health prober stopped")
 			return
 		case <-ticker.C:

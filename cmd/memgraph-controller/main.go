@@ -22,7 +22,7 @@ func main() {
 	}
 
 	// Initialize the super context
-	ctx, logger := common.WithAttr(context.Background(), "thread", "main")
+	ctx, logger := common.NewLoggerContext(context.Background())
 
 	logger.Info("Starting Memgraph Controller with HA support")
 	logger.Info("Configuration loaded",

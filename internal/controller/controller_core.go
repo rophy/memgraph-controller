@@ -146,7 +146,7 @@ func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, 
 // Initialize starts all controller components (informers, servers, leader election)
 // This should be called after NewMemgraphController but before Run
 func (c *MemgraphController) Initialize(ctx context.Context) error {
-	ctx, logger := common.WithAttr(ctx, "thread", "initialize")
+	logger := common.GetLoggerFromContext(ctx)
 	// Initialize event-driven reconciliation queue
 	c.reconcileQueue = c.newReconcileQueue(ctx)
 	c.failoverCheckQueue = c.newFailoverCheckQueue(ctx)
@@ -173,11 +173,11 @@ func (c *MemgraphController) Initialize(ctx context.Context) error {
 
 // Shutdown stops all controller components gracefully
 func (c *MemgraphController) Shutdown(ctx context.Context) error {
-	ctx, logger := common.WithAttr(ctx, "thread", "shutdown")
+	logger := common.GetLoggerFromContext(ctx)
 	logger.Info("Shutting down all controller components...")
 
 	// Stop health prober
-	if c.healthProber != nil && c.healthProber.IsRunning() {
+	if c.healthProber != nil {
 		c.healthProber.Stop()
 		logger.Info("Health prober stopped")
 	}
@@ -568,18 +568,18 @@ func (c *MemgraphController) updateReadGatewayUpstream(ctx context.Context) {
 		targetMainNode, err := c.getTargetMainNode(ctx)
 		if err != nil {
 			logger.Error("Failed to get main node for read gateway fallback", "error", err)
-			c.readGatewayServer.SetUpstreamAddress("")
+			c.readGatewayServer.SetUpstreamAddress(ctx, "")
 			return
 		}
 
 		boltAddress, err := targetMainNode.GetBoltAddress()
 		if err != nil {
 			logger.Error("Failed to get bolt address for main node", "error", err)
-			c.readGatewayServer.SetUpstreamAddress("")
+			c.readGatewayServer.SetUpstreamAddress(ctx, "")
 			return
 		}
 
-		c.readGatewayServer.SetUpstreamAddress(boltAddress)
+		c.readGatewayServer.SetUpstreamAddress(ctx, boltAddress)
 		logger.Info("Read gateway using main as fallback", "address", boltAddress)
 		return
 	}
@@ -588,11 +588,11 @@ func (c *MemgraphController) updateReadGatewayUpstream(ctx context.Context) {
 	boltAddress, err := replica.GetBoltAddress()
 	if err != nil {
 		logger.Error("Failed to get bolt address for replica", "error", err)
-		c.readGatewayServer.SetUpstreamAddress("")
+		c.readGatewayServer.SetUpstreamAddress(ctx, "")
 		return
 	}
 
-	c.readGatewayServer.SetUpstreamAddress(boltAddress)
+	c.readGatewayServer.SetUpstreamAddress(ctx, boltAddress)
 	logger.Info("Read gateway updated with replica", "replica", replica.GetName(), "address", boltAddress)
 }
 
@@ -730,11 +730,11 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 
 	// Reset gateway connections (both read/write and read-only)
 	if c.gatewayServer != nil {
-		c.gatewayServer.DisconnectAll()
+		c.gatewayServer.DisconnectAll(ctx)
 		logger.Info("Admin API: Reset read/write gateway connections")
 	}
 	if c.readGatewayServer != nil {
-		c.readGatewayServer.DisconnectAll()
+		c.readGatewayServer.DisconnectAll(ctx)
 		logger.Info("Admin API: Reset read-only gateway connections")
 	}
 	if c.gatewayServer == nil && c.readGatewayServer == nil {

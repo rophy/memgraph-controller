@@ -276,9 +276,9 @@ func (c *MemgraphController) executeFailoverInternal(ctx context.Context) error 
 	// Target sync replica is healthy, proceed with failover
 
 	// Disconnect all client connections and stop accepting new ones
-	c.gatewayServer.SetUpstreamAddress("")
+	c.gatewayServer.SetUpstreamAddress(ctx, "")
 	if c.readGatewayServer != nil {
-		c.readGatewayServer.SetUpstreamAddress("")
+		c.readGatewayServer.SetUpstreamAddress(ctx, "")
 	}
 
 	if role == "main" {
@@ -306,7 +306,7 @@ func (c *MemgraphController) executeFailoverInternal(ctx context.Context) error 
 
 	// Set the new upstream address
 	if boltAddress, err := syncReplicaNode.GetBoltAddress(); err == nil {
-		c.gatewayServer.SetUpstreamAddress(boltAddress)
+		c.gatewayServer.SetUpstreamAddress(ctx, boltAddress)
 		// Update read gateway to use a different replica if available
 		c.updateReadGatewayUpstream(ctx)
 	} else {

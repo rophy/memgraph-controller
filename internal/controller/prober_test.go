@@ -46,7 +46,7 @@ func TestNewHealthProber(t *testing.T) {
 	if prober.config.FailureThreshold != config.FailureThreshold {
 		t.Error("Config FailureThreshold not set correctly")
 	}
-	if prober.running {
+	if prober.IsRunning() {
 		t.Error("Prober should not be running initially")
 	}
 	if prober.consecutiveFailures != 0 {

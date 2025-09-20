@@ -34,7 +34,7 @@ reader = GraphDatabase.driver("bolt://memgraph-gateway-read:7687")
 - Controller updates appropriate gateway based on cluster state changes
 - Existing single-gateway functionality preserved
 **Tests**: Unit tests for dual gateway management
-**Status**: Not Started
+**Status**: Complete
 
 ### Tasks:
 1. Modify controller to create two gateway instances:
@@ -62,7 +62,7 @@ reader = GraphDatabase.driver("bolt://memgraph-gateway-read:7687")
 - Existing clients continue working unchanged
 - New read-only service available for clients
 **Tests**: Service connectivity and routing tests
-**Status**: Not Started
+**Status**: Complete
 
 ### Tasks:
 1. Update controller deployment:
@@ -80,6 +80,12 @@ reader = GraphDatabase.driver("bolt://memgraph-gateway-read:7687")
 4. Update skaffold configuration:
    - Include new service definitions
    - Update port forwarding rules
+
+**Completed Implementation**:
+- ✅ Updated deployment.yaml to expose both ports (7687, 7688) and added ENABLE_READ_GATEWAY env var
+- ✅ Created three services: memgraph-controller (HTTP), memgraph-gateway (RW), memgraph-gateway-read (RO)
+- ✅ Updated skaffold.yaml with read gateway enablement and port forwarding for both gateways
+- ✅ Added enableReadGateway configuration to values.yaml (disabled by default)
 
 ## Stage 3: Controller API and Monitoring
 **Goal**: Enhance controller API to expose gateway status and metrics

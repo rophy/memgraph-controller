@@ -132,6 +132,9 @@ controller:
         rps: 100
         burst: 200
         window: "1m"
+
+    # Read Gateway configuration (disabled by default)
+    enableReadGateway: false
     logging:
       level: "debug"
       addSource: false

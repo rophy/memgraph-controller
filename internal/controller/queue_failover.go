@@ -278,6 +278,9 @@ func (c *MemgraphController) executeFailoverInternal(ctx context.Context) error 
 
 	// Disconnect all client connections and stop accepting new ones
 	c.gatewayServer.SetUpstreamAddress("")
+	if c.readGatewayServer != nil {
+		c.readGatewayServer.SetUpstreamAddress("")
+	}
 
 	if role == "main" {
 		common.GetLogger().Warn("failover: sync replica pod is already main, skipping promotion",
@@ -305,6 +308,8 @@ func (c *MemgraphController) executeFailoverInternal(ctx context.Context) error 
 	// Set the new upstream address
 	if boltAddress, err := syncReplicaNode.GetBoltAddress(); err == nil {
 		c.gatewayServer.SetUpstreamAddress(boltAddress)
+		// Update read gateway to use a different replica if available
+		c.updateReadGatewayUpstream(ctx)
 	} else {
 		common.GetLogger().Error("Failed to get bolt address for new main node", "error", err)
 	}

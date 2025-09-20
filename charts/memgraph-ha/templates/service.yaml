@@ -1,3 +1,5 @@
+---
+# Controller service (HTTP API only)
 apiVersion: v1
 kind: Service
 metadata:
@@ -16,9 +18,47 @@ spec:
     targetPort: http
     protocol: TCP
     name: http
+  selector:
+    app: {{ .Values.controller.labels.app }}
+
+---
+# Read/Write Gateway service
+apiVersion: v1
+kind: Service
+metadata:
+  name: memgraph-gateway
+  namespace: {{ .Values.controller.namespace }}
+  labels:
+    {{- toYaml .Values.controller.labels | nindent 4 }}
+    service-type: gateway
+spec:
+  type: {{ .Values.controller.service.type }}
+  ports:
   - port: {{ .Values.controller.service.boltPort }}
     targetPort: gateway
     protocol: TCP
     name: bolt
   selector:
     app: {{ .Values.controller.labels.app }}
+
+{{- if .Values.controller.env.enableReadGateway }}
+---
+# Read-Only Gateway service
+apiVersion: v1
+kind: Service
+metadata:
+  name: memgraph-gateway-read
+  namespace: {{ .Values.controller.namespace }}
+  labels:
+    {{- toYaml .Values.controller.labels | nindent 4 }}
+    service-type: gateway-read
+spec:
+  type: {{ .Values.controller.service.type }}
+  ports:
+  - port: {{ .Values.controller.service.boltPort }}
+    targetPort: gateway-read
+    protocol: TCP
+    name: bolt
+  selector:
+    app: {{ .Values.controller.labels.app }}
+{{- end }}

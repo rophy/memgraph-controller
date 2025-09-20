@@ -75,6 +75,9 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 			if targetMainNode, err := c.getTargetMainNode(ctx); err == nil {
 				if boltAddress, err := targetMainNode.GetBoltAddress(); err == nil {
 					c.gatewayServer.SetUpstreamAddress(boltAddress)
+
+					// Update read-only gateway if enabled
+					c.updateReadGatewayUpstream(ctx)
 				} else {
 					common.GetLogger().Error("Failed to get bolt address for main node", "error", err)
 				}
@@ -170,13 +173,16 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		return nil // Retry on next tick
 	}
 
-	// SetUpstreamAddress() reconiles on changes, just pass latest address.
+	// SetUpstreamAddress() reconciles on changes, just pass latest address.
 	mainBoltAddress, err := targetMainNode.GetBoltAddress()
 	if err != nil {
 		logger.Info("Failed to get bolt address for target main node", "error", err)
 		return err
 	}
 	c.gatewayServer.SetUpstreamAddress(mainBoltAddress)
+
+	// Update read-only gateway if enabled
+	c.updateReadGatewayUpstream(ctx)
 
 	// Run SHOW REPLICA to TargetMainPod
 	targetMainNode.ClearCachedInfo()

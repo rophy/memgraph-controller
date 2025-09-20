@@ -35,5 +35,5 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # Entry point for the application
 ENTRYPOINT ["python", "/app/client.py"]
 
-# Default command for e2e tests - write to controller
-CMD ["write", "bolt://memgraph-controller:7687"]
+# Default command for e2e tests - write to gateway
+CMD ["write", "bolt://memgraph-gateway:7687"]

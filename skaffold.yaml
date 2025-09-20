@@ -30,6 +30,7 @@ deploy:
       wait: false
       setValues:
         controller.env.enableAdminAPI: "true"
+        controller.env.enableReadGateway: "true"
     - name: test-client
       chartPath: tests/client/charts/test-client
       namespace: memgraph

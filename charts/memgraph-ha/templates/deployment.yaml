@@ -95,12 +95,18 @@ spec:
         # Admin API configuration (for testing/development)
         - name: ENABLE_ADMIN_API
           value: {{ .Values.controller.env.enableAdminAPI | default "false" | quote }}
+        # Read gateway configuration
+        - name: ENABLE_READ_GATEWAY
+          value: {{ .Values.controller.env.enableReadGateway | default "false" | quote }}
         ports:
         - name: http
           containerPort: 8080
           protocol: TCP
         - name: gateway
           containerPort: 7687
+          protocol: TCP
+        - name: gateway-read
+          containerPort: 7688
           protocol: TCP
         livenessProbe:
           {{- toYaml .Values.controller.livenessProbe | nindent 10 }}

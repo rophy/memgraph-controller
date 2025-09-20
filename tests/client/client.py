@@ -418,15 +418,17 @@ def print_usage():
 Usage: client.py [command] [args...]
 
 Commands:
-  (no command)                              - Default: write to bolt://memgraph-controller:7687
+  (no command)                              - Default: write to bolt://memgraph-gateway:7687
   idle                                      - Sleep forever (useful for sandbox)
   write <bolt_address>                     - Continuous write mode to specified address
   query <bolt_address> <cypher_query>      - Execute a single query
   logs <websocket_address> <output_file>   - Collect WebSocket logs to file
 
 Examples:
-  python client.py                                              # Default write mode
+  python client.py                                              # Default write mode (RW gateway)
   python client.py idle                                         # Idle mode
+  python client.py write bolt://memgraph-gateway:7687          # Write to RW gateway
+  python client.py write bolt://memgraph-gateway-read:7687     # Read from RO gateway
   python client.py write bolt://memgraph-ha-0:7687             # Write to specific pod
   python client.py query bolt://memgraph-ha-0:7687 "SHOW REPLICATION ROLE"
   python client.py logs ws://10.244.0.5:7444 /tmp/logs.jsonl   # Collect logs
@@ -442,9 +444,10 @@ async def main():
     """Main entry point"""
     args = sys.argv[1:]
 
-    # Default behavior: write to memgraph-controller:7687
+    # Default behavior: show help and exit.
     if not args:
-        return await run_write_mode("bolt://memgraph-controller:7687")
+        print_usage()
+        return 0
 
     command = args[0]
 

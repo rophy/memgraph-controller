@@ -26,7 +26,8 @@ type MemgraphController struct {
 	config           *common.Config
 	memgraphClient   *MemgraphClient    // Singleton instance - all components use this
 	httpServer       *httpapi.HTTPServer
-	gatewayServer    *gateway.Server
+	gatewayServer    *gateway.Server     // Read/write gateway (port 7687)
+	readGatewayServer *gateway.Server    // Read-only gateway (port 7688)
 
 	// Leader election
 	leaderElection  *LeaderElection
@@ -87,11 +88,19 @@ func NewMemgraphController(clientset kubernetes.Interface, config *common.Config
 	// Initialize HTTP server
 	controller.httpServer = httpapi.NewHTTPServer(controller, config)
 
-	// Initialize gateway server (always enabled)
+	// Initialize read/write gateway server (port 7687)
 	gatewayConfig := gateway.LoadGatewayConfig()
 	gatewayConfig.BindAddress = config.GatewayBindAddress
-
 	controller.gatewayServer = gateway.NewServer(gatewayConfig)
+
+	// Initialize read-only gateway server (port 7688)
+	// Check if read-only gateway is enabled via environment variable
+	if os.Getenv("ENABLE_READ_GATEWAY") == "true" {
+		readGatewayConfig := gateway.LoadGatewayConfig()
+		// Change port to 7688 for read-only traffic
+		readGatewayConfig.BindAddress = "0.0.0.0:7688"
+		controller.readGatewayServer = gateway.NewServer(readGatewayConfig)
+	}
 
 	// Initialize leader election
 	controller.leaderElection = NewLeaderElection(clientset, config)
@@ -525,15 +534,124 @@ func (c *MemgraphController) StopInformers() {
 	}
 }
 
-// StartGatewayServer starts the gateway server
+// StartGatewayServer starts the gateway servers (both read/write and read-only if enabled)
 func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
-	return c.gatewayServer.Start(ctx)
+	// Start read/write gateway
+	if err := c.gatewayServer.Start(ctx); err != nil {
+		return fmt.Errorf("failed to start read/write gateway: %w", err)
+	}
+
+	// Start read-only gateway if enabled
+	if c.readGatewayServer != nil {
+		if err := c.readGatewayServer.Start(ctx); err != nil {
+			return fmt.Errorf("failed to start read-only gateway: %w", err)
+		}
+		common.GetLogger().Info("Read-only gateway server started on port 7688")
+	}
+
+	return nil
 }
 
 // StopGatewayServer stops the gateway server (no-op - process termination handles cleanup)
 func (c *MemgraphController) StopGatewayServer(ctx context.Context) error {
 	common.GetLogger().Info("Gateway: No explicit shutdown needed - process termination handles cleanup")
 	return nil
+}
+
+// selectBestReplica selects the best available replica for read traffic
+func (c *MemgraphController) selectBestReplica(ctx context.Context) (*MemgraphNode, error) {
+	// Get all pods in the StatefulSet
+	pods, err := c.clientset.CoreV1().Pods(c.config.Namespace).List(ctx, metav1.ListOptions{
+		LabelSelector: fmt.Sprintf("app=%s", c.config.StatefulSetName),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to list pods: %w", err)
+	}
+
+	// Filter healthy replica pods (not main)
+	var replicas []*MemgraphNode
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get target main index: %w", err)
+	}
+	targetMainPodName := fmt.Sprintf("%s-%d", c.config.StatefulSetName, targetMainIndex)
+
+	for _, pod := range pods.Items {
+		// Skip if this is the main pod
+		if pod.Name == targetMainPodName {
+			continue
+		}
+
+		// Check if pod is ready
+		if !isPodReady(&pod) {
+			continue
+		}
+
+		// Create MemgraphNode for this replica
+		podCopy := pod // Create a copy to get pointer
+		node := NewMemgraphNode(&podCopy, c.memgraphClient)
+
+		// Check if it's actually a replica
+		role, err := node.GetReplicationRole(ctx)
+		if err != nil || role != "replica" {
+			continue
+		}
+
+		replicas = append(replicas, node)
+	}
+
+	// Select the best replica (for now, just pick the first healthy one)
+	// TODO: In future, could implement round-robin or least-connections
+	if len(replicas) > 0 {
+		return replicas[0], nil
+	}
+
+	return nil, fmt.Errorf("no healthy replicas available")
+}
+
+// updateReadGatewayUpstream updates the read-only gateway's upstream address
+func (c *MemgraphController) updateReadGatewayUpstream(ctx context.Context) {
+	// Skip if read gateway is not enabled
+	if c.readGatewayServer == nil {
+		return
+	}
+
+	// Try to find a healthy replica
+	replica, err := c.selectBestReplica(ctx)
+	if err != nil {
+		// Fall back to main if no replicas available
+		common.GetLogger().Warn("No healthy replicas available for read gateway, falling back to main", "error", err)
+
+		// Use main pod as fallback
+		targetMainNode, err := c.getTargetMainNode(ctx)
+		if err != nil {
+			common.GetLogger().Error("Failed to get main node for read gateway fallback", "error", err)
+			c.readGatewayServer.SetUpstreamAddress("")
+			return
+		}
+
+		boltAddress, err := targetMainNode.GetBoltAddress()
+		if err != nil {
+			common.GetLogger().Error("Failed to get bolt address for main node", "error", err)
+			c.readGatewayServer.SetUpstreamAddress("")
+			return
+		}
+
+		c.readGatewayServer.SetUpstreamAddress(boltAddress)
+		common.GetLogger().Info("Read gateway using main as fallback", "address", boltAddress)
+		return
+	}
+
+	// Set replica address for read gateway
+	boltAddress, err := replica.GetBoltAddress()
+	if err != nil {
+		common.GetLogger().Error("Failed to get bolt address for replica", "error", err)
+		c.readGatewayServer.SetUpstreamAddress("")
+		return
+	}
+
+	c.readGatewayServer.SetUpstreamAddress(boltAddress)
+	common.GetLogger().Info("Read gateway updated with replica", "replica", replica.GetName(), "address", boltAddress)
 }
 
 // RunLeaderElection runs the leader election process
@@ -579,9 +697,12 @@ func (c *MemgraphController) SetPrometheusMetrics(m *metrics.Metrics) {
 	defer c.mu.Unlock()
 	c.promMetrics = m
 	
-	// Also set metrics on the gateway server if it exists
+	// Also set metrics on the gateway servers if they exist
 	if c.gatewayServer != nil {
 		c.gatewayServer.SetPrometheusMetrics(m)
+	}
+	if c.readGatewayServer != nil {
+		c.readGatewayServer.SetPrometheusMetrics(m)
 	}
 }
 
@@ -672,11 +793,16 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 		common.GetLogger().Warn("Admin API: No MemgraphClient connection pool to reset")
 	}
 
-	// Reset gateway connections
+	// Reset gateway connections (both read/write and read-only)
 	if c.gatewayServer != nil {
 		c.gatewayServer.DisconnectAll()
-		common.GetLogger().Info("Admin API: Reset gateway connections")
-	} else {
+		common.GetLogger().Info("Admin API: Reset read/write gateway connections")
+	}
+	if c.readGatewayServer != nil {
+		c.readGatewayServer.DisconnectAll()
+		common.GetLogger().Info("Admin API: Reset read-only gateway connections")
+	}
+	if c.gatewayServer == nil && c.readGatewayServer == nil {
 		common.GetLogger().Warn("Admin API: No gateway server to reset")
 	}
 

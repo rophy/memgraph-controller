@@ -576,7 +576,7 @@ def wait_for_cluster_convergence(timeout: int = 60) -> bool:
           sync_mode = replica.get('sync_mode', '').strip('"')
           data_info = replica.get('data_info', '')
 
-          if sync_mode == 'sync':
+          if sync_mode in ['sync', 'strict_sync']:
             sync_count += 1
             # Check if replica status is "ready" in data_info
             if 'ready' in data_info:

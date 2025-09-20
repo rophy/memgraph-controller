@@ -36,7 +36,7 @@ def test_cluster_topology(cluster_ready):
   # Verify replica topology by querying main pod directly
   replicas_result = memgraph_query_direct(main_pod, "SHOW REPLICAS;")
   sync_count = len([r for r in replicas_result
-                   if r['sync_mode'].strip('"') == 'sync'])
+                   if r['sync_mode'].strip('"') in ['sync', 'strict_sync']])
   async_count = len([r for r in replicas_result
                     if r['sync_mode'].strip('"') == 'async'])
 
@@ -45,7 +45,7 @@ def test_cluster_topology(cluster_ready):
 
   # Log topology details for debugging
   sync_replica = next(
-      (r for r in replicas_result if r['sync_mode'].strip('"') == 'sync'), None)
+      (r for r in replicas_result if r['sync_mode'].strip('"') in ['sync', 'strict_sync']), None)
   async_replica = next(
       (r for r in replicas_result if r['sync_mode'].strip('"') == 'async'), None)
 

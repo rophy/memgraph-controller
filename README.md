@@ -34,10 +34,13 @@ kubectl get pods -n memgraph
 kubectl logs -l app=memgraph-controller -n memgraph
 ```
 
-3. **Connect via Gateway:**
+3. **Connect via Gateways:**
 ```bash
-# Gateway provides transparent access to current MAIN
-kubectl port-forward svc/memgraph-controller 7687:7687 -n memgraph
+# Read/Write Gateway - routes to current MAIN
+kubectl port-forward svc/memgraph-gateway 7687:7687 -n memgraph
+
+# Read-Only Gateway - routes to replicas (optional)
+kubectl port-forward svc/memgraph-gateway-read 7688:7687 -n memgraph
 ```
 
 ### Configuration
@@ -47,31 +50,48 @@ Key environment variables for the controller:
 ```bash
 # Gateway settings
 GATEWAY_ENABLED=true
-GATEWAY_BIND_ADDRESS=0.0.0.0:7687
+ENABLE_READ_GATEWAY=true                  # Enable read-only gateway
+GATEWAY_BIND_ADDRESS=0.0.0.0:7687         # RW Gateway
 GATEWAY_MAX_CONNECTIONS=1000
 
-# Controller settings  
+# Controller settings
 RECONCILE_INTERVAL=30s
 LOG_LEVEL=info
 ```
 
 ## Architecture
 
-The controller implements a **MAIN-SYNC-ASYNC** replication topology:
+The controller implements a **MAIN-SYNC-ASYNC** replication topology, with gateway for routing traffic to main (readwrite) and replica (read-only).
 
 ```mermaid
-graph TD
-    Clients[Clients] -->|Bolt 7687| Gateway[Controller Gateway]
-    Gateway -->|Proxy to Current MAIN| Pod0
-    
-    subgraph Cluster[Memgraph StatefulSet]
-        Pod0[Pod-0 MAIN]
-        Pod1[Pod-1 SYNC Replica]
-        Pod2[Pod-2 ASYNC Replica]
+graph  LR
+  write-client([read-clients]) -->|bolt://gateway:7687| service
+  read-client([write-clients])  -->|bolt://gateway-read:7687| service-rw
+  subgraph Namespace
+    service[Service <br> gateway] -->|:7687| controller
+    service-rw[Service <br> gateway-read] -->|:7688| controller
+    controller[Deployment <br> controller-gateway] --> main
+    controller --> async-replica
+    subgraph Statefulset memgraph
+        main[Role: Main] -.-> sync-replica
+        main -.-> async-replica
+        sync-replica[Role: Sync Replica]
+        async-replica[Role: Async Replica]
     end
-    
-    Pod0 -->|SYNC| Pod1
-    Pod0 -->|ASYNC| Pod2
+  end
+
+  linkStyle default stroke-width:2px
+  linkStyle 0 stroke:red
+  linkStyle 1 stroke:red
+  linkStyle 2 stroke:red
+  linkStyle 3 stroke:green
+  linkStyle 4 stroke:red
+  linkStyle 5 stroke:green
+
+  classDef k8s fill:#326ce5,stroke:#fff,stroke-width:4px,color:#fff;
+  classDef cluster fill:#fff,stroke:#bbb,stroke-width:2px,color:#326ce5;
+  class service,service-rw,controller k8s;
+  class namespace cluster
 ```
 
 **Key Benefits:**
@@ -82,19 +102,32 @@ graph TD
 
 ## Gateway Integration
 
-The controller includes an embedded TCP gateway that provides transparent failover for client connections:
+The controller includes **two embedded TCP gateways** that provide transparent failover and read scaling for client connections:
+
+### Dual Gateway Architecture
+
+**Read/Write Gateway (Port 7687)**
+- Always routes to the current MAIN pod
+- Ensures strong consistency for all writes
+
+**Read-Only Gateway (Port 7688)**
+- Always routes to the healthy ASYNC replica
+- Fall back to SYNC replica in case ASYNC replica not ready
+- Internal controller port: 7688, External service port: 7687 (for consistency)
 
 ### Features
-- **Transparent Proxying**: Raw TCP proxy to current MAIN (no protocol interpretation)
-- **Automatic Failover**: Terminates all connections on MAIN change, clients reconnect to new MAIN
+- **Transparent Proxying**: Raw TCP proxy with no protocol interpretation
+- **Automatic Failover**: Connection termination and re-routing on topology changes
 - **Connection Tracking**: Full session lifecycle management with metrics
-- **Health Monitoring**: MAIN connectivity validation and error rate tracking
+- **Health Monitoring**: Continuous connectivity validation and error rate tracking
 
 ### Configuration
 ```bash
-# Enable gateway functionality
+# Enable dual gateway functionality
 GATEWAY_ENABLED=true
-GATEWAY_BIND_ADDRESS=0.0.0.0:7687
+ENABLE_READ_GATEWAY=true
+GATEWAY_BIND_ADDRESS=0.0.0.0:7687        # RW Gateway
+GATEWAY_READ_BIND_ADDRESS=0.0.0.0:7688    # Read Gateway (internal)
 GATEWAY_MAX_CONNECTIONS=1000
 GATEWAY_TIMEOUT=30s
 ```

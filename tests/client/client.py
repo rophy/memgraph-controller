@@ -11,9 +11,8 @@ import json
 import signal
 import asyncio
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 import statistics
-from urllib.parse import urlparse
 
 from neo4j import GraphDatabase
 import logging
@@ -183,6 +182,52 @@ class Neo4jClient:
             })
             return False
 
+    def read_data(self) -> bool:
+        """Read test data from the database"""
+        start_time = time.time()
+
+        try:
+            query = """
+                MATCH (n:ClientData)
+                RETURN count(n) as total_count,
+                       min(n.created_at) as oldest_timestamp,
+                       max(n.created_at) as newest_timestamp
+            """
+
+            with self.driver.session() as session:
+                result = session.run(query)
+                records = list(result)
+
+                # Extract result data for logging
+                if records:
+                    record = records[0]
+                    total_count = record["total_count"]
+                else:
+                    total_count = 0
+
+            latency = (time.time() - start_time) * 1000  # Convert to milliseconds
+            self.metrics.record_success(latency)
+
+            logger.info("Read success", extra={
+                "total": self.metrics.total_count,
+                "success": self.metrics.success_count,
+                "errors": self.metrics.error_count,
+                "latency_ms": int(latency),
+                "total_count": total_count
+            })
+
+            return True
+
+        except Exception as error:
+            self.metrics.record_error()
+            logger.error("Read failed", extra={
+                "total": self.metrics.total_count,
+                "success": self.metrics.success_count,
+                "errors": self.metrics.error_count,
+                "error": str(error)
+            })
+            return False
+
     def execute_query(self, query: str) -> list:
         """Execute a single query and return results"""
         try:
@@ -215,6 +260,25 @@ class Neo4jClient:
         while self.running:
             if not self.paused:
                 self.write_data()
+            else:
+                logger.info("Client paused - waiting for resume signal")
+
+            await asyncio.sleep(self.write_interval)
+
+    async def start_read_loop(self):
+        """Start the continuous read loop"""
+        connected = self.verify_connection()
+        if not connected:
+            logger.error("Cannot start without connection. Retrying in 5 seconds...")
+            await asyncio.sleep(5)
+            return await self.start_read_loop()
+
+        self.running = True
+        logger.info("Starting read loop", extra={"interval_ms": int(self.write_interval * 1000)})
+
+        while self.running:
+            if not self.paused:
+                self.read_data()
             else:
                 logger.info("Client paused - waiting for resume signal")
 
@@ -284,7 +348,7 @@ class LogCollector:
                             try:
                                 # Parse the WebSocket message
                                 data = json.loads(message)
-                                
+
                                 # Add timestamp and save as JSONL
                                 log_entry = {
                                     "timestamp": datetime.now().astimezone().isoformat(),
@@ -292,7 +356,7 @@ class LogCollector:
                                     "message": data.get("message", ""),
                                     "raw": data
                                 }
-                                
+
                                 f.write(json.dumps(log_entry) + '\n')
                                 f.flush()  # Ensure immediate write
 
@@ -373,13 +437,47 @@ async def run_write_mode(bolt_address: str):
         client.stop()
 
 
+async def run_read_mode(bolt_address: str):
+    """Run continuous read mode"""
+    username = os.getenv('NEO4J_USERNAME', 'memgraph')
+    password = os.getenv('NEO4J_PASSWORD', '')
+
+    logger.info("Starting read mode", extra={"bolt_address": bolt_address})
+    client = Neo4jClient(bolt_address, username, password)
+
+    # Setup signal handlers
+    def shutdown_handler(signum, frame):
+        logger.info(f"Received signal {signum}, shutting down gracefully...")
+        client.stop()
+        sys.exit(0)
+
+    def pause_handler(signum, frame):
+        logger.info(f"Received signal {signum}, pausing client...")
+        client.pause()
+
+    def resume_handler(signum, frame):
+        logger.info(f"Received signal {signum}, resuming client...")
+        client.resume()
+
+    signal.signal(signal.SIGTERM, shutdown_handler)
+    signal.signal(signal.SIGINT, shutdown_handler)
+    signal.signal(signal.SIGUSR1, pause_handler)
+    signal.signal(signal.SIGUSR2, resume_handler)
+
+    try:
+        await client.start_read_loop()
+    except KeyboardInterrupt:
+        logger.info("Received interrupt, shutting down...")
+        client.stop()
+
+
 async def run_query(bolt_address: str, cypher_query: str):
     """Execute a single query"""
     username = os.getenv('NEO4J_USERNAME', 'memgraph')
     password = os.getenv('NEO4J_PASSWORD', '')
 
     logger.info("Executing query", extra={"bolt_address": bolt_address, "query": cypher_query})
-    
+
     client = Neo4jClient(bolt_address, username, password)
     try:
         results = client.execute_query(cypher_query)
@@ -421,6 +519,7 @@ Commands:
   (no command)                              - Default: write to bolt://memgraph-gateway:7687
   idle                                      - Sleep forever (useful for sandbox)
   write <bolt_address>                     - Continuous write mode to specified address
+  read <bolt_address>                      - Continuous read mode to specified address
   query <bolt_address> <cypher_query>      - Execute a single query
   logs <websocket_address> <output_file>   - Collect WebSocket logs to file
 
@@ -428,8 +527,9 @@ Examples:
   python client.py                                              # Default write mode (RW gateway)
   python client.py idle                                         # Idle mode
   python client.py write bolt://memgraph-gateway:7687          # Write to RW gateway
-  python client.py write bolt://memgraph-gateway-read:7687     # Read from RO gateway
+  python client.py read bolt://memgraph-gateway-read:7688      # Read from RO gateway
   python client.py write bolt://memgraph-ha-0:7687             # Write to specific pod
+  python client.py read bolt://memgraph-ha-1:7687              # Read from specific replica
   python client.py query bolt://memgraph-ha-0:7687 "SHOW REPLICATION ROLE"
   python client.py logs ws://10.244.0.5:7444 /tmp/logs.jsonl   # Collect logs
 
@@ -465,6 +565,14 @@ async def main():
             return 1
         bolt_address = args[1]
         return await run_write_mode(bolt_address)
+
+    elif command == "read":
+        if len(args) < 2:
+            print("Error: read command requires bolt_address", file=sys.stderr)
+            print("Usage: client.py read <bolt_address>", file=sys.stderr)
+            return 1
+        bolt_address = args[1]
+        return await run_read_mode(bolt_address)
 
     elif command == "query":
         if len(args) < 3:

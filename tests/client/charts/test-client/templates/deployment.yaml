@@ -1,4 +1,4 @@
-{{- if .Values.enabled }}
+{{- if .Values.testClient.enabled }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -9,7 +9,7 @@ metadata:
   labels:
     app: test-client
 spec:
-  replicas: {{ .Values.replicaCount }}
+  replicas: {{ .Values.testClient.replicaCount }}
   selector:
     matchLabels:
       app: test-client
@@ -22,11 +22,68 @@ spec:
       - name: test-client
         image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
         imagePullPolicy: {{ .Values.image.pullPolicy }}
-        {{- if .Values.command }}
-        command: {{ .Values.command | toJson }}
+        {{- if .Values.testClient.command }}
+        command: {{ .Values.testClient.command | toJson }}
         {{- end }}
-        {{- if .Values.args }}
-        args: {{ .Values.args | toJson }}
+        {{- if .Values.testClient.args }}
+        args: {{ .Values.testClient.args | toJson }}
+        {{- end }}
+        env:
+        - name: NEO4J_USERNAME
+          value: {{ .Values.env.NEO4J_USERNAME | quote }}
+        - name: NEO4J_PASSWORD
+          value: {{ .Values.env.NEO4J_PASSWORD | quote }}
+        - name: WRITE_INTERVAL
+          value: {{ .Values.env.WRITE_INTERVAL | quote }}
+        resources:
+{{ toYaml .Values.resources | indent 10 }}
+        livenessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "exit(0)"
+          initialDelaySeconds: 10
+          periodSeconds: 30
+        readinessProbe:
+          exec:
+            command:
+            - python
+            - -c
+            - "exit(0)"
+          initialDelaySeconds: 5
+          periodSeconds: 10
+{{- end }}
+---
+{{- if .Values.readClient.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: read-client
+  {{- with .Values.namespace }}
+  namespace: {{ . }}
+  {{- end }}
+  labels:
+    app: read-client
+spec:
+  replicas: {{ .Values.readClient.replicaCount }}
+  selector:
+    matchLabels:
+      app: read-client
+  template:
+    metadata:
+      labels:
+        app: read-client
+    spec:
+      containers:
+      - name: read-client
+        image: {{ .Values.image.repository }}:{{ .Values.image.tag }}
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        {{- if .Values.readClient.command }}
+        command: {{ .Values.readClient.command | toJson }}
+        {{- end }}
+        {{- if .Values.readClient.args }}
+        args: {{ .Values.readClient.args | toJson }}
         {{- end }}
         env:
         - name: NEO4J_USERNAME

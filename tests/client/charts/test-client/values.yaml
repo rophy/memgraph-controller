@@ -1,29 +1,20 @@
 # Default values for test-client
 # Supports both main deployment (with controller) and sandbox mode
 
-# Basic configuration
-replicaCount: 1
-enabled: true
-
 # Container configuration
 image:
   repository: test-client
   tag: latest
   pullPolicy: IfNotPresent
 
-# Custom command and args support (for sandbox flexibility)
-# Leave empty for default behavior
-command: []  # e.g., ["python", "/app/client.py"]
-args: []     # e.g., ["idle"] or ["write", "bolt://memgraph-ha-0:7687"]
-
-# Environment variables
+# Environment variables (shared by both clients)
 env:
   # Neo4j/Memgraph connection settings
   NEO4J_USERNAME: "memgraph"
   NEO4J_PASSWORD: ""
   WRITE_INTERVAL: "1000"  # Write interval in milliseconds
 
-# Resource limits
+# Resource limits (shared by both clients)
 resources:
   requests:
     memory: "128Mi"
@@ -31,6 +22,22 @@ resources:
   limits:
     memory: "256Mi"
     cpu: "200m"
+
+# Test client configuration (write mode to RW gateway)
+testClient:
+  enabled: true
+  replicaCount: 1
+  # Custom command and args support (for sandbox flexibility)
+  # Leave empty for default behavior
+  command: ["python", "/app/client.py"]
+  args: ["write", "bolt://memgraph-gateway:7687"]
+
+# Read client configuration (read mode to RO gateway)
+readClient:
+  enabled: true
+  replicaCount: 1
+  command: ["python", "/app/client.py"]
+  args: ["read", "bolt://memgraph-gateway-read:7687"]
 
 # Namespace (optional)
 namespace: memgraph

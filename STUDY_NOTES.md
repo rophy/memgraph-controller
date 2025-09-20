@@ -4,7 +4,7 @@ Pure Memgraph Community Edition specifications and command reference.
 
 ## Version
 
-- **Memgraph Community Edition**: 3.4.0
+- **Memgraph Community Edition**: 3.5.1 (previously tested with 3.4.0)
 
 ## Command Execution
 
@@ -74,6 +74,11 @@ REGISTER REPLICA <replica_name> SYNC TO "<replica_ip>:10000"
 REGISTER REPLICA <replica_name> ASYNC TO "<replica_ip>:10000"
 ```
 
+**Register STRICT_SYNC replica** (available in 3.5.1+, highest consistency - blocks MAIN until ALL STRICT_SYNC replicas confirm):
+```mgcommand
+REGISTER REPLICA <replica_name> STRICT_SYNC TO "<replica_ip>:10000"
+```
+
 **Port specification:**
 - If port is omitted, it defaults to 10000
 - `REGISTER REPLICA replica1 SYNC TO "192.168.1.100"` is equivalent to `REGISTER REPLICA replica1 SYNC TO "192.168.1.100:10000"`
@@ -109,8 +114,16 @@ The `data_info` field from `SHOW REPLICAS` provides replication health metrics i
 "{memgraph: {behind: 0, status: \"ready\", ts: 2}}"
 ```
 - `behind: 0` = replica is caught up with MAIN
-- `status: "ready"` = replica is functioning normally  
+- `status: "ready"` = replica is fully synchronized and idle
 - `ts: 2` = timestamp/sequence number
+
+**Active ASYNC Replica:**
+```yaml
+"{memgraph: {behind: 0, status: \"replicating\", ts: 4}}"
+```
+- `behind: 0` = replica is caught up with MAIN
+- `status: "replicating"` = replica is actively receiving/processing changes
+- Both "ready" and "replicating" indicate functional replication
 
 **Unhealthy ASYNC Replica:**
 ```yaml
@@ -119,6 +132,14 @@ The `data_info` field from `SHOW REPLICAS` provides replication health metrics i
 - `behind: -20` = negative value indicates replication error
 - `status: "invalid"` = replica has failed/broken replication
 - `ts: 0` = timestamp reset to zero
+
+**Invalid STRICT_SYNC Replica:**
+```yaml
+"{memgraph: {behind: 0, status: \"invalid\", ts: 4}}"
+```
+- `status: "invalid"` = replica is unreachable or has conflicting role
+- Once STRICT_SYNC replica becomes invalid, manual re-registration is required
+- MAIN cannot commit writes until STRICT_SYNC replica is restored
 
 **Failed SYNC Replica:**
 ```yaml
@@ -136,6 +157,25 @@ The `data_info` field from `SHOW REPLICAS` provides replication health metrics i
 - Empty `{}` values indicate replication failure
 - Different replica types (SYNC vs ASYNC) may have different data_info formats
 
+## STRICT_SYNC Mode Behavior (3.5.1+)
+
+### Write Blocking Behavior
+- When STRICT_SYNC replica is unavailable/invalid, MAIN **completely blocks write operations**
+- Error message: `At least one STRICT_SYNC replica has not confirmed committing last transaction. Transaction will be aborted on all instances.`
+- Read operations continue to work normally
+- Prevents split-brain scenarios during failover situations
+
+### Recovery Requirements
+- Once a STRICT_SYNC replica becomes "invalid" (due to role change, disconnection, etc.), it does NOT automatically recover
+- Manual intervention required: `DROP REPLICA` followed by `REGISTER REPLICA` with STRICT_SYNC mode
+- Controller must handle re-registration after any role changes to restore write capability
+
+### Split-Brain Prevention
+STRICT_SYNC mode prevents the dual-main issue during rolling restart:
+1. If pod-0 (old main) returns after failover and thinks it's still main
+2. It cannot write data because pod-1 (now the actual main) is no longer its STRICT_SYNC replica
+3. This prevents data divergence that would occur with regular SYNC mode
+
 ---
 
-*Pure Memgraph Community Edition 3.4.0 specifications*
+*Pure Memgraph Community Edition 3.5.1 specifications*

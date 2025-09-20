@@ -95,6 +95,16 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	}
 }
 
+// shouldSkipForFailover checks if the reconciliation should be skipped due to failover check needed
+func (c *MemgraphController) shouldSkipForFailover(ctx context.Context) bool {
+	logger := common.GetLoggerFromContext(ctx)
+	if c.failoverCheckNeeded.Load() {
+		logger.Info("Failover check needed, skipping reconciliation")
+		return true
+	}
+	return false
+}
+
 func (c *MemgraphController) performReconciliationActions(ctx context.Context) error {
 	logger := common.GetLoggerFromContext(ctx)
 	start := time.Now()
@@ -144,6 +154,9 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 
 	logger.Info("performReconciliationActions started")
 
+	if c.shouldSkipForFailover(ctx) {
+		return nil // Retry on next tick
+	}
 	// List all memgraph pods with kubernetes status
 	err = c.cluster.Refresh(ctx)
 	if err != nil {
@@ -207,9 +220,13 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	if targetSyncReplicaNode != nil {
 		targetSyncReplicaName = targetSyncReplicaNode.GetReplicaName()
 	}
-
 	// Iterate through replicaMap and check for issues that require dropping replicas
 	for replicaName, replicaInfo := range replicaMap {
+
+		if c.shouldSkipForFailover(ctx) {
+			return nil // Retry on next tick
+		}
+
 		ipAddress := strings.Split(replicaInfo.SocketAddress, ":")[0]
 		podName := replicaInfo.GetPodName()
 		pod, err := c.getPodFromCache(podName)
@@ -291,6 +308,10 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	for podName, node := range c.cluster.MemgraphNodes {
 		if podName == targetMainNode.GetName() {
 			continue // Skip main node
+		}
+
+		if c.shouldSkipForFailover(ctx) {
+			return nil // Retry on next tick
 		}
 
 		pod, err := c.getPodFromCache(podName)

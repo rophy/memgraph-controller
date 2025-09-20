@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	v1 "k8s.io/api/core/v1"
@@ -38,8 +39,9 @@ type MemgraphController struct {
 	targetMutex     sync.RWMutex
 
 	// Event-driven reconciliation
-	reconcileQueue     *ReconcileQueue
-	failoverCheckQueue *FailoverCheckQueue
+	reconcileQueue      *ReconcileQueue
+	failoverCheckQueue  *FailoverCheckQueue
+	failoverCheckNeeded atomic.Bool
 
 	// Shared mutex for reconciliation and failover operations
 	// This prevents race conditions between these operations
@@ -77,11 +79,14 @@ func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, 
 	memgraphClient := NewMemgraphClient(config)
 
 	controller := &MemgraphController{
-		ctx:            ctx,
-		clientset:      clientset,
-		config:         config,
-		memgraphClient: memgraphClient, // Singleton instance
+		ctx:                 ctx,
+		clientset:           clientset,
+		config:              config,
+		memgraphClient:      memgraphClient, // Singleton instance
+		failoverCheckNeeded: atomic.Bool{},
 	}
+
+	controller.failoverCheckNeeded.Store(false)
 
 	// Initialize HTTP server
 	controller.httpServer = httpapi.NewHTTPServer(controller, config)

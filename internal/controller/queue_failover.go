@@ -95,16 +95,21 @@ func (c *MemgraphController) handleFailoverCheckEvent(ctx context.Context, event
 	// Process the failover check
 	logger.Info("processing failover check event", "reason", event.Reason)
 
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
 	// Pass the event through context
 	timeoutCtx = context.WithValue(timeoutCtx, failoverCheckEventKey, event)
 
+	// Set the failover check needed flag.
+	// reconciliation will try best to check this flag and stop early.
+	c.failoverCheckNeeded.Store(true)
+
 	// Acquire shared mutex before performing failover check
 	// This prevents race conditions with reconciliation
 	c.operationMu.Lock()
 	err := c.performFailoverCheck(timeoutCtx)
+	c.failoverCheckNeeded.Store(false)
 	c.operationMu.Unlock()
 	if err != nil {
 		logger.Warn("failed failover check", "reason", event.Reason, "error", err)

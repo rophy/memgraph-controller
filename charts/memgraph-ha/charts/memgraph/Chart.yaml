@@ -1,5 +1,5 @@
 apiVersion: v2
-appVersion: 3.5.1
+appVersion: 3.4.0
 description: MemgraphDB Helm Chart
 home: https://memgraph.com/
 icon: https://public-assets.memgraph.com/memgraph-logo/logo-large.png
@@ -15,4 +15,4 @@ name: memgraph
 sources:
 - https://github.com/memgraph/memgraph
 type: application
-version: 0.2.7
+version: 0.2.5

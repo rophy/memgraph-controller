@@ -71,12 +71,13 @@ type MemgraphController struct {
 }
 
 func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, config *common.Config) *MemgraphController {
-	ctx, logger := common.WithAttr(ctx, "thread", "newMemgraphController")
+	logger := common.GetLoggerFromContext(ctx)
 	// Create single MemgraphClient instance with its own connection pool
 	// All components will use this singleton instance
 	memgraphClient := NewMemgraphClient(config)
 
 	controller := &MemgraphController{
+		ctx:            ctx,
 		clientset:      clientset,
 		config:         config,
 		memgraphClient: memgraphClient, // Singleton instance
@@ -326,6 +327,8 @@ func (c *MemgraphController) isPodBecomeUnhealthy(oldPod, newPod *v1.Pod) bool {
 
 	// Pod became unhealthy if it was ready before and is not ready now
 	if oldReady && !newReady {
+		// Use global logger if context logger is not available
+		logger := common.GetLogger()
 		logger.Info("Pod became unhealthy", "pod", newPod.Name, "old_ready", oldReady, "new_ready", newReady)
 		return true
 	}
@@ -357,7 +360,8 @@ func (c *MemgraphController) GetLeaderElection() httpapi.LeaderElectionInterface
 
 // TestConnection tests basic connectivity to Kubernetes API
 func (c *MemgraphController) TestConnection() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(c.ctx, 5*time.Second)
+	ctx, logger := common.NewLoggerContext(ctx)
 	defer cancel()
 
 	_, err := c.clientset.CoreV1().Pods(c.config.Namespace).List(ctx, metav1.ListOptions{
@@ -500,7 +504,7 @@ func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
 
 // StopGatewayServer stops the gateway server (no-op - process termination handles cleanup)
 func (c *MemgraphController) StopGatewayServer(ctx context.Context) error {
-	ctx, logger := common.WithAttr(ctx, "thread", "gatewayServices")
+	logger := common.GetLoggerFromContext(ctx)
 	logger.Info("Gateway: No explicit shutdown needed - process termination handles cleanup")
 	return nil
 }

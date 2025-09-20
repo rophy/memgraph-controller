@@ -612,6 +612,7 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 
 // Ping verifies target bolt address is reachable
 func (mc *MemgraphClient) Ping(ctx context.Context, boltAddress string) error {
+	logger := common.GetLoggerFromContext(ctx)
 	if boltAddress == "" {
 		return fmt.Errorf("bolt address is empty")
 	}

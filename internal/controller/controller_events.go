@@ -93,7 +93,7 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 	// Check for IP changes and update connection pool
 	if oldPod.Status.PodIP != newPod.Status.PodIP {
 		if c.memgraphClient != nil && newPod.Status.PodIP != "" {
-			c.memgraphClient.connectionPool.UpdatePodIP(newPod.Name, newPod.Status.PodIP)
+			c.memgraphClient.connectionPool.UpdatePodIP(ctx, newPod.Name, newPod.Status.PodIP)
 		}
 	}
 
@@ -136,7 +136,7 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 
 	// Invalidate connection for deleted pod through memgraph client connection pool
 	if c.memgraphClient != nil {
-		c.memgraphClient.connectionPool.InvalidatePodConnection(pod.Name)
+		c.memgraphClient.connectionPool.InvalidatePodConnection(ctx, pod.Name)
 	}
 
 	// Check if the deleted pod is the current main - trigger IMMEDIATE failover

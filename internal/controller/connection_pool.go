@@ -103,7 +103,7 @@ func (cp *ConnectionPool) removeDriver(boltAddress string) error {
 
 // UpdatePodIP tracks pod IP changes and invalidates connections when IP changes
 func (cp *ConnectionPool) UpdatePodIP(ctx context.Context, podName, newIP string) {
-	ctx, logger := common.WithAttr(ctx, "thread", "updatePodIP")
+	logger := common.GetLoggerFromContext(ctx)
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 
@@ -122,7 +122,7 @@ func (cp *ConnectionPool) UpdatePodIP(ctx context.Context, podName, newIP string
 
 // InvalidatePodConnection removes connections for a specific pod
 func (cp *ConnectionPool) InvalidatePodConnection(ctx context.Context, podName string) {
-	ctx, logger := common.WithAttr(ctx, "thread", "invalidatePodConnection")
+	logger := common.GetLoggerFromContext(ctx)
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 
@@ -142,7 +142,7 @@ func (cp *ConnectionPool) InvalidateConnection(boltAddress string) error {
 }
 
 func (cp *ConnectionPool) Close(ctx context.Context) {
-	ctx, logger := common.WithAttr(ctx, "thread", "close")
+	logger := common.GetLoggerFromContext(ctx)
 	cp.mutex.Lock()
 	defer cp.mutex.Unlock()
 
@@ -155,7 +155,7 @@ func (cp *ConnectionPool) Close(ctx context.Context) {
 }
 
 func WithRetry(ctx context.Context, operation func() error, retryConfig RetryConfig) error {
-	ctx, logger := common.WithAttr(ctx, "thread", "withRetry")
+	logger := common.GetLoggerFromContext(ctx)
 	var lastErr error
 
 	for attempt := 0; attempt <= retryConfig.MaxRetries; attempt++ {
@@ -196,7 +196,7 @@ func WithRetry(ctx context.Context, operation func() error, retryConfig RetryCon
 
 // WithRetryAndRefresh performs retry with pod IP refresh on connection failures
 func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfig RetryConfig, refreshFunc func() error) error {
-	ctx, logger := common.WithAttr(ctx, "thread", "withRetryAndRefresh")
+	logger := common.GetLoggerFromContext(ctx)
 	var lastErr error
 
 	for attempt := 0; attempt <= retryConfig.MaxRetries; attempt++ {

@@ -560,36 +560,26 @@ func (c *MemgraphController) StopGatewayServer(ctx context.Context) error {
 
 // selectBestReplica selects the best available replica for read traffic
 func (c *MemgraphController) selectBestReplica(ctx context.Context) (*MemgraphNode, error) {
-	// Get all pods in the StatefulSet
-	pods, err := c.clientset.CoreV1().Pods(c.config.Namespace).List(ctx, metav1.ListOptions{
-		LabelSelector: fmt.Sprintf("app=%s", c.config.StatefulSetName),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to list pods: %w", err)
-	}
-
-	// Filter healthy replica pods (not main)
-	var replicas []*MemgraphNode
+	// Get the target main node to exclude it
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get target main index: %w", err)
 	}
 	targetMainPodName := fmt.Sprintf("%s-%d", c.config.StatefulSetName, targetMainIndex)
 
-	for _, pod := range pods.Items {
+	// Filter healthy replica nodes from the existing cluster state
+	var replicas []*MemgraphNode
+	for podName, node := range c.cluster.MemgraphNodes {
 		// Skip if this is the main pod
-		if pod.Name == targetMainPodName {
+		if podName == targetMainPodName {
 			continue
 		}
 
-		// Check if pod is ready
-		if !isPodReady(&pod) {
+		// Check if pod is ready using cached pod info
+		pod, err := c.getPodFromCache(podName)
+		if err != nil || !isPodReady(pod) {
 			continue
 		}
-
-		// Create MemgraphNode for this replica
-		podCopy := pod // Create a copy to get pointer
-		node := NewMemgraphNode(&podCopy, c.memgraphClient)
 
 		// Check if it's actually a replica
 		role, err := node.GetReplicationRole(ctx)

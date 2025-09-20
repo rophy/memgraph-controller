@@ -311,7 +311,7 @@ def memgraph_query_via_client(query: str) -> Dict[str, Any]:
   """
   pod = get_test_client_pod()
   stdout, stderr, code = kubectl_exec(
-      pod, MEMGRAPH_NS, ["python", "client.py", "query", "bolt://memgraph-controller:7687", query])
+      pod, MEMGRAPH_NS, ["python", "client.py", "query", "bolt://memgraph-gateway:7687", query])
 
   if code != 0:
     raise MemgraphQueryError(f"Query via client failed: {stderr}")

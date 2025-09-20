@@ -42,7 +42,7 @@ Thumbs.db
 .claude/
 
 # Helm dependency charts
-charts/memgraph-ha/charts/
+# charts/memgraph-ha/charts/
 tests/memgraph-sandbox/charts/
 
 # Test outputs

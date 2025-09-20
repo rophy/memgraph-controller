@@ -13,6 +13,7 @@ maintainers:
   name: Memgraph
 name: memgraph
 sources:
-- https://github.com/memgraph/memgraph
+- https://github.com/memgraph/helm-charts
+- https://github.com/rophy/memgraph-helm-charts
 type: application
-version: 0.2.5
+version: 0.2.5+fbb63d4

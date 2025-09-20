@@ -38,7 +38,7 @@ func (m *MockController) GetClusterStatus(ctx context.Context) (*StatusResponse,
 }
 
 func (m *MockController) GetLeaderElection() LeaderElectionInterface {
-	return &MockLeaderElection{}
+	return &MockLeaderElection{isLeader: m.isLeader}
 }
 
 func (m *MockController) IsLeader() bool {
@@ -55,14 +55,20 @@ func (m *MockController) ResetAllConnections(ctx context.Context) (int, error) {
 }
 
 // MockLeaderElection implements LeaderElectionInterface for testing
-type MockLeaderElection struct{}
+type MockLeaderElection struct{
+	isLeader bool
+}
 
 func (m *MockLeaderElection) GetCurrentLeader(ctx context.Context) (string, error) {
 	return "controller-0", nil
 }
 
-func (m *MockLeaderElection) GetMyIdentity() (string, error) {
-	return "controller-0", nil
+func (m *MockLeaderElection) GetMyIdentity() string {
+	return "controller-0"
+}
+
+func (m *MockLeaderElection) IsLeader() bool {
+	return m.isLeader
 }
 
 func TestHTTPServerHealthEndpoint(t *testing.T) {

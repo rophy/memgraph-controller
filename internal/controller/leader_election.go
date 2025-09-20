@@ -4,97 +4,146 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sync"
 	"time"
+
+	"memgraph-controller/internal/common"
 
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/leaderelection"
 	"k8s.io/client-go/tools/leaderelection/resourcelock"
-	"memgraph-controller/internal/common"
 )
 
 // LeaderElection handles Kubernetes leader election for HA controller
 type LeaderElection struct {
-	clientset        kubernetes.Interface
-	config           *common.Config
-	onStartedLeading func(ctx context.Context)
-	onStoppedLeading func()
-	onNewLeader      func(identity string)
+	clientset       kubernetes.Interface
+	config          *common.Config
+	identity        string
+	currentLeader   string
+	currentLeaderMu sync.RWMutex
 }
 
 // NewLeaderElection creates a new leader election instance
-func NewLeaderElection(clientset kubernetes.Interface, config *common.Config) *LeaderElection {
+func NewLeaderElection(clientset kubernetes.Interface, config *common.Config) (*LeaderElection, error) {
+	identity, err := getPodIdentity()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get pod identity: %w", err)
+	}
 	return &LeaderElection{
-		clientset: clientset,
-		config:    config,
+		clientset:       clientset,
+		config:          config,
+		identity:        identity,
+		currentLeader:   "",
+		currentLeaderMu: sync.RWMutex{},
+	}, nil
+}
+
+// startLeaderElection starts the leader election process (in background)
+func (c *MemgraphController) startLeaderElection(ctx context.Context) {
+	go func() {
+		ctx, logger := common.WithAttr(ctx, "thread", "leaderElection")
+
+		le := c.leaderElection
+		logger.Info("starting leader election with identity", "identity", le.identity)
+
+		// Create resource lock for leader election
+		lock := &resourcelock.LeaseLock{
+			LeaseMeta: metav1.ObjectMeta{
+				Name:      "memgraph-controller-leader",
+				Namespace: le.config.Namespace,
+			},
+			Client: le.clientset.CoordinationV1(),
+			LockConfig: resourcelock.ResourceLockConfig{
+				Identity: le.identity,
+			},
+		}
+
+		// Create leader election configuration
+		leaderElectionConfig := leaderelection.LeaderElectionConfig{
+			Lock:            lock,
+			LeaseDuration:   15 * time.Second,
+			RenewDeadline:   10 * time.Second,
+			RetryPeriod:     2 * time.Second,
+			ReleaseOnCancel: true,
+			Callbacks: leaderelection.LeaderCallbacks{
+				OnStartedLeading: c.onStartLeading,
+				OnStoppedLeading: c.onStopLeading,
+				OnNewLeader:      le.onNewLeader,
+			},
+		}
+
+		// Start leader election (blocking)
+		leaderelection.RunOrDie(ctx, leaderElectionConfig)
+	}()
+}
+
+// onStartLeading is the callback function for when the leader election starts
+func (c *MemgraphController) onStartLeading(ctx context.Context) {
+	le := c.leaderElection
+	logger := common.GetLoggerFromContext(ctx)
+	le.currentLeaderMu.Lock()
+	newLeader := le.currentLeader != le.identity
+	le.currentLeader = le.identity
+	le.currentLeaderMu.Unlock()
+
+	// Log if this is an actual leader change
+	if newLeader {
+		logger.Info("🎯 started leading as", "identity", c.leaderElection.identity)
+	}
+
+	// Record leadership metrics
+	if c.promMetrics != nil {
+		c.promMetrics.UpdateLeadershipStatus(true)
+		if newLeader {
+			c.promMetrics.RecordLeadershipChange()
+		}
+		c.promMetrics.RecordElection()
+	}
+
+	// Start health prober for blackbox monitoring
+	if c.healthProber != nil {
+		logger.Info("Starting health prober for main pod monitoring")
+		c.healthProber.Start(ctx)
 	}
 }
 
-// SetCallbacks sets the callback functions for leader election events
-func (le *LeaderElection) SetCallbacks(
-	onStartedLeading func(ctx context.Context),
-	onStoppedLeading func(),
-	onNewLeader func(identity string),
-) {
-	le.onStartedLeading = onStartedLeading
-	le.onStoppedLeading = onStoppedLeading
-	le.onNewLeader = onNewLeader
+// onStopLeading is the callback function for when the leader election stops
+func (c *MemgraphController) onStopLeading() {
+	le := c.leaderElection
+	logger := common.GetLogger()
+	le.currentLeaderMu.Lock()
+	le.currentLeader = ""
+	le.currentLeaderMu.Unlock()
+
+	logger.Info("⏹️  Lost leadership - stopping operations", "identity", le.identity)
+
+	// Stop health prober
+	if c.healthProber != nil {
+		c.healthProber.Stop()
+	}
 }
 
-// Run starts the leader election process (blocking)
-func (le *LeaderElection) Run(ctx context.Context) error {
-	// Get pod identity for leader election
-	identity, err := le.getPodIdentity()
-	if err != nil {
-		return fmt.Errorf("failed to get pod identity: %w", err)
+// onNewLeader is the callback function for when the leader election changes
+func (le *LeaderElection) onNewLeader(currentLeader string) {
+	logger := common.GetLogger()
+
+	// Only log if this is an actual leader change
+	if currentLeader != le.currentLeader {
+		logger.Info("👑 New leader elected", "last_known_leader", le.currentLeader, "new_leader", currentLeader)
+		le.currentLeaderMu.Lock()
+		le.currentLeader = currentLeader
+		le.currentLeaderMu.Unlock()
 	}
+}
 
-	common.GetLogger().Info("starting leader election with identity", "identity", identity)
-
-	// Create resource lock for leader election
-	lock, err := le.createResourceLock(identity)
-	if err != nil {
-		return fmt.Errorf("failed to create resource lock: %w", err)
-	}
-
-	// Create leader election configuration
-	leaderElectionConfig := leaderelection.LeaderElectionConfig{
-		Lock:            lock,
-		LeaseDuration:   15 * time.Second,
-		RenewDeadline:   10 * time.Second,
-		RetryPeriod:     2 * time.Second,
-		ReleaseOnCancel: true,
-		Callbacks: leaderelection.LeaderCallbacks{
-			OnStartedLeading: func(ctx context.Context) {
-				common.GetLogger().Info("started leading as", "identity", identity)
-				if le.onStartedLeading != nil {
-					le.onStartedLeading(ctx)
-				}
-			},
-			OnStoppedLeading: func() {
-				common.GetLogger().Info("stopped leading as", "identity", identity)
-				if le.onStoppedLeading != nil {
-					le.onStoppedLeading()
-				}
-			},
-			OnNewLeader: func(currentLeader string) {
-				if currentLeader != identity {
-					common.GetLogger().Info("new leader elected", "current_leader", currentLeader, "identity", identity)
-				}
-				if le.onNewLeader != nil {
-					le.onNewLeader(currentLeader)
-				}
-			},
-		},
-	}
-
-	// Start leader election (blocking)
-	leaderelection.RunOrDie(ctx, leaderElectionConfig)
-	return nil
+// IsLeader returns whether this controller instance is the current leader
+func (le *LeaderElection) IsLeader() bool {
+	return le.currentLeader == le.identity
 }
 
 // getPodIdentity returns the identity for this controller instance
-func (le *LeaderElection) getPodIdentity() (string, error) {
+func getPodIdentity() (string, error) {
 	// Try to get pod name from environment (set by Kubernetes)
 	podName := os.Getenv("POD_NAME")
 	if podName != "" {
@@ -109,23 +158,6 @@ func (le *LeaderElection) getPodIdentity() (string, error) {
 
 	common.GetLogger().Warn("POD_NAME env var not set, using hostname", "hostname", hostname)
 	return hostname, nil
-}
-
-// createResourceLock creates a resource lock for leader election
-func (le *LeaderElection) createResourceLock(identity string) (resourcelock.Interface, error) {
-	// Use Lease lock (recommended for Kubernetes 1.14+)
-	lock := &resourcelock.LeaseLock{
-		LeaseMeta: metav1.ObjectMeta{
-			Name:      "memgraph-controller-leader",
-			Namespace: le.config.Namespace,
-		},
-		Client: le.clientset.CoordinationV1(),
-		LockConfig: resourcelock.ResourceLockConfig{
-			Identity: identity,
-		},
-	}
-
-	return lock, nil
 }
 
 // GetCurrentLeader returns the identity of the current leader by querying the lease
@@ -147,6 +179,6 @@ func (le *LeaderElection) GetCurrentLeader(ctx context.Context) (string, error) 
 }
 
 // GetMyIdentity returns the identity of this controller instance
-func (le *LeaderElection) GetMyIdentity() (string, error) {
-	return le.getPodIdentity()
+func (le *LeaderElection) GetMyIdentity() string {
+	return le.identity
 }

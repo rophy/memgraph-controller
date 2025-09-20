@@ -9,6 +9,7 @@ import (
 	"memgraph-controller/internal/common"
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/client-go/kubernetes/fake"
 )
 
 // Tests for controller_reconcile.go (moved from reconciliation_test.go)
@@ -114,7 +115,9 @@ func TestControllerBasics(t *testing.T) {
 		Namespace: "memgraph",
 	}
 
-	controller := NewMemgraphController(nil, config)
+	ctx := context.Background()
+	fakeClientset := fake.NewSimpleClientset()
+	controller := NewMemgraphController(ctx, fakeClientset, config)
 
 	if controller == nil {
 		t.Fatal("NewMemgraphController() returned nil")

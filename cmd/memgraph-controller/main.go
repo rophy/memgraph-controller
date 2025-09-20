@@ -20,10 +20,9 @@ func main() {
 	if err != nil {
 		panic(err)
 	}
-	
-	// Initialize structured logging
-	common.InitLogger()
-	logger := common.GetLogger()
+
+	// Initialize the super context
+	ctx, logger := common.WithAttr(context.Background(), "thread", "main")
 
 	logger.Info("Starting Memgraph Controller with HA support")
 	logger.Info("Configuration loaded",
@@ -49,7 +48,7 @@ func main() {
 	promMetrics := metrics.New()
 	logger.Info("Prometheus metrics initialized")
 
-	ctrl := controller.NewMemgraphController(clientset, config)
+	ctrl := controller.NewMemgraphController(ctx, clientset, config)
 	ctrl.SetPrometheusMetrics(promMetrics)
 
 	if err := ctrl.TestConnection(); err != nil {
@@ -60,7 +59,7 @@ func main() {
 	logger.Info("Memgraph Controller created successfully")
 
 	// Set up graceful shutdown
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	// Handle shutdown signals

@@ -9,7 +9,6 @@ import (
 type ControllerInterface interface {
 	GetClusterStatus(ctx context.Context) (*StatusResponse, error)
 	GetLeaderElection() LeaderElectionInterface
-	IsLeader() bool
 	IsRunning() bool
 	ResetAllConnections(ctx context.Context) (int, error)
 }
@@ -17,7 +16,8 @@ type ControllerInterface interface {
 // LeaderElectionInterface defines the methods needed from leader election
 type LeaderElectionInterface interface {
 	GetCurrentLeader(ctx context.Context) (string, error)
-	GetMyIdentity() (string, error)
+	GetMyIdentity() string
+	IsLeader() bool
 }
 
 // ReconciliationMetrics represents controller reconciliation metrics

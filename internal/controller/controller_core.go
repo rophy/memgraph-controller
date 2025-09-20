@@ -20,20 +20,17 @@ import (
 	"memgraph-controller/internal/metrics"
 )
 
-
 type MemgraphController struct {
-	clientset        kubernetes.Interface
-	config           *common.Config
-	memgraphClient   *MemgraphClient    // Singleton instance - all components use this
-	httpServer       *httpapi.HTTPServer
-	gatewayServer    *gateway.Server     // Read/write gateway (port 7687)
-	readGatewayServer *gateway.Server    // Read-only gateway (port 7688)
+	ctx               context.Context // Base context for the controller
+	clientset         kubernetes.Interface
+	config            *common.Config
+	memgraphClient    *MemgraphClient // Singleton instance - all components use this
+	httpServer        *httpapi.HTTPServer
+	gatewayServer     *gateway.Server // Read/write gateway (port 7687)
+	readGatewayServer *gateway.Server // Read-only gateway (port 7688)
 
 	// Leader election
-	leaderElection  *LeaderElection
-	isLeader        bool
-	lastKnownLeader string // Track last known leader to detect actual changes
-	leaderMu        sync.RWMutex
+	leaderElection *LeaderElection
 
 	// State management
 	targetMainIndex int
@@ -43,7 +40,7 @@ type MemgraphController struct {
 	// Event-driven reconciliation
 	reconcileQueue     *ReconcileQueue
 	failoverCheckQueue *FailoverCheckQueue
-	
+
 	// Shared mutex for reconciliation and failover operations
 	// This prevents race conditions between these operations
 	operationMu sync.Mutex
@@ -73,7 +70,7 @@ type MemgraphController struct {
 	healthProber *HealthProber
 }
 
-func NewMemgraphController(clientset kubernetes.Interface, config *common.Config) *MemgraphController {
+func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, config *common.Config) *MemgraphController {
 
 	// Create single MemgraphClient instance with its own connection pool
 	// All components will use this singleton instance
@@ -82,7 +79,7 @@ func NewMemgraphController(clientset kubernetes.Interface, config *common.Config
 	controller := &MemgraphController{
 		clientset:      clientset,
 		config:         config,
-		memgraphClient: memgraphClient,  // Singleton instance
+		memgraphClient: memgraphClient, // Singleton instance
 	}
 
 	// Initialize HTTP server
@@ -102,10 +99,6 @@ func NewMemgraphController(clientset kubernetes.Interface, config *common.Config
 		controller.readGatewayServer = gateway.NewServer(readGatewayConfig)
 	}
 
-	// Initialize leader election
-	controller.leaderElection = NewLeaderElection(clientset, config)
-	controller.setupLeaderElectionCallbacks()
-
 	// Initialize state management with release-based ConfigMap name
 	configMapName := "memgraph-controller-state"
 	releaseName := os.Getenv("RELEASE_NAME")
@@ -118,11 +111,6 @@ func NewMemgraphController(clientset kubernetes.Interface, config *common.Config
 	controller.configMapName = configMapName
 
 	controller.targetMainIndex = -1 // -1 indicates not yet loaded from ConfigMap
-
-	// Initialize event-driven reconciliation queue
-	controller.reconcileQueue = controller.newReconcileQueue()
-	controller.failoverCheckQueue = controller.newFailoverCheckQueue()
-
 	// Initialize controller state
 	controller.maxFailures = 5
 	controller.stopCh = make(chan struct{})
@@ -130,15 +118,26 @@ func NewMemgraphController(clientset kubernetes.Interface, config *common.Config
 	// Initialize reconciliation metrics
 	controller.metrics = &ReconciliationMetrics{}
 
-	// Set up pod informer for event-driven reconciliation
-	controller.setupInformers()
-
-	// Initialize cluster operations (after informers are set up)
-	controller.cluster = NewMemgraphCluster(controller.podInformer.GetStore(), config, controller.memgraphClient)
+	// Initialize cluster operations (only if we have a clientset for informers)
+	if clientset != nil {
+		// Note: This will be properly initialized after StartInformers() is called
+		// For now, we'll defer cluster initialization
+		controller.cluster = nil
+	} else {
+		controller.cluster = nil
+	}
 
 	// Initialize health prober with default configuration
 	proberConfig := DefaultProberConfig()
 	controller.healthProber = NewHealthProber(controller, proberConfig)
+
+	// Initialize leader election
+	leaderElection, err := NewLeaderElection(clientset, config)
+	if err != nil {
+		common.GetLogger().Error("failed to initialize leader election", "error", err)
+		return nil
+	}
+	controller.leaderElection = leaderElection
 
 	return controller
 }
@@ -147,33 +146,25 @@ func NewMemgraphController(clientset kubernetes.Interface, config *common.Config
 // This should be called after NewMemgraphController but before Run
 func (c *MemgraphController) Initialize(ctx context.Context) error {
 
+	// Initialize event-driven reconciliation queue
+	c.reconcileQueue = c.newReconcileQueue(ctx)
+	c.failoverCheckQueue = c.newFailoverCheckQueue(ctx)
+
 	// STEP 1: Start Kubernetes informers
-	if err := c.StartInformers(); err != nil {
+	if err := c.StartInformers(ctx); err != nil {
 		return fmt.Errorf("failed to start informers: %w", err)
 	}
 
 	// STEP 2: Start HTTP server for status API (always running, not leader-dependent)
-	common.GetLogger().Info("starting HTTP server")
-	if err := c.StartHTTPServer(); err != nil {
-		return fmt.Errorf("failed to start HTTP server: %w", err)
-	}
-	common.GetLogger().Info("HTTP server started successfully", "port", c.config.HTTPPort)
+	c.httpServer.Start(ctx)
 
 	// STEP 3: Start gateway server
-	common.GetLogger().Info("Starting gateway server...")
 	if err := c.StartGatewayServer(ctx); err != nil {
 		return fmt.Errorf("failed to start gateway server: %w", err)
 	}
-	common.GetLogger().Info("Gateway server started successfully")
 
 	// STEP 4: Start leader election (in background goroutine)
-	common.GetLogger().Info("Starting leader election...")
-	go func() {
-		if err := c.RunLeaderElection(ctx); err != nil {
-			common.GetLogger().Info("Leader election failed", "error", err)
-		}
-	}()
-	common.GetLogger().Info("Leader election started successfully")
+	c.startLeaderElection(ctx)
 
 	common.GetLogger().Info("✅ All controller components initialized successfully")
 	return nil
@@ -187,13 +178,6 @@ func (c *MemgraphController) Shutdown(ctx context.Context) error {
 	if c.healthProber != nil && c.healthProber.IsRunning() {
 		c.healthProber.Stop()
 		common.GetLogger().Info("Health prober stopped")
-	}
-
-	// Stop HTTP server
-	if err := c.StopHTTPServer(ctx); err != nil {
-		common.GetLogger().Info("HTTP server shutdown error", "error", err)
-	} else {
-		common.GetLogger().Info("HTTP server stopped successfully")
 	}
 
 	// Stop gateway server
@@ -287,7 +271,7 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 	if oldIndex != index && oldIndex != -1 && c.promMetrics != nil {
 		c.promMetrics.RecordMainChange()
 	}
-	
+
 	// Update in-memory value
 	c.targetMainIndex = index
 	common.GetLogger().Info("Updated TargetMainIndex", "index", index)
@@ -356,13 +340,6 @@ func isPodReady(pod *v1.Pod) bool {
 		}
 	}
 	return false
-}
-
-// IsLeader returns whether this controller instance is the current leader
-func (c *MemgraphController) IsLeader() bool {
-	c.leaderMu.RLock()
-	defer c.leaderMu.RUnlock()
-	return c.isLeader
 }
 
 // IsRunning returns whether the controller is currently running
@@ -499,43 +476,10 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 	return mainNode, nil
 }
 
-// StartHTTPServer starts the HTTP server
-func (c *MemgraphController) StartHTTPServer() error {
-	common.GetLogger().Info("Starting HTTP server...")
-	return c.httpServer.Start()
-}
-
-// StopHTTPServer stops the HTTP server gracefully
-func (c *MemgraphController) StopHTTPServer(ctx context.Context) error {
-	common.GetLogger().Info("Stopping HTTP server...")
-	if c.httpServer != nil {
-		return c.httpServer.Stop(ctx)
-	}
-	return nil
-}
-
-// StartInformers starts the Kubernetes informers and waits for cache sync
-func (c *MemgraphController) StartInformers() error {
-	common.GetLogger().Info("starting informers")
-	c.informerFactory.Start(c.stopCh)
-
-	// Wait for informer caches to sync
-	if !cache.WaitForCacheSync(c.stopCh, c.podInformer.HasSynced) {
-		return fmt.Errorf("failed to sync informer caches")
-	}
-	return nil
-}
-
-// StopInformers stops the Kubernetes informers
-func (c *MemgraphController) StopInformers() {
-	if c.stopCh != nil {
-		common.GetLogger().Info("stopping informers")
-		close(c.stopCh)
-	}
-}
-
 // StartGatewayServer starts the gateway servers (both read/write and read-only if enabled)
 func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
+	logger := common.GetLoggerFromContext(ctx)
+	logger.Info("Starting gateway servers...")
 	// Start read/write gateway
 	if err := c.gatewayServer.Start(ctx); err != nil {
 		return fmt.Errorf("failed to start read/write gateway: %w", err)
@@ -548,7 +492,7 @@ func (c *MemgraphController) StartGatewayServer(ctx context.Context) error {
 		}
 		common.GetLogger().Info("Read-only gateway server started on port 7688")
 	}
-
+	logger.Info("Gateway servers started successfully")
 	return nil
 }
 
@@ -644,14 +588,6 @@ func (c *MemgraphController) updateReadGatewayUpstream(ctx context.Context) {
 	common.GetLogger().Info("Read gateway updated with replica", "replica", replica.GetName(), "address", boltAddress)
 }
 
-// RunLeaderElection runs the leader election process
-func (c *MemgraphController) RunLeaderElection(ctx context.Context) error {
-	if c.leaderElection != nil {
-		return c.leaderElection.Run(ctx)
-	}
-	return nil
-}
-
 // stop performs cleanup when the controller stops
 func (c *MemgraphController) stop() {
 	c.mu.Lock()
@@ -686,7 +622,7 @@ func (c *MemgraphController) SetPrometheusMetrics(m *metrics.Metrics) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.promMetrics = m
-	
+
 	// Also set metrics on the gateway servers if they exist
 	if c.gatewayServer != nil {
 		c.gatewayServer.SetPrometheusMetrics(m)
@@ -699,7 +635,6 @@ func (c *MemgraphController) SetPrometheusMetrics(m *metrics.Metrics) {
 // GetControllerStatus returns the current status of the controller
 func (c *MemgraphController) GetControllerStatus() map[string]interface{} {
 	return map[string]interface{}{
-		"is_leader":  c.IsLeader(),
 		"is_running": c.IsRunning(),
 		"metrics":    c.GetReconciliationMetrics(),
 	}
@@ -798,4 +733,98 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 
 	common.GetLogger().Info("Admin API: Successfully reset all connections", "total_count", totalConnections)
 	return totalConnections, nil
+}
+
+// IsLeader returns whether the controller is the current leader
+func (c *MemgraphController) IsLeader() bool {
+	return c.leaderElection.IsLeader()
+}
+
+// GetClusterStatus returns comprehensive cluster status for the HTTP API
+func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*httpapi.StatusResponse, error) {
+	logger := common.GetLoggerFromContext(ctx)
+	clusterState := c.cluster
+	if clusterState == nil {
+		return nil, fmt.Errorf("no cluster state available")
+	}
+
+	// Get current main from controller's target main index
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
+	currentMain := ""
+	if err == nil {
+		currentMain = c.config.GetPodName(targetMainIndex)
+	}
+
+	// Build cluster status summary
+	statusResponse := httpapi.ClusterStatus{
+		CurrentMain:        currentMain,
+		CurrentSyncReplica: "", // Will be determined below
+		TotalPods:          len(clusterState.MemgraphNodes),
+	}
+
+	// Count healthy vs unhealthy pods and find sync replica
+	healthyCount := 0
+	syncReplicaHealthy := false
+	for podName := range clusterState.MemgraphNodes {
+		if cachedPod, err := c.getPodFromCache(podName); err == nil && isPodReady(cachedPod) {
+			healthyCount++
+			// Check if this is the sync replica
+			if targetSyncReplica, err := c.getTargetSyncReplicaNode(ctx); err == nil && podName == targetSyncReplica.GetName() {
+				syncReplicaHealthy = true
+				statusResponse.CurrentSyncReplica = podName
+			}
+		}
+	}
+	statusResponse.HealthyPods = healthyCount
+	statusResponse.UnhealthyPods = statusResponse.TotalPods - healthyCount
+	statusResponse.SyncReplicaHealthy = syncReplicaHealthy
+
+	// Update Prometheus cluster state metrics
+	if c.promMetrics != nil {
+		clusterHealthy := healthyCount == statusResponse.TotalPods && currentMain != ""
+		c.promMetrics.UpdateClusterState(clusterHealthy, statusResponse.TotalPods, healthyCount, syncReplicaHealthy)
+	}
+
+	// Convert pods to API format
+	var pods []httpapi.PodStatus
+	for _, node := range clusterState.MemgraphNodes {
+		pod, err := c.getPodFromCache(node.GetName())
+		healthy := err == nil && isPodReady(pod)
+		podStatus := convertMemgraphNodeToStatus(node, healthy, pod)
+		pods = append(pods, podStatus)
+	}
+
+	// Get replica registrations from the main node
+	var replicaRegistrations []httpapi.ReplicaRegistration
+	if targetMainIndex, err := c.GetTargetMainIndex(ctx); err == nil {
+		targetMainPodName := c.config.GetPodName(targetMainIndex)
+		if mainNode, exists := clusterState.MemgraphNodes[targetMainPodName]; exists {
+			if replicas, err := mainNode.GetReplicas(ctx); err == nil {
+				for _, replica := range replicas {
+					replicaRegistrations = append(replicaRegistrations, httpapi.ReplicaRegistration{
+						Name:      replica.Name,
+						PodName:   replica.GetPodName(),
+						Address:   replica.SocketAddress,
+						SyncMode:  replica.SyncMode,
+						IsHealthy: replica.IsHealthy(),
+					})
+				}
+			}
+		}
+	}
+
+	// Add leader status and reconciliation metrics to cluster status
+	statusResponse.ReconciliationMetrics = c.GetReconciliationMetrics()
+	statusResponse.ReplicaRegistrations = replicaRegistrations
+
+	response := &httpapi.StatusResponse{
+		Timestamp:    time.Now(),
+		ClusterState: statusResponse,
+		Pods:         pods,
+	}
+
+	logger.Info("Generated cluster status",
+		"pod_count", len(pods), "current_main", currentMain, "healthy_pods", healthyCount, "total_pods", statusResponse.TotalPods)
+
+	return response, nil
 }

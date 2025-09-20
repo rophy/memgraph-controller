@@ -5,18 +5,18 @@ import (
 	"log/slog"
 	"os"
 	"sync"
+
+	slogctx "github.com/veqryn/slog-context"
 )
 
 // Logger wraps slog.Logger with memgraph-controller specific functionality
 type Logger struct {
 	*slog.Logger
-	component string
 }
 
 // LoggingConfig holds logger configuration
 type LoggingConfig struct {
 	Level     string
-	Component string
 	AddSource bool
 	Format    string
 }
@@ -25,29 +25,6 @@ var (
 	globalLogger *Logger
 	once         sync.Once
 )
-
-// loggerContextKey is the context key for storing loggers
-type loggerContextKey struct{}
-
-// WithLogger stores a logger in the context
-func WithLogger(ctx context.Context, logger *Logger) context.Context {
-	return context.WithValue(ctx, loggerContextKey{}, logger)
-}
-
-// LoggerFromContext retrieves a logger from context, or returns a default logger
-func LoggerFromContext(ctx context.Context) *Logger {
-	if logger, ok := ctx.Value(loggerContextKey{}).(*Logger); ok {
-		return logger
-	}
-	// Return default logger if none found in context
-	return GetLogger()
-}
-
-// CtxLogger is a convenience function to get logger from context
-// This provides a shorter way to write common.LoggerFromContext(ctx)
-func CtxLogger(ctx context.Context) *Logger {
-	return LoggerFromContext(ctx)
-}
 
 // NewLogger creates a new structured logger with configurable output
 func NewLogger(config LoggingConfig) *Logger {
@@ -58,23 +35,18 @@ func NewLogger(config LoggingConfig) *Logger {
 		AddSource: config.AddSource,
 	}
 
-	var handler slog.Handler
+	var baseHandler slog.Handler
 	if config.Format == "json" {
-		handler = slog.NewJSONHandler(os.Stdout, opts)
+		baseHandler = slog.NewJSONHandler(os.Stdout, opts)
 	} else {
 		// Default to text format
-		handler = slog.NewTextHandler(os.Stdout, opts)
+		baseHandler = slog.NewTextHandler(os.Stdout, opts)
 	}
+	handler := slogctx.NewHandler(baseHandler, &slogctx.HandlerOptions{})
 	logger := slog.New(handler)
 
-	// Add component context if provided
-	if config.Component != "" {
-		logger = logger.With("component", config.Component)
-	}
-
 	return &Logger{
-		Logger:    logger,
-		component: config.Component,
+		Logger: logger,
 	}
 }
 
@@ -94,64 +66,6 @@ func parseLevel(level string) slog.Level {
 	}
 }
 
-// WithContext creates a logger with context values
-func (l *Logger) WithContext(ctx context.Context) *Logger {
-	attrs := extractContextAttrs(ctx)
-	if len(attrs) == 0 {
-		return l
-	}
-
-	return &Logger{
-		Logger:    l.Logger.With(attrs...),
-		component: l.component,
-	}
-}
-
-// WithFields creates a logger with additional structured fields
-func (l *Logger) WithFields(fields map[string]any) *Logger {
-	if len(fields) == 0 {
-		return l
-	}
-
-	args := make([]any, 0, len(fields)*2)
-	for k, v := range fields {
-		args = append(args, k, v)
-	}
-
-	return &Logger{
-		Logger:    l.Logger.With(args...),
-		component: l.component,
-	}
-}
-
-// extractContextAttrs extracts logging attributes from context
-func extractContextAttrs(ctx context.Context) []any {
-	var attrs []any
-
-	// Put goroutine first for better visibility
-	if goroutine := ctx.Value("goroutine"); goroutine != nil {
-		attrs = append(attrs, "goroutine", goroutine)
-	}
-
-	if reqID := ctx.Value("request_id"); reqID != nil {
-		attrs = append(attrs, "request_id", reqID)
-	}
-
-	if traceID := ctx.Value("trace_id"); traceID != nil {
-		attrs = append(attrs, "trace_id", traceID)
-	}
-
-	if operation := ctx.Value("operation"); operation != nil {
-		attrs = append(attrs, "operation", operation)
-	}
-
-	if pod := ctx.Value("pod"); pod != nil {
-		attrs = append(attrs, "pod", pod)
-	}
-
-	return attrs
-}
-
 // InitLogger initializes the global logger using the centralized config
 func InitLogger() {
 	once.Do(func() {
@@ -161,13 +75,31 @@ func InitLogger() {
 			AddSource: config.LogAddSource,
 			Format:    config.LogFormat,
 		})
+		slog.SetDefault(globalLogger.Logger)
 	})
 }
 
 // GetLogger returns the global logger
-func GetLogger() *Logger {
+func GetLogger() *slog.Logger {
 	if globalLogger == nil {
 		InitLogger()
 	}
-	return globalLogger
+	return globalLogger.Logger
+}
+
+// NewLoggerContext returns a new context and the attached logger
+func NewLoggerContext(ctx context.Context) (context.Context, *slog.Logger) {
+	newCtx := slogctx.NewCtx(ctx, GetLogger())
+	return newCtx, slogctx.FromCtx(newCtx)
+}
+
+// GetLoggerFromContext returns the logger from the context
+func GetLoggerFromContext(ctx context.Context) *slog.Logger {
+	return slogctx.FromCtx(ctx)
+}
+
+// WithAttr add attributes to the context
+func WithAttr(ctx context.Context, args ...any) (context.Context, *slog.Logger) {
+	newCtx := slogctx.With(ctx, args...)
+	return newCtx, slogctx.FromCtx(newCtx)
 }

@@ -5,15 +5,19 @@ import (
 	"fmt"
 	"time"
 
+	"memgraph-controller/internal/common"
+
 	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/tools/cache"
-	"memgraph-controller/internal/common"
 )
 
-// setupInformers sets up Kubernetes informers for event-driven reconciliation
-func (c *MemgraphController) setupInformers() {
+// StartInformers starts the Kubernetes informers and waits for cache sync
+func (c *MemgraphController) StartInformers(ctx context.Context) error {
+	logger := common.GetLoggerFromContext(ctx)
+	logger.Info("starting informers")
+
 	// Create shared informer factory with label selector filtering
 	labelSelector := fmt.Sprintf("app.kubernetes.io/name=%s", c.config.AppName)
 	c.informerFactory = informers.NewSharedInformerFactoryWithOptions(
@@ -24,7 +28,6 @@ func (c *MemgraphController) setupInformers() {
 			opts.LabelSelector = labelSelector
 		}),
 	)
-
 	// Set up pod informer - now automatically filtered to memgraph pods only
 	c.podInformer = c.informerFactory.Core().V1().Pods().Informer()
 
@@ -35,71 +38,27 @@ func (c *MemgraphController) setupInformers() {
 		DeleteFunc: c.onPodDelete,
 	})
 
+	c.informerFactory.Start(c.stopCh)
+
+	// Wait for informer caches to sync
+	if !cache.WaitForCacheSync(c.stopCh, c.podInformer.HasSynced) {
+		return fmt.Errorf("failed to sync informer caches")
+	}
+
+	// Now that informers are synced, initialize cluster operations
+	if c.cluster == nil {
+		c.cluster = NewMemgraphCluster(c.podInformer.GetStore(), c.config, c.memgraphClient)
+	}
+
+	return nil
 }
 
-// setupLeaderElectionCallbacks configures the callbacks for leader election
-func (c *MemgraphController) setupLeaderElectionCallbacks() {
-	c.leaderElection.SetCallbacks(
-		func(ctx context.Context) {
-			// OnStartedLeading: This controller instance became leader
-			c.leaderMu.Lock()
-			wasLeader := c.isLeader
-			c.isLeader = true
-			c.leaderMu.Unlock()
-
-			// Record leadership metrics
-			if c.promMetrics != nil {
-				c.promMetrics.UpdateLeadershipStatus(true)
-				if !wasLeader {
-					c.promMetrics.RecordLeadershipChange()
-				}
-				c.promMetrics.RecordElection()
-			}
-
-			common.GetLogger().Info("🎯 Became leader - loading state and starting controller operations")
-
-			// Load state to determine startup phase (BOOTSTRAP vs OPERATIONAL)
-			// State loading now handled via GetTargetMainIndex() calls
-
-			// Start health prober for blackbox monitoring
-			if c.healthProber != nil {
-				common.GetLogger().Info("Starting health prober for main pod monitoring")
-				c.healthProber.Start(ctx)
-			}
-		},
-		func() {
-			// OnStoppedLeading: This controller instance lost leadership
-			c.leaderMu.Lock()
-			c.isLeader = false
-			c.leaderMu.Unlock()
-
-			// Record leadership metrics
-			if c.promMetrics != nil {
-				c.promMetrics.UpdateLeadershipStatus(false)
-			}
-
-			common.GetLogger().Info("⏹️  Lost leadership - stopping operations")
-
-			// Stop health prober
-			if c.healthProber != nil {
-				common.GetLogger().Info("Stopping health prober")
-				c.healthProber.Stop()
-			}
-
-			// Stop reconciliation operations but keep the process running
-		},
-		func(identity string) {
-			// OnNewLeader: Check if leader actually changed
-			c.leaderMu.Lock()
-			defer c.leaderMu.Unlock()
-
-			// Only log if this is an actual leader change
-			if identity != c.lastKnownLeader {
-				common.GetLogger().Info("👑 New leader elected", "identity", identity)
-				c.lastKnownLeader = identity
-			}
-		},
-	)
+// StopInformers stops the Kubernetes informers
+func (c *MemgraphController) StopInformers() {
+	if c.stopCh != nil {
+		common.GetLogger().Info("stopping informers")
+		close(c.stopCh)
+	}
 }
 
 // onPodAdd handles pod addition events
@@ -109,9 +68,12 @@ func (c *MemgraphController) onPodAdd(obj interface{}) {
 		return
 	}
 
+	ctx, logger := common.WithAttr(c.ctx, "event", "podAdd")
+
 	pod := obj.(*v1.Pod)
 	// No manual filtering needed - informer is already filtered to memgraph pods
-	c.enqueueReconcileEvent("pod-add", "pod-added", pod.Name)
+	c.enqueueReconcileEvent(ctx, "pod-add", "pod-added", pod.Name)
+	logger.Info("🚨 POD ADDED - triggering reconciliation", "pod_name", pod.Name)
 }
 
 // onPodUpdate handles pod update events with immediate processing for critical changes
@@ -120,6 +82,8 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 	if !c.IsLeader() {
 		return
 	}
+
+	ctx, logger := common.WithAttr(c.ctx, "event", "podUpdate")
 
 	oldPod := oldObj.(*v1.Pod)
 	newPod := newObj.(*v1.Pod)
@@ -134,16 +98,17 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 	}
 
 	// IMMEDIATE ANALYSIS: Check for critical main pod health changes
-	targetMainIndex, err := c.GetTargetMainIndex(context.Background())
+	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err == nil {
 		currentMain := c.config.GetPodName(targetMainIndex)
 		if currentMain == newPod.Name {
 			// This is the current main pod - check for immediate health issues
 			if c.isPodBecomeUnhealthy(oldPod, newPod) {
-				common.GetLogger().Info("🚨 IMMEDIATE EVENT: Main pod became unhealthy, triggering failover check", "pod_name", newPod.Name)
+				logger.Info("🚨 IMMEDIATE EVENT: Main pod became unhealthy, triggering failover check", "pod_name", newPod.Name)
 
 				// Queue failover check event
-				c.enqueueFailoverCheckEvent("pod-update", "main-pod-unhealthy", newPod.Name)
+				c.enqueueFailoverCheckEvent(ctx, "pod-update", "main-pod-unhealthy", newPod.Name)
+				logger.Info("🚨 IMMEDIATE EVENT: Main pod became unhealthy, triggering failover check", "pod_name", newPod.Name)
 
 			}
 		}
@@ -154,7 +119,8 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 		return // Skip unnecessary reconciliation
 	}
 
-	c.enqueueReconcileEvent("pod-update", "pod-state-changed", newPod.Name)
+	c.enqueueReconcileEvent(ctx, "pod-update", "pod-state-changed", newPod.Name)
+	logger.Info("🚨 POD STATE CHANGED - triggering reconciliation", "pod_name", newPod.Name)
 }
 
 // onPodDelete handles pod deletion events
@@ -164,6 +130,8 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 		return
 	}
 
+	ctx, logger := common.WithAttr(c.ctx, "event", "podDelete")
+
 	pod := obj.(*v1.Pod)
 
 	// Invalidate connection for deleted pod through memgraph client connection pool
@@ -172,24 +140,25 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 	}
 
 	// Check if the deleted pod is the current main - trigger IMMEDIATE failover
-	ctx := context.Background()
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	currentMain := ""
 	if err != nil {
-		common.GetLogger().Info("Could not get current main from target index", "error", err)
+		logger.Info("Could not get current main from target index", "error", err)
 	} else {
 		currentMain = c.config.GetPodName(targetMainIndex)
 	}
 
 	if currentMain != "" && pod.Name == currentMain {
-		common.GetLogger().Info("🚨 MAIN POD DELETED - triggering failover check", "pod_name", pod.Name)
+		logger.Info("🚨 MAIN POD DELETED - triggering failover check", "pod_name", pod.Name)
 
 		// Queue failover check event - only processed by leader
-		c.enqueueFailoverCheckEvent("pod-delete", "main-pod-deleted", pod.Name)
+		c.enqueueFailoverCheckEvent(ctx, "pod-delete", "main-pod-deleted", pod.Name)
+		logger.Info("🚨 MAIN POD DELETED - triggering failover check", "pod_name", pod.Name)
 	}
 
 	// Still enqueue for reconciliation cleanup
-	c.enqueueReconcileEvent("pod-delete", "pod-deleted", pod.Name)
+	c.enqueueReconcileEvent(ctx, "pod-delete", "pod-deleted", pod.Name)
+	logger.Info("🚨 POD DELETED - triggering reconciliation", "pod_name", pod.Name)
 }
 
 // shouldReconcile determines if a pod update should trigger reconciliation

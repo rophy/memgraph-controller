@@ -53,8 +53,8 @@ func NewHTTPServer(controller ControllerInterface, config *common.Config) *HTTPS
 }
 
 // Start begins listening for HTTP requests (non-blocking)
-func (h *HTTPServer) Start() error {
-	logger := common.GetLogger()
+func (h *HTTPServer) Start(ctx context.Context) {
+	logger := common.GetLoggerFromContext(ctx)
 	logger.Info("Starting HTTP server", "port", h.config.HTTPPort)
 
 	go func() {
@@ -66,7 +66,6 @@ func (h *HTTPServer) Start() error {
 	// Give server a moment to start up
 	time.Sleep(100 * time.Millisecond)
 	logger.Info("HTTP server started successfully", "port", h.config.HTTPPort)
-	return nil
 }
 
 // Stop gracefully shuts down the HTTP server
@@ -144,15 +143,10 @@ func (h *HTTPServer) handleLeadership(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get this pod's identity
-	myIdentity, err := leaderElection.GetMyIdentity()
-	if err != nil {
-		logger.Info("Failed to get my identity", "error", err)
-		http.Error(w, fmt.Sprintf("Failed to get pod identity: %v", err), http.StatusInternalServerError)
-		return
-	}
+	myIdentity := leaderElection.GetMyIdentity()
 
 	// Check if this pod is the leader
-	isLeader := h.controller.IsLeader()
+	isLeader := h.controller.GetLeaderElection().IsLeader()
 
 	// Prepare response
 	response := map[string]interface{}{
@@ -253,7 +247,7 @@ func (h *HTTPServer) handleReadiness(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Check if this pod is the leader
-	if !h.controller.IsLeader() {
+	if !h.controller.GetLeaderElection().IsLeader() {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		w.Write([]byte("Not leader"))
 		return
@@ -292,10 +286,10 @@ func (h *HTTPServer) handleResetConnections(w http.ResponseWriter, r *http.Reque
 
 	// Prepare response
 	response := map[string]interface{}{
-		"status":           "success",
+		"status":            "success",
 		"connections_reset": closedCount,
-		"timestamp":        time.Now(),
-		"message":          fmt.Sprintf("Successfully reset %d connections", closedCount),
+		"timestamp":         time.Now(),
+		"message":           fmt.Sprintf("Successfully reset %d connections", closedCount),
 	}
 
 	// Set response headers

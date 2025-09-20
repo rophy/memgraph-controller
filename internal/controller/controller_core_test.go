@@ -1,6 +1,7 @@
 package controller
 
 import (
+	"context"
 	"testing"
 
 	"k8s.io/client-go/kubernetes/fake"
@@ -14,7 +15,8 @@ func TestMemgraphController_TestConnection(t *testing.T) {
 		Namespace: "memgraph",
 	}
 
-	ctrl := NewMemgraphController(fakeClientset, config)
+	ctx := context.Background()
+	ctrl := NewMemgraphController(ctx, fakeClientset, config)
 
 	err := ctrl.TestConnection()
 	if err != nil {

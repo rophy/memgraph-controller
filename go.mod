@@ -7,6 +7,8 @@ toolchain go1.24.6
 require (
 	github.com/neo4j/neo4j-go-driver/v5 v5.28.2
 	github.com/prometheus/client_golang v1.23.2
+	github.com/stretchr/testify v1.11.1
+	github.com/veqryn/slog-context v0.8.0
 	gopkg.in/yaml.v3 v3.0.1
 	k8s.io/api v0.33.4
 	k8s.io/apimachinery v0.33.4
@@ -41,7 +43,6 @@ require (
 	github.com/prometheus/procfs v0.16.1 // indirect
 	github.com/spf13/pflag v1.0.5 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
-	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	go.yaml.in/yaml/v2 v2.4.2 // indirect
 	golang.org/x/net v0.43.0 // indirect

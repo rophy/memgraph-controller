@@ -13,11 +13,8 @@ import (
 // Run starts the controller reconciliation loop
 // This assumes all components (informers, servers, leader election) have been started
 func (c *MemgraphController) Run(ctx context.Context) error {
-	// Add goroutine context for reconciliation loop
-	ctx = context.WithValue(ctx, goroutineKey, "reconciliation")
-	logger := common.GetLogger().WithContext(ctx)
-	ctx = common.WithLogger(ctx, logger)
-	
+	ctx, logger := common.WithAttr(ctx, "thread", "reconciliation")
+
 	c.mu.Lock()
 	if c.isRunning {
 		c.mu.Unlock()
@@ -30,28 +27,28 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	ticker := time.NewTicker(c.config.ReconcileInterval)
 	defer ticker.Stop()
 
-	common.GetLogger().Info("Starting reconciliation loop", "interval", c.config.ReconcileInterval)
+	logger.Info("Starting reconciliation loop", "interval", c.config.ReconcileInterval)
 
 	// Main reconciliation loop - implements DESIGN.md simplified flow
 	for {
 		select {
 		case <-ctx.Done():
-			common.GetLogger().Info("Context cancelled, stopping controller...")
+			logger.Info("Context cancelled, stopping controller...")
 			c.stop()
 			return ctx.Err()
 
 		case <-ticker.C:
 			if !c.IsLeader() {
-				common.GetLogger().Info("Not leader, skipping reconciliation cycle")
+				logger.Info("Not leader, skipping reconciliation cycle")
 				continue
 			}
 
-			common.GetLogger().Info("Starting reconciliation cycle...")
+			logger.Info("Starting reconciliation cycle...")
 
 			// Check if ConfigMap is ready by trying to get the target main index
 			_, err := c.GetTargetMainIndex(ctx)
 			if err != nil {
-				common.GetLogger().Info("ConfigMap not ready - performing discovery...")
+				logger.Info("ConfigMap not ready - performing discovery...")
 
 				// Use DESIGN.md compliant discovery logic to determine target main index
 				targetMainIndex, err := c.cluster.discoverClusterState(ctx)
@@ -60,7 +57,7 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				}
 				if targetMainIndex == -1 {
 					// -1 without error means cluster is not ready to be discovered
-					common.GetLogger().Info("Cluster is not ready to be discovered")
+					logger.Info("Cluster is not ready to be discovered")
 					continue
 				}
 
@@ -68,7 +65,7 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 				if err := c.SetTargetMainIndex(ctx, targetMainIndex); err != nil {
 					return fmt.Errorf("failed to set target main index in ConfigMap: %w", err)
 				}
-				common.GetLogger().Info("✅ Cluster discovered with target main index", "index", targetMainIndex)
+				logger.Info("✅ Cluster discovered with target main index", "index", targetMainIndex)
 			}
 
 			// Enable gateway connections.
@@ -79,14 +76,14 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 					// Update read-only gateway if enabled
 					c.updateReadGatewayUpstream(ctx)
 				} else {
-					common.GetLogger().Error("Failed to get bolt address for main node", "error", err)
+					logger.Error("Failed to get bolt address for main node", "error", err)
 				}
 			} else {
-				common.GetLogger().Error("Failed to get target main node", "error", err)
+				logger.Error("Failed to get target main node", "error", err)
 			}
 
 			if err := c.performReconciliationActions(ctx); err != nil {
-				common.GetLogger().Error("Error during reconciliation", "error", err)
+				logger.Error("Error during reconciliation", "error", err)
 				// Retry on next tick
 			}
 		}
@@ -94,18 +91,18 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 }
 
 func (c *MemgraphController) performReconciliationActions(ctx context.Context) error {
-	logger := common.LoggerFromContext(ctx)
+	logger := common.GetLoggerFromContext(ctx)
 	start := time.Now()
 	var reconcileErr error
 	defer func() {
 		duration := time.Since(start)
 		logger.Info("performReconciliationActions completed", "duration_ms", float64(duration.Nanoseconds())/1e6)
-		
+
 		// Record Prometheus metrics
 		if c.promMetrics != nil {
 			c.promMetrics.RecordReconciliation(reconcileErr == nil, duration.Seconds())
 		}
-		
+
 		// Update legacy metrics
 		if c.metrics != nil {
 			c.metrics.TotalReconciliations++
@@ -356,93 +353,4 @@ func (c *MemgraphController) GetReconciliationMetrics() httpapi.ReconciliationMe
 		LastReconciliationReason:  c.metrics.LastReconciliationReason,
 		LastReconciliationError:   c.metrics.LastReconciliationError,
 	}
-}
-
-// GetClusterStatus returns comprehensive cluster status for the HTTP API
-func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*httpapi.StatusResponse, error) {
-	clusterState := c.cluster
-	if clusterState == nil {
-		return nil, fmt.Errorf("no cluster state available")
-	}
-
-	// Get current main from controller's target main index
-	targetMainIndex, err := c.GetTargetMainIndex(ctx)
-	currentMain := ""
-	if err == nil {
-		currentMain = c.config.GetPodName(targetMainIndex)
-	}
-
-	// Build cluster status summary
-	statusResponse := httpapi.ClusterStatus{
-		CurrentMain:        currentMain,
-		CurrentSyncReplica: "", // Will be determined below
-		TotalPods:          len(clusterState.MemgraphNodes),
-	}
-
-	// Count healthy vs unhealthy pods and find sync replica
-	healthyCount := 0
-	syncReplicaHealthy := false
-	for podName := range clusterState.MemgraphNodes {
-		if cachedPod, err := c.getPodFromCache(podName); err == nil && isPodReady(cachedPod) {
-			healthyCount++
-			// Check if this is the sync replica
-			if targetSyncReplica, err := c.getTargetSyncReplicaNode(ctx); err == nil && podName == targetSyncReplica.GetName() {
-				syncReplicaHealthy = true
-				statusResponse.CurrentSyncReplica = podName
-			}
-		}
-	}
-	statusResponse.HealthyPods = healthyCount
-	statusResponse.UnhealthyPods = statusResponse.TotalPods - healthyCount
-	statusResponse.SyncReplicaHealthy = syncReplicaHealthy
-	
-	// Update Prometheus cluster state metrics
-	if c.promMetrics != nil {
-		clusterHealthy := healthyCount == statusResponse.TotalPods && currentMain != ""
-		c.promMetrics.UpdateClusterState(clusterHealthy, statusResponse.TotalPods, healthyCount, syncReplicaHealthy)
-	}
-
-	// Convert pods to API format
-	var pods []httpapi.PodStatus
-	for _, node := range clusterState.MemgraphNodes {
-		pod, err := c.getPodFromCache(node.GetName())
-		healthy := err == nil && isPodReady(pod)
-		podStatus := convertMemgraphNodeToStatus(node, healthy, pod)
-		pods = append(pods, podStatus)
-	}
-
-	// Get replica registrations from the main node
-	var replicaRegistrations []httpapi.ReplicaRegistration
-	if targetMainIndex, err := c.GetTargetMainIndex(ctx); err == nil {
-		targetMainPodName := c.config.GetPodName(targetMainIndex)
-		if mainNode, exists := clusterState.MemgraphNodes[targetMainPodName]; exists {
-			if replicas, err := mainNode.GetReplicas(ctx); err == nil {
-				for _, replica := range replicas {
-					replicaRegistrations = append(replicaRegistrations, httpapi.ReplicaRegistration{
-						Name:      replica.Name,
-						PodName:   replica.GetPodName(),
-						Address:   replica.SocketAddress,
-						SyncMode:  replica.SyncMode,
-						IsHealthy: replica.IsHealthy(),
-					})
-				}
-			}
-		}
-	}
-
-	// Add leader status and reconciliation metrics to cluster status
-	statusResponse.IsLeader = c.IsLeader()
-	statusResponse.ReconciliationMetrics = c.GetReconciliationMetrics()
-	statusResponse.ReplicaRegistrations = replicaRegistrations
-
-	response := &httpapi.StatusResponse{
-		Timestamp:    time.Now(),
-		ClusterState: statusResponse,
-		Pods:         pods,
-	}
-
-	common.GetLogger().Info("Generated cluster status",
-		"pod_count", len(pods), "current_main", currentMain, "healthy_pods", healthyCount, "total_pods", statusResponse.TotalPods)
-
-	return response, nil
 }

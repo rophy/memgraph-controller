@@ -135,7 +135,7 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to listen with TLS on %s: %w", s.config.BindAddress, err)
 		}
 
-		logger.Info("Gateway server listening with TLS", "address",
+		logger.Info("Gateway server listening with TLS",
 			"name", s.name, "address", s.config.BindAddress, "cert_path", s.config.TLSCertPath)
 	} else {
 		listener, err = net.Listen("tcp", s.config.BindAddress)

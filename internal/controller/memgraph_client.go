@@ -612,7 +612,7 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 
 // Ping verifies target bolt address is reachable
 func (mc *MemgraphClient) Ping(ctx context.Context, boltAddress string) error {
-	logger := common.GetLoggerFromContext(ctx)
+	start := time.Now()
 	if boltAddress == "" {
 		return fmt.Errorf("bolt address is empty")
 	}
@@ -624,9 +624,11 @@ func (mc *MemgraphClient) Ping(ctx context.Context, boltAddress string) error {
 
 	session := driver.NewSession(ctx, neo4j.SessionConfig{})
 	defer func() {
+		logger := common.GetLoggerFromContext(ctx)
 		if closeErr := session.Close(ctx); closeErr != nil {
 			logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
 		}
+		logger.Debug("🕑 Ping completed", "bolt_address", boltAddress, "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
 	}()
 
 	_, err = session.Run(ctx, "RETURN 1", nil)

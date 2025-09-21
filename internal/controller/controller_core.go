@@ -388,7 +388,7 @@ func (c *MemgraphController) GetCurrentMainNode(ctx context.Context) (*MemgraphN
 
 	// Look for the pod that actually has the main role
 	for _, node := range c.cluster.MemgraphNodes {
-		if role, _ := node.GetReplicationRole(ctx); role == "MAIN" {
+		if role, _ := node.GetReplicationRole(ctx, false); role == "MAIN" {
 			// Check if pod exists in cache and has IP
 			pod, err := c.getPodFromCache(node.GetName())
 			if err == nil && pod != nil && pod.Status.PodIP != "" {
@@ -477,7 +477,7 @@ func (c *MemgraphController) selectBestReplica(ctx context.Context) (*MemgraphNo
 		}
 
 		// Check if it's actually a replica
-		role, err := node.GetReplicationRole(ctx)
+		role, err := node.GetReplicationRole(ctx, false)
 		if err != nil || role != "replica" {
 			continue
 		}
@@ -779,7 +779,7 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*httpapi.Sta
 	if targetMainIndex, err := c.GetTargetMainIndex(ctx); err == nil {
 		targetMainPodName := c.config.GetPodName(targetMainIndex)
 		if mainNode, exists := clusterState.MemgraphNodes[targetMainPodName]; exists {
-			if replicas, err := mainNode.GetReplicas(ctx); err == nil {
+			if replicas, err := mainNode.GetReplicas(ctx, false); err == nil {
 				for _, replica := range replicas {
 					replicaRegistrations = append(replicaRegistrations, httpapi.ReplicaRegistration{
 						Name:      replica.Name,

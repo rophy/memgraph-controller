@@ -3,14 +3,10 @@ package controller
 import (
 	"context"
 
-	v1 "k8s.io/api/core/v1"
 	"memgraph-controller/internal/httpapi"
+
+	v1 "k8s.io/api/core/v1"
 )
-
-
-
-
-
 
 // convertMemgraphNodeToStatus converts internal MemgraphNode to API PodStatus
 func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, _ *v1.Pod) httpapi.PodStatus {
@@ -26,7 +22,7 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, _ *v1.Pod) ht
 	if !healthy {
 		// If pod is unhealthy and no inconsistency detected, create one for unreachable pod
 		memgraphRole := "unknown"
-		if role, _ := node.GetReplicationRole(context.Background()); role != "" {
+		if role, _ := node.GetReplicationRole(context.Background(), false); role != "" {
 			memgraphRole = role
 		}
 
@@ -38,7 +34,7 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, _ *v1.Pod) ht
 
 	// Convert replica names to readable format (underscore back to dash)
 	var replicasRegistered []string
-	if replicas, err := node.GetReplicas(context.Background()); err == nil {
+	if replicas, err := node.GetReplicas(context.Background(), false); err == nil {
 		replicasRegistered = make([]string, len(replicas))
 		for i, replica := range replicas {
 			replicasRegistered[i] = replica.Name
@@ -48,7 +44,7 @@ func convertMemgraphNodeToStatus(node *MemgraphNode, healthy bool, _ *v1.Pod) ht
 	return httpapi.PodStatus{
 		Name:               node.GetName(),
 		State:              "unknown", // TODO: implement proper state
-		MemgraphRole:       func() string { role, _ := node.GetReplicationRole(context.Background()); return role }(),
+		MemgraphRole:       func() string { role, _ := node.GetReplicationRole(context.Background(), false); return role }(),
 		IPAddress:          node.GetIpAddress(),
 		Timestamp:          node.timestamp,
 		Healthy:            healthy,

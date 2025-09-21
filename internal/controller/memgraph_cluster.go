@@ -167,12 +167,12 @@ func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int32, err
 
 	// discoverClusterState step 3
 	logger.Info("discoverClusterState step 3", "pod0_name", pod0Name, "pod1_name", pod1Name)
-	pod0Role, err := mc.MemgraphNodes[pod0Name].GetReplicationRole(ctx)
+	pod0Role, err := mc.MemgraphNodes[pod0Name].GetReplicationRole(ctx, true)
 	if err != nil {
 		logger.Error("failed to get replication role for pod0", "pod0_name", pod0Name, "error", err)
 		return -1, fmt.Errorf("failed to get replication role for %s: %w", pod0Name, err)
 	}
-	pod1Role, err := mc.MemgraphNodes[pod1Name].GetReplicationRole(ctx)
+	pod1Role, err := mc.MemgraphNodes[pod1Name].GetReplicationRole(ctx, true)
 	if err != nil {
 		logger.Error("failed to get replication role for pod1", "pod1_name", pod1Name, "error", err)
 		return -1, fmt.Errorf("failed to get replication role for %s: %w", pod1Name, err)
@@ -200,12 +200,12 @@ func (mc *MemgraphCluster) isNewCluster(ctx context.Context) (bool, error) {
 	node0 := mc.MemgraphNodes[pod0Name]
 	node1 := mc.MemgraphNodes[pod1Name]
 
-	pod0Role, err := node0.GetReplicationRole(ctx)
+	pod0Role, err := node0.GetReplicationRole(ctx, true)
 	if err != nil {
 		logger.Error("failed to get replication role for pod0", "pod0_name", pod0Name, "error", err)
 		return false, fmt.Errorf("failed to get replication role for %s: %w", pod0Name, err)
 	}
-	pod1Role, err := node1.GetReplicationRole(ctx)
+	pod1Role, err := node1.GetReplicationRole(ctx, true)
 	if err != nil {
 		logger.Error("failed to get replication role for pod1", "pod1_name", pod1Name, "error", err)
 		return false, fmt.Errorf("failed to get replication role for %s: %w", pod1Name, err)
@@ -265,7 +265,7 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 
 	// Step 3: Run command against pod-0 to verify replication
 	logger.Info("step 3: verifying replication status")
-	replicasResponse, err := pod0Node.GetReplicas(ctx)
+	replicasResponse, err := pod0Node.GetReplicas(ctx, true)
 	if err != nil {
 		return fmt.Errorf("step 3 failed - query replicas: %w", err)
 	}

@@ -99,16 +99,16 @@ func (node *MemgraphNode) GetIpAddress() string {
 }
 
 // GetReplicationRole returns the cached replication role, querying it if not already known
-func (node *MemgraphNode) GetReplicationRole(ctx context.Context) (string, error) {
+func (node *MemgraphNode) GetReplicationRole(ctx context.Context, tryRefresh bool) (string, error) {
 	logger := common.GetLoggerFromContext(ctx)
-	if node.memgraphRole == "" {
+	if node.memgraphRole == "" || tryRefresh {
 		boltAddress, err := node.GetBoltAddress()
 		if err != nil {
-			return "", err
+			return node.memgraphRole, err
 		}
 		roleResp, err := node.client.QueryReplicationRole(ctx, boltAddress)
 		if err != nil {
-			return "", fmt.Errorf("failed to query replication role for node %s: %w", node.name, err)
+			return node.memgraphRole, fmt.Errorf("failed to query replication role for node %s: %w", node.name, err)
 		}
 		logger.Info("memgraph role", "pod_name", node.name, "role", roleResp.Role)
 		node.memgraphRole = roleResp.Role
@@ -117,23 +117,23 @@ func (node *MemgraphNode) GetReplicationRole(ctx context.Context) (string, error
 }
 
 // GetReplicas returns the cached list of replicas, querying it if not already known
-func (node *MemgraphNode) GetReplicas(ctx context.Context) ([]ReplicaInfo, error) {
+func (node *MemgraphNode) GetReplicas(ctx context.Context, tryRefresh bool) ([]ReplicaInfo, error) {
 	logger := common.GetLoggerFromContext(ctx)
-	role, err := node.GetReplicationRole(ctx)
+	role, err := node.GetReplicationRole(ctx, tryRefresh)
 	if err != nil {
-		return nil, err
+		return node.replicasInfo, err
 	}
 	if role != "main" {
 		return nil, fmt.Errorf("cannot get replicas from non-main node %s", node.name)
 	}
-	if !node.hasReplicasInfo {
+	if !node.hasReplicasInfo || tryRefresh {
 		boltAddress, err := node.GetBoltAddress()
 		if err != nil {
-			return nil, err
+			return node.replicasInfo, err
 		}
 		replicasResp, err := node.client.QueryReplicas(ctx, boltAddress)
 		if err != nil {
-			return nil, fmt.Errorf("failed to query replicas for node %s: %w", node.name, err)
+			return node.replicasInfo, fmt.Errorf("failed to query replicas for node %s: %w", node.name, err)
 		}
 		logger.Info("memgraph replicas", "pod_name", node.name, "replica_count", len(replicasResp.Replicas))
 		node.replicasInfo = replicasResp.Replicas

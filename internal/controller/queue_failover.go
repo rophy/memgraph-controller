@@ -224,7 +224,7 @@ func (c *MemgraphController) executeFailoverInternal(ctx context.Context) error 
 		)
 		return fmt.Errorf("cannot get target main node: %w", err)
 	}
-	replicas, err := targetMainNode.GetReplicas(ctx)
+	replicas, err := targetMainNode.GetReplicas(ctx, false)
 	if err != nil {
 		logger.Error("🚨 failover: cannot get replicas from target main node",
 			"error", err,
@@ -384,7 +384,7 @@ func (c *MemgraphController) promoteSyncReplica(ctx context.Context) error {
 		)
 		return fmt.Errorf("failed to promote pod %s to main: %w", targetSyncReplicaName, err)
 	}
-	role, err := targetSyncNode.GetReplicationRole(ctx)
+	role, err := targetSyncNode.GetReplicationRole(ctx, false)
 	if err != nil {
 		logger.Error("failover: failed to verify new role of pod",
 			"pod_name", targetSyncReplicaName,
@@ -431,7 +431,7 @@ func (c *MemgraphController) getHealthyRole(ctx context.Context, podName string)
 		logger.Warn("getHealthyRole: pod %s is not in MemgraphNodes map", "pod_name", podName)
 		return "", false
 	}
-	role, err := node.GetReplicationRole(ctx)
+	role, err := node.GetReplicationRole(ctx, false)
 	if err != nil {
 		logger.Warn("getHealthyRole: Cannot query role from pod",
 			"pod_name", podName,

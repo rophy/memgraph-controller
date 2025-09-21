@@ -200,8 +200,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	c.updateReadGatewayUpstream(ctx)
 
 	// Run SHOW REPLICA to TargetMainPod
-	targetMainNode.ClearCachedInfo()
-	replicas, err := targetMainNode.GetReplicas(ctx)
+	replicas, err := targetMainNode.GetReplicas(ctx, true)
 	if err != nil {
 		logger.Info("Failed to get replicas from main node", "main_node", targetMainNode.GetName(), "error", err)
 		return nil // Retry on next tick
@@ -320,11 +319,8 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 			continue // Skip if pod not ready
 		}
 
-		// Clear cached info to force re-query
-		node.ClearCachedInfo()
-
 		// All replica nodes should have role "replica"
-		role, err := node.GetReplicationRole(ctx)
+		role, err := node.GetReplicationRole(ctx, true)
 		if err != nil {
 			logger.Info("Failed to get role for pod", "pod_name", podName, "error", err)
 			continue // Skip if cannot get role

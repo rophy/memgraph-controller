@@ -48,6 +48,7 @@ type MemgraphController struct {
 	// This prevents race conditions between these operations
 	operationMu sync.Mutex
 
+
 	// Cluster operations
 	cluster *MemgraphCluster
 

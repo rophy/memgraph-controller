@@ -207,9 +207,10 @@ def analyze_client_operations_during_rollout(logs: str,
   rollout_start_naive = rollout_start.replace(tzinfo=None) - datetime.timedelta(seconds=5)
   rollout_end = rollout_start.replace(tzinfo=None) + datetime.timedelta(seconds=rollout_duration + 5)
 
-  operations = []
-  failures = []
-  successes = []
+  # Track operations, failures, and successes for detailed analysis
+  # operations = []  # Future: could track individual operations
+  # failures = []    # Future: could track failure details
+  # successes = []   # Future: could track success details
   failure_windows = []
   current_failure_window = None
 
@@ -254,7 +255,7 @@ def analyze_client_operations_during_rollout(logs: str,
           # Skip if metrics can't be converted to integers
           continue
 
-    except Exception as e:
+    except Exception:
       # Skip malformed log lines
       continue
 
@@ -371,11 +372,11 @@ def test_rolling_restart_continuous_availability():
 
   # Precondition: Cluster is ready
   log_info("Verifying initial cluster health...")
-  
+
   # First ensure StatefulSet is fully ready (handles case where previous test did rolling restart)
   log_info("Ensuring StatefulSet is fully stable...")
   assert wait_for_statefulset_ready(timeout=120), "StatefulSet failed to become ready"
-  
+
   # Then wait for cluster convergence
   assert wait_for_cluster_convergence(timeout=120), "Cluster failed to converge initially"
 
@@ -405,7 +406,7 @@ def test_rolling_restart_continuous_availability():
       # Check for success in either 'status' field or 'msg' field
       if log_data.get('status') == 'success' or 'success' in log_data.get('msg', '').lower():
         success_count += 1
-    except:
+    except Exception:
       continue
 
   assert success_count >= 7, f"Test-client not healthy: only {success_count}/10 recent operations successful"
@@ -421,7 +422,7 @@ def test_rolling_restart_continuous_availability():
       log_data = parse_logfmt(line)
       if log_data.get('status') == 'success' or 'success' in log_data.get('msg', '').lower():
         read_success_count += 1
-    except:
+    except Exception:
       continue
 
   assert read_success_count >= 7, f"Read-client not healthy: only {read_success_count}/10 recent operations successful"
@@ -437,7 +438,7 @@ def test_rolling_restart_continuous_availability():
       log_data = parse_logfmt(line)
       if 'failed' in log_data.get('msg', '').lower() or 'error' in log_data.get('msg', '').lower():
         bad_failure_count += 1
-    except:
+    except Exception:
       continue
 
   assert bad_failure_count >= 7, f"Bad-client not behaving as expected: only {bad_failure_count}/10 recent operations failed"
@@ -445,7 +446,7 @@ def test_rolling_restart_continuous_availability():
   # Step 3: Trigger rolling restart
   log_info("Triggering rolling restart of StatefulSet...")
   rollout_start_time = datetime.datetime.now(datetime.UTC)
-  
+
   # Get initial pod UIDs before triggering rollout
   initial_pods_json = kubectl_get("pods", namespace=MEMGRAPH_NS, selector="app.kubernetes.io/name=memgraph", output="json")
   initial_pods_data = json.loads(initial_pods_json)
@@ -513,7 +514,7 @@ def test_rolling_restart_continuous_availability():
 
   # Get controller logs for additional context
   controller_pod = get_controller_pod()
-  controller_logs = get_pod_logs(controller_pod, since_time=since_time, tail_lines=100)
+  # controller_logs = get_pod_logs(controller_pod, since_time=since_time, tail_lines=100)  # Future: could analyze
 
   # Print analysis results
   print("\n=== Rollout Analysis Results ===")
@@ -693,7 +694,7 @@ def test_rolling_restart_with_main_changes():
           pod_1_became_main = True
           log_info(f"✓ Failover successful: pod-1 is now main (took {time.time() - failover_start_time:.1f}s)")
           break
-      except Exception as e:
+      except Exception:
         # Continue waiting if we can't determine main yet
         pass
       time.sleep(2)
@@ -742,7 +743,7 @@ def test_rolling_restart_with_main_changes():
   initial_pod_uids = {pod['metadata']['name']: pod['metadata']['uid'] for pod in initial_pods_data['items']}
 
   rollout_start_time = datetime.datetime.now(datetime.UTC)
-  log_info(f"Triggered rolling restart of memgraph-ha")
+  log_info("Triggered rolling restart of memgraph-ha")
   trigger_statefulset_rollout()
 
   # Step 6: Monitor rollout completion with multi-client verification

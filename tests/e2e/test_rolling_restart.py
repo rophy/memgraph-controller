@@ -741,6 +741,8 @@ def test_rolling_restart_with_main_changes():
   initial_pods_data = json.loads(initial_pods_json)
   initial_pod_uids = {pod['metadata']['name']: pod['metadata']['uid'] for pod in initial_pods_data['items']}
 
+  rollout_start_time = datetime.datetime.now(datetime.UTC)
+  log_info(f"Triggered rolling restart of memgraph-ha")
   trigger_statefulset_rollout()
 
   # Step 6: Monitor rollout completion with multi-client verification

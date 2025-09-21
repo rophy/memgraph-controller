@@ -66,7 +66,7 @@ func (c *Config) IsMemgraphPod(podName string) bool {
 	return strings.HasPrefix(podName, c.StatefulSetName+"-")
 }
 
-func (c *Config) GetPodName(index int) string {
+func (c *Config) GetPodName(index int32) string {
 	return fmt.Sprintf("%s-%d", c.StatefulSetName, index)
 }
 

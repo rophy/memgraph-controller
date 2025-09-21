@@ -252,7 +252,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		// Apply the logic: only drop when replication is unhealthy AND IP is incorrect
 		// AND the pod is ready with a valid IP (so we can re-register)
 		if !replicationHealthy && !ipCorrect {
-			isSyncReplica := (replicaName == targetSyncReplicaName || replicaInfo.SyncMode == "sync")
+			isSyncReplica := (replicaName == targetSyncReplicaName || replicaInfo.SyncMode == "strict_sync")
 
 			logger.Info("Step 4: Replica has both unhealthy replication and incorrect IP - will drop and re-register",
 				"pod_name", podName,

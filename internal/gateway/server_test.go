@@ -9,24 +9,24 @@ import (
 
 func TestServer_SetUpstreamAddress(t *testing.T) {
 	config := &Config{
-		BindAddress:            "localhost:0", // Use port 0 for auto-assignment
-		MaxConnections:         10,
-		Timeout:                30 * time.Second,
-		ConnectionTimeout:      5 * time.Second,
-		BufferSize:             32768,
-		IdleTimeout:            5 * time.Minute,
-		CleanupInterval:        1 * time.Minute,
-		MaxBytesPerConnection:  100 * 1024 * 1024,
-		TLSEnabled:             false,
-		RateLimitEnabled:       false,
-		RateLimitRPS:           100,
-		RateLimitBurst:         200,
-		RateLimitWindow:        time.Minute,
-		HealthCheckInterval:    30 * time.Second,
-		TraceEnabled:           false,
+		BindAddress:           "localhost:0", // Use port 0 for auto-assignment
+		MaxConnections:        10,
+		Timeout:               30 * time.Second,
+		ConnectionTimeout:     5 * time.Second,
+		BufferSize:            32768,
+		IdleTimeout:           5 * time.Minute,
+		CleanupInterval:       1 * time.Minute,
+		MaxBytesPerConnection: 100 * 1024 * 1024,
+		TLSEnabled:            false,
+		RateLimitEnabled:      false,
+		RateLimitRPS:          100,
+		RateLimitBurst:        200,
+		RateLimitWindow:       time.Minute,
+		HealthCheckInterval:   30 * time.Second,
+		TraceEnabled:          false,
 	}
 
-	server := NewServer(config)
+	server := NewServer("test-gw", config)
 
 	// Test initial empty state
 	if addr := server.GetUpstreamAddress(); addr != "" {
@@ -36,7 +36,7 @@ func TestServer_SetUpstreamAddress(t *testing.T) {
 	// Test setting upstream address
 	testAddress := "10.0.0.1:7687"
 	server.SetUpstreamAddress(context.Background(), testAddress)
-	
+
 	if addr := server.GetUpstreamAddress(); addr != testAddress {
 		t.Errorf("Expected upstream address %s, got %s", testAddress, addr)
 	}
@@ -63,28 +63,28 @@ func TestServer_SetUpstreamAddress(t *testing.T) {
 
 func TestServer_ConcurrentUpstreamAccess(t *testing.T) {
 	config := &Config{
-		BindAddress:            "localhost:0",
-		MaxConnections:         10,
-		Timeout:                30 * time.Second,
-		ConnectionTimeout:      5 * time.Second,
-		BufferSize:             32768,
-		IdleTimeout:            5 * time.Minute,
-		CleanupInterval:        1 * time.Minute,
-		MaxBytesPerConnection:  100 * 1024 * 1024,
-		TLSEnabled:             false,
-		RateLimitEnabled:       false,
-		RateLimitRPS:           100,
-		RateLimitBurst:         200,
-		RateLimitWindow:        time.Minute,
-		HealthCheckInterval:    30 * time.Second,
-		TraceEnabled:           false,
+		BindAddress:           "localhost:0",
+		MaxConnections:        10,
+		Timeout:               30 * time.Second,
+		ConnectionTimeout:     5 * time.Second,
+		BufferSize:            32768,
+		IdleTimeout:           5 * time.Minute,
+		CleanupInterval:       1 * time.Minute,
+		MaxBytesPerConnection: 100 * 1024 * 1024,
+		TLSEnabled:            false,
+		RateLimitEnabled:      false,
+		RateLimitRPS:          100,
+		RateLimitBurst:        200,
+		RateLimitWindow:       time.Minute,
+		HealthCheckInterval:   30 * time.Second,
+		TraceEnabled:          false,
 	}
 
-	server := NewServer(config)
-	
+	server := NewServer("test-gw", config)
+
 	const numGoroutines = 10
 	const numOperations = 100
-	
+
 	var wg sync.WaitGroup
 	wg.Add(numGoroutines * 2) // readers + writers
 
@@ -124,25 +124,25 @@ func TestServer_ConcurrentUpstreamAccess(t *testing.T) {
 
 func TestServer_GetUpstreamAddressThreadSafety(t *testing.T) {
 	config := &Config{
-		BindAddress:            "localhost:0",
-		MaxConnections:         10,
-		Timeout:                30 * time.Second,
-		ConnectionTimeout:      5 * time.Second,
-		BufferSize:             32768,
-		IdleTimeout:            5 * time.Minute,
-		CleanupInterval:        1 * time.Minute,
-		MaxBytesPerConnection:  100 * 1024 * 1024,
-		TLSEnabled:             false,
-		RateLimitEnabled:       false,
-		RateLimitRPS:           100,
-		RateLimitBurst:         200,
-		RateLimitWindow:        time.Minute,
-		HealthCheckInterval:    30 * time.Second,
-		TraceEnabled:           false,
+		BindAddress:           "localhost:0",
+		MaxConnections:        10,
+		Timeout:               30 * time.Second,
+		ConnectionTimeout:     5 * time.Second,
+		BufferSize:            32768,
+		IdleTimeout:           5 * time.Minute,
+		CleanupInterval:       1 * time.Minute,
+		MaxBytesPerConnection: 100 * 1024 * 1024,
+		TLSEnabled:            false,
+		RateLimitEnabled:      false,
+		RateLimitRPS:          100,
+		RateLimitBurst:        200,
+		RateLimitWindow:       time.Minute,
+		HealthCheckInterval:   30 * time.Second,
+		TraceEnabled:          false,
 	}
 
-	server := NewServer(config)
-	
+	server := NewServer("test-gw", config)
+
 	// Set an initial address
 	testAddress := "10.0.0.1:7687"
 	server.SetUpstreamAddress(context.Background(), testAddress)
@@ -153,7 +153,7 @@ func TestServer_GetUpstreamAddressThreadSafety(t *testing.T) {
 	wg.Add(numReaders)
 
 	results := make([]string, numReaders)
-	
+
 	for i := 0; i < numReaders; i++ {
 		go func(index int) {
 			defer wg.Done()
@@ -173,24 +173,24 @@ func TestServer_GetUpstreamAddressThreadSafety(t *testing.T) {
 
 func TestNewServer(t *testing.T) {
 	config := &Config{
-		BindAddress:            "localhost:0",
-		MaxConnections:         10,
-		Timeout:                30 * time.Second,
-		ConnectionTimeout:      5 * time.Second,
-		BufferSize:             32768,
-		IdleTimeout:            5 * time.Minute,
-		CleanupInterval:        1 * time.Minute,
-		MaxBytesPerConnection:  100 * 1024 * 1024,
-		TLSEnabled:             false,
-		RateLimitEnabled:       false,
-		RateLimitRPS:           100,
-		RateLimitBurst:         200,
-		RateLimitWindow:        time.Minute,
-		HealthCheckInterval:    30 * time.Second,
-		TraceEnabled:           false,
+		BindAddress:           "localhost:0",
+		MaxConnections:        10,
+		Timeout:               30 * time.Second,
+		ConnectionTimeout:     5 * time.Second,
+		BufferSize:            32768,
+		IdleTimeout:           5 * time.Minute,
+		CleanupInterval:       1 * time.Minute,
+		MaxBytesPerConnection: 100 * 1024 * 1024,
+		TLSEnabled:            false,
+		RateLimitEnabled:      false,
+		RateLimitRPS:          100,
+		RateLimitBurst:        200,
+		RateLimitWindow:       time.Minute,
+		HealthCheckInterval:   30 * time.Second,
+		TraceEnabled:          false,
 	}
 
-	server := NewServer(config)
+	server := NewServer("test-gw", config)
 
 	if server == nil {
 		t.Fatal("NewServer returned nil")

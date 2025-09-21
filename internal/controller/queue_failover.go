@@ -143,6 +143,8 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 	}
 	targetMainPodName := c.config.GetPodName(targetMainIndex)
 
+	logger.Debug("performFailoverCheck", "target_main_index", targetMainIndex, "target_main_pod_name", targetMainPodName)
+
 	// Check if this failover check was triggered by health check failure
 	if eventValue := ctx.Value(failoverCheckEventKey); eventValue != nil {
 		if event, ok := eventValue.(FailoverCheckEvent); ok && event.Reason == "health-check-failure" {
@@ -251,12 +253,12 @@ func (c *MemgraphController) executeFailoverInternal(ctx context.Context) error 
 		)
 		return fmt.Errorf("%s not found in cached replicas list, unsafe to perform failover", targetSyncReplicaName)
 	}
-	if syncReplica.SyncMode != "sync" {
-		logger.Error("failover: cached replica type is not \"sync\", unsafe to perform failover",
+	if syncReplica.SyncMode != "strict_sync" {
+		logger.Error("failover: cached replica type is not \"strict_sync\", unsafe to perform failover",
 			"pod_name", targetSyncReplicaName,
 			"sync_mode", syncReplica.SyncMode,
 		)
-		return fmt.Errorf("cached replica type is not \"sync\"")
+		return fmt.Errorf("cached replica type is not \"strict_sync\"")
 	}
 	if syncReplica.ParsedDataInfo == nil {
 		logger.Error("failover: cached replica data_info is nil, unsafe to perform failover",
@@ -336,6 +338,9 @@ func (c *MemgraphController) promoteSyncReplica(ctx context.Context) error {
 	targetSyncReplicaIndex := 1 - targetMainIndex // Assuming 2 pods: 0 and 1
 	targetSyncReplicaName := c.config.GetPodName(targetSyncReplicaIndex)
 	logger.Info("promoting sync replica to main", "pod_name", targetSyncReplicaName)
+
+	// Critical: Protect read gateway from accidental write access during role transition
+	c.protectReadGatewayBeforeRoleChange(ctx, targetSyncReplicaName)
 	targetSyncNode, exists := c.cluster.MemgraphNodes[targetSyncReplicaName]
 	if !exists {
 		logger.Error("failover: sync replica node not found in cluster map",
@@ -407,6 +412,61 @@ func (c *MemgraphController) getHealthyRole(ctx context.Context, podName string)
 		return role, false
 	}
 	return role, true
+}
+
+// protectReadGatewayBeforeRoleChange ensures read gateway doesn't accidentally gain write access
+// during replica-to-main role transitions. This prevents the critical security issue where
+// read-only clients could suddenly perform writes when their upstream replica gets promoted.
+func (c *MemgraphController) protectReadGatewayBeforeRoleChange(ctx context.Context, podNameBeingPromoted string) {
+	logger := common.GetLoggerFromContext(ctx)
+
+	// Skip if read gateway is not enabled
+	if c.readGatewayServer == nil {
+		logger.Debug("read gateway not enabled, skipping role transition protection")
+		return
+	}
+
+	// Get current read gateway upstream address
+	currentUpstream := c.readGatewayServer.GetUpstreamAddress()
+	if currentUpstream == "" {
+		logger.Debug("read gateway has no upstream set, no protection needed")
+		return
+	}
+
+	// Get the address of the pod being promoted
+	podBeingPromoted, exists := c.cluster.MemgraphNodes[podNameBeingPromoted]
+	if !exists {
+		logger.Warn("pod being promoted not found in cluster state", "pod_name", podNameBeingPromoted)
+		return
+	}
+
+	promotedPodAddress, err := podBeingPromoted.GetBoltAddress()
+	if err != nil {
+		logger.Warn("failed to get bolt address for pod being promoted", "pod_name", podNameBeingPromoted, "error", err)
+		return
+	}
+
+	// Check if the current read gateway upstream is the pod being promoted to main
+	if currentUpstream == promotedPodAddress {
+		logger.Warn("🚨 CRITICAL: Read gateway upstream is being promoted to main - disconnecting all read clients to prevent accidental writes",
+			"pod_name", podNameBeingPromoted,
+			"current_upstream", currentUpstream,
+			"action", "disconnect_all_read_connections")
+
+		// Immediately disconnect all read gateway connections
+		c.readGatewayServer.DisconnectAll(ctx)
+
+		// Clear the upstream to prevent new connections until we select a new replica
+		c.readGatewayServer.SetUpstreamAddress(ctx, "")
+
+		logger.Info("read gateway connections disconnected, upstream cleared",
+			"pod_name", podNameBeingPromoted,
+			"reason", "role_transition_protection")
+	} else {
+		logger.Debug("read gateway upstream is not the pod being promoted, no protection needed",
+			"pod_being_promoted", promotedPodAddress,
+			"current_upstream", currentUpstream)
+	}
 }
 
 // stopFailoverCheckQueue stops the failover check queue processor

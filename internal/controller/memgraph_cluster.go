@@ -77,7 +77,7 @@ func (mc *MemgraphCluster) Refresh(ctx context.Context) error {
 }
 
 // GetTargetMainPod returns the pod name for the given target main index
-func (mc *MemgraphCluster) GetTargetMainPod(targetMainIndex int) string {
+func (mc *MemgraphCluster) GetTargetMainPod(targetMainIndex int32) string {
 	if targetMainIndex < 0 {
 		return ""
 	}
@@ -102,7 +102,7 @@ func (mc *MemgraphCluster) getPodsFromCache() []v1.Pod {
 // Returns (targetMainIndex, nil) if cluster is ready
 // Returns (-1, nil) if cluster is not ready to be discovered
 // Returns (-1, error) if cluster is in an unknown state
-func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int, error) {
+func (mc *MemgraphCluster) discoverClusterState(ctx context.Context) (int32, error) {
 	logger := common.GetLoggerFromContext(ctx)
 	start := time.Now()
 	defer func() {
@@ -274,7 +274,7 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 	found := false
 	for _, replica := range replicasResponse {
 		logger.Info("replica found", "replica_name", replica.Name, "sync_mode", replica.SyncMode)
-		if replica.Name == pod1Node.GetReplicaName() && replica.SyncMode == "sync" {
+		if replica.Name == pod1Node.GetReplicaName() && replica.SyncMode == "strict_sync" {
 			found = true
 			// Parse data_info to check if replica is ready
 			if replica.ParsedDataInfo != nil && replica.ParsedDataInfo.Status == "ready" && replica.ParsedDataInfo.Behind == 0 {

@@ -35,7 +35,7 @@ type MemgraphController struct {
 	leaderElection *LeaderElection
 
 	// State management
-	targetMainIndex int
+	targetMainIndex atomic.Int32
 	configMapName   string
 	targetMutex     sync.RWMutex
 
@@ -95,7 +95,7 @@ func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, 
 	// Initialize read/write gateway server (port 7687)
 	gatewayConfig := gateway.LoadGatewayConfig()
 	gatewayConfig.BindAddress = config.GatewayBindAddress
-	controller.gatewayServer = gateway.NewServer(gatewayConfig)
+	controller.gatewayServer = gateway.NewServer("main-gw", gatewayConfig)
 
 	// Initialize read-only gateway server (port 7688)
 	// Check if read-only gateway is enabled via environment variable
@@ -103,7 +103,10 @@ func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, 
 		readGatewayConfig := gateway.LoadGatewayConfig()
 		// Change port to 7688 for read-only traffic
 		readGatewayConfig.BindAddress = "0.0.0.0:7688"
-		controller.readGatewayServer = gateway.NewServer(readGatewayConfig)
+		controller.readGatewayServer = gateway.NewServer("read-gw", readGatewayConfig)
+
+		// Set up upstream failure callback for read gateway
+		controller.readGatewayServer.SetUpstreamFailureCallback(controller.handleReadGatewayUpstreamFailure)
 	}
 
 	// Initialize state management with release-based ConfigMap name
@@ -117,7 +120,7 @@ func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, 
 	}
 	controller.configMapName = configMapName
 
-	controller.targetMainIndex = -1 // -1 indicates not yet loaded from ConfigMap
+	controller.targetMainIndex.Store(-1) // -1 indicates not yet loaded from ConfigMap
 	// Initialize controller state
 	controller.maxFailures = 5
 	controller.stopCh = make(chan struct{})
@@ -204,14 +207,18 @@ func (c *MemgraphController) Shutdown(ctx context.Context) error {
 }
 
 // GetTargetMainIndex returns the target main index from ConfigMap or error if not available
-func (c *MemgraphController) GetTargetMainIndex(ctx context.Context) (int, error) {
-	if c.targetMainIndex != -1 {
-		return c.targetMainIndex, nil
+func (c *MemgraphController) GetTargetMainIndex(ctx context.Context) (int32, error) {
+	index := c.targetMainIndex.Load()
+	if index != -1 {
+		return index, nil
 	}
 
 	// Need to load from ConfigMap
 	c.targetMutex.Lock()
 	defer c.targetMutex.Unlock()
+
+	logger := common.GetLoggerFromContext(ctx)
+	logger.Debug("GetTargetMainIndex: target main index not found in memory, loading from ConfigMap")
 
 	// Load state from ConfigMap
 	configMap, err := c.clientset.CoreV1().ConfigMaps(c.config.Namespace).Get(ctx, c.configMapName, metav1.GetOptions{})
@@ -224,20 +231,24 @@ func (c *MemgraphController) GetTargetMainIndex(ctx context.Context) (int, error
 		return -1, fmt.Errorf("targetMainIndex not found in ConfigMap")
 	}
 
-	var targetMainIndex int
+	var targetMainIndex int32
 	if _, err := fmt.Sscanf(targetMainIndexStr, "%d", &targetMainIndex); err != nil {
 		return -1, fmt.Errorf("invalid targetMainIndex format: %w", err)
 	}
 
-	c.targetMainIndex = targetMainIndex
+	c.targetMainIndex.Store(targetMainIndex)
+
+	logger.Info("GetTargetMainIndex: loaded target main index from ConfigMap", "index", targetMainIndex)
 	return targetMainIndex, nil
 }
 
 // SetTargetMainIndex updates both in-memory target and ConfigMap
-func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) error {
-	ctx, logger := common.WithAttr(ctx, "thread", "setTargetMainIndex")
+func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int32) error {
 	c.targetMutex.Lock()
 	defer c.targetMutex.Unlock()
+
+	logger := common.GetLoggerFromContext(ctx)
+	logger.Debug("SetTargetMainIndex: updating target main index in ConfigMap", "index", index)
 
 	// Get owner reference to the controller pod for proper cleanup
 	ownerRef, err := c.getControllerOwnerReference(ctx)
@@ -275,14 +286,14 @@ func (c *MemgraphController) SetTargetMainIndex(ctx context.Context, index int) 
 	}
 
 	// Check if main node changed
-	oldIndex := c.targetMainIndex
+	oldIndex := c.targetMainIndex.Load()
 	if oldIndex != index && oldIndex != -1 && c.promMetrics != nil {
 		c.promMetrics.RecordMainChange()
 	}
 
 	// Update in-memory value
-	c.targetMainIndex = index
-	logger.Info("Updated TargetMainIndex", "index", index)
+	c.targetMainIndex.Store(index)
+	logger.Info("SetTargetMainIndex: updated target main index in ConfigMap", "index", index)
 	return nil
 }
 
@@ -306,7 +317,7 @@ func (c *MemgraphController) getTargetSyncReplicaNode(ctx context.Context) (*Mem
 	if err != nil {
 		return nil, fmt.Errorf("failed to get target main index: %w", err)
 	}
-	var targetSyncIndex int
+	var targetSyncIndex int32
 	if targetMainIndex == 0 {
 		targetSyncIndex = 1
 	} else {
@@ -318,38 +329,6 @@ func (c *MemgraphController) getTargetSyncReplicaNode(ctx context.Context) (*Mem
 		return nil, fmt.Errorf("target sync replica pod %s not found in cluster state", podName)
 	}
 	return node, nil
-}
-
-// updateCachedState removed - obsolete with new architecture
-
-// isPodBecomeUnhealthy checks if a pod transitioned from healthy to unhealthy
-func (c *MemgraphController) isPodBecomeUnhealthy(oldPod, newPod *v1.Pod) bool {
-	if oldPod == nil || newPod == nil {
-		return false
-	}
-
-	oldReady := isPodReady(oldPod)
-	newReady := isPodReady(newPod)
-
-	// Pod became unhealthy if it was ready before and is not ready now
-	if oldReady && !newReady {
-		// Use global logger if context logger is not available
-		logger := common.GetLogger()
-		logger.Info("Pod became unhealthy", "pod", newPod.Name, "old_ready", oldReady, "new_ready", newReady)
-		return true
-	}
-
-	return false
-}
-
-// isPodReady checks if a pod is ready based on its conditions
-func isPodReady(pod *v1.Pod) bool {
-	for _, condition := range pod.Status.Conditions {
-		if condition.Type == v1.PodReady {
-			return condition.Status == v1.ConditionTrue
-		}
-	}
-	return false
 }
 
 // IsRunning returns whether the controller is currently running
@@ -756,6 +735,27 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 	return totalConnections, nil
 }
 
+// handleReadGatewayUpstreamFailure handles upstream failures reported by the read gateway
+func (c *MemgraphController) handleReadGatewayUpstreamFailure(ctx context.Context, upstreamAddress string, err error) {
+	logger := common.GetLoggerFromContext(ctx)
+	logger.Warn("Read gateway reported upstream failure, triggering upstream switch",
+		"upstream_address", upstreamAddress,
+		"error", err.Error(),
+		"action", "immediate_upstream_switch")
+
+	// Immediately switch to a different replica
+	c.updateReadGatewayUpstream(ctx)
+
+	newUpstream := ""
+	if c.readGatewayServer != nil {
+		newUpstream = c.readGatewayServer.GetUpstreamAddress()
+	}
+
+	logger.Info("Read gateway upstream switch completed after connection failure",
+		"failed_upstream", upstreamAddress,
+		"new_upstream", newUpstream)
+}
+
 // IsLeader returns whether the controller is the current leader
 func (c *MemgraphController) IsLeader() bool {
 	return c.leaderElection.IsLeader()
@@ -838,6 +838,11 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*httpapi.Sta
 	statusResponse.ReconciliationMetrics = c.GetReconciliationMetrics()
 	statusResponse.ReplicaRegistrations = replicaRegistrations
 
+	// Add read gateway status if enabled
+	if c.readGatewayServer != nil {
+		statusResponse.ReadGatewayStatus = c.getReadGatewayStatus(ctx)
+	}
+
 	response := &httpapi.StatusResponse{
 		Timestamp:    time.Now(),
 		ClusterState: statusResponse,
@@ -848,4 +853,70 @@ func (c *MemgraphController) GetClusterStatus(ctx context.Context) (*httpapi.Sta
 		"pod_count", len(pods), "current_main", currentMain, "healthy_pods", healthyCount, "total_pods", statusResponse.TotalPods)
 
 	return response, nil
+}
+
+// getReadGatewayStatus returns the current status of the read gateway
+func (c *MemgraphController) getReadGatewayStatus(ctx context.Context) *httpapi.ReadGatewayStatus {
+	if c.readGatewayServer == nil {
+		return nil
+	}
+
+	// Get gateway statistics
+	gatewayStats := c.readGatewayServer.GetStats()
+	currentUpstream := c.readGatewayServer.GetUpstreamAddress()
+
+	// Get health check statistics from health prober
+	healthCheckStats := httpapi.HealthCheckStats{
+		ConsecutiveFailures: 0,
+		LastHealthStatus:    true,
+	}
+
+	if c.healthProber != nil {
+		// Get read gateway health stats from prober
+		c.healthProber.mu.RLock()
+		healthCheckStats.ConsecutiveFailures = c.healthProber.readGatewayConsecutiveFailures
+		healthCheckStats.LastHealthStatus = c.healthProber.lastReadGatewayHealthStatus
+		c.healthProber.mu.RUnlock()
+	}
+
+	// Determine upstream pod name from address
+	upstreamPodName := ""
+	upstreamHealthy := false
+	if currentUpstream != "" {
+		upstreamPodName = c.getUpstreamPodName(currentUpstream)
+		upstreamHealthy = healthCheckStats.LastHealthStatus && healthCheckStats.ConsecutiveFailures == 0
+	}
+
+	return &httpapi.ReadGatewayStatus{
+		Enabled:         true,
+		CurrentUpstream: currentUpstream,
+		UpstreamPodName: upstreamPodName,
+		UpstreamHealthy: upstreamHealthy,
+		ConnectionStats: httpapi.GatewayConnectionStats{
+			ActiveConnections:   gatewayStats.ActiveConnections,
+			TotalConnections:    gatewayStats.TotalConnections,
+			RejectedConnections: gatewayStats.RejectedConnections,
+			Errors:              gatewayStats.Errors,
+		},
+		HealthCheckStats: healthCheckStats,
+	}
+}
+
+// getUpstreamPodName extracts the pod name from an upstream address
+func (c *MemgraphController) getUpstreamPodName(upstreamAddress string) string {
+	// Parse IP from address (format: "IP:7687")
+	if len(upstreamAddress) < 6 || upstreamAddress[len(upstreamAddress)-5:] != ":7687" {
+		return ""
+	}
+
+	// Find the pod with matching address
+	for podName, node := range c.cluster.MemgraphNodes {
+		if nodeAddress, err := node.GetBoltAddress(); err == nil {
+			if nodeAddress == upstreamAddress {
+				return podName
+			}
+		}
+	}
+
+	return ""
 }

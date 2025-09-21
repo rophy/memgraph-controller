@@ -16,6 +16,9 @@ import (
 	"memgraph-controller/internal/metrics"
 )
 
+// UpstreamFailureCallback is called when upstream connection failures are detected
+type UpstreamFailureCallback func(ctx context.Context, upstreamAddress string, err error)
+
 // MemgraphNode represents a Memgraph node with pod information
 type MemgraphNode struct {
 	Name        string
@@ -45,6 +48,9 @@ type Server struct {
 	listener    net.Listener
 	connections *ConnectionTracker
 
+	// Name of the server
+	name string
+
 	// Server state
 	isRunning         int32  // atomic boolean
 	upstreamAddress   string // The address of the upstream Memgraph node (e.g. main pod)
@@ -70,10 +76,13 @@ type Server struct {
 
 	// Prometheus metrics
 	promMetrics *metrics.Metrics
+
+	// Upstream failure callback for controller notification
+	upstreamFailureCallback UpstreamFailureCallback
 }
 
 // NewServer creates a new gateway server with the given configuration
-func NewServer(config *Config) *Server {
+func NewServer(name string, config *Config) *Server {
 	// Create rate limiter
 	rateLimiter := NewRateLimiter(
 		config.RateLimitEnabled,
@@ -83,6 +92,7 @@ func NewServer(config *Config) *Server {
 	)
 
 	return &Server{
+		name:            name,
 		config:          config,
 		connections:     NewConnectionTracker(config.MaxConnections),
 		upstreamAddress: "",
@@ -125,7 +135,8 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to listen with TLS on %s: %w", s.config.BindAddress, err)
 		}
 
-		logger.Info("Gateway server listening with TLS", "address", s.config.BindAddress, "cert_path", s.config.TLSCertPath)
+		logger.Info("Gateway server listening with TLS", "address",
+			"name", s.name, "address", s.config.BindAddress, "cert_path", s.config.TLSCertPath)
 	} else {
 		listener, err = net.Listen("tcp", s.config.BindAddress)
 		if err != nil {
@@ -133,7 +144,7 @@ func (s *Server) Start(ctx context.Context) error {
 			return fmt.Errorf("failed to listen on %s: %w", s.config.BindAddress, err)
 		}
 
-		logger.Info("Gateway server listening", "address", s.config.BindAddress, "tls", false)
+		logger.Info("Gateway server listening", "name", s.name, "address", s.config.BindAddress, "tls", false)
 	}
 
 	s.listener = listener
@@ -162,7 +173,7 @@ func (s *Server) SetUpstreamAddress(ctx context.Context, address string) {
 		return
 	}
 
-	logger.Info("Changing upstream address", "old_address", oldAddress, "new_address", address)
+	logger.Info("Changing upstream address", "name", s.name, "old_address", oldAddress, "new_address", address)
 	// Updating upstream address implies disconnecting all existing connections.
 	s.DisconnectAll(ctx)
 	s.upstreamAddress = address
@@ -171,6 +182,11 @@ func (s *Server) SetUpstreamAddress(ctx context.Context, address string) {
 // SetPrometheusMetrics sets the Prometheus metrics instance
 func (s *Server) SetPrometheusMetrics(m *metrics.Metrics) {
 	s.promMetrics = m
+}
+
+// SetUpstreamFailureCallback sets the callback for upstream failure notifications
+func (s *Server) SetUpstreamFailureCallback(callback UpstreamFailureCallback) {
+	s.upstreamFailureCallback = callback
 }
 
 // acceptConnections runs the main accept loop for incoming connections
@@ -214,7 +230,7 @@ func (s *Server) acceptConnections(ctx context.Context) {
 		// Reject connection if upstream address is not set
 		if s.GetUpstreamAddress() == "" {
 			atomic.AddInt64(&s.rejectedConnections, 1)
-			logger.Warn("Connection rejected - upstream address not set", "client_ip", clientIP, "client_addr", conn.RemoteAddr().String())
+			logger.Warn("Connection rejected - upstream address not set", "name", s.name, "client_ip", clientIP, "client_addr", conn.RemoteAddr().String())
 			conn.Close()
 			continue
 		}
@@ -222,7 +238,7 @@ func (s *Server) acceptConnections(ctx context.Context) {
 		// Check rate limiting
 		if !s.rateLimiter.Allow(clientIP) {
 			atomic.AddInt64(&s.rateLimitRejections, 1)
-			logger.Warn("Connection rate limited", "client_ip", clientIP, "client_addr", conn.RemoteAddr().String())
+			logger.Warn("Connection rate limited", "name", s.name, "client_ip", clientIP, "client_addr", conn.RemoteAddr().String())
 			conn.Close()
 			continue
 		}
@@ -231,7 +247,7 @@ func (s *Server) acceptConnections(ctx context.Context) {
 		if !s.connections.CanAccept() {
 			atomic.AddInt64(&s.rejectedConnections, 1)
 			s.rateLimiter.Release(clientIP) // Release rate limit token
-			logger.Warn("Connection rejected - max connections reached", "client_addr", conn.RemoteAddr().String(), "max_connections", s.config.MaxConnections)
+			logger.Warn("Connection rejected - max connections reached", "name", s.name, "client_addr", conn.RemoteAddr().String(), "max_connections", s.config.MaxConnections)
 			conn.Close()
 			continue
 		}
@@ -275,7 +291,7 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 		s.promMetrics.UpdateGatewayConnections(int(atomic.LoadInt64(&s.activeConnections)))
 	}
 
-	logger.Debug("established", "client_ip", clientIP)
+	logger.Debug("established", "name", s.name, "client_ip", clientIP)
 
 	// Track the connection
 	session := s.connections.Track(clientConn)
@@ -296,16 +312,24 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 
 		// If connection to upstream fails, update health status
 		s.healthMu.Lock()
-		s.healthStatus = fmt.Sprintf("main-connection-failed: %v", err)
+		s.healthStatus = fmt.Sprintf("upstream-connection-failed: %v", err)
 		s.lastHealthCheck = time.Now()
 		s.healthMu.Unlock()
+
+		// Notify controller about upstream failure if callback is set
+		if s.upstreamFailureCallback != nil {
+			go func() {
+				// Run callback in background to avoid blocking connection handling
+				s.upstreamFailureCallback(ctx, upstreamAddress, err)
+			}()
+		}
 
 		return
 	}
 	defer backendConn.Close()
 
 	session.SetBackendConnection(backendConn)
-	logger.Info("Connection established to main", "client_addr", clientAddr, "session_id", session.ID)
+	logger.Info("Connection established to main", "name", s.name, "client_addr", clientAddr, "session_id", session.ID)
 
 	// Start bidirectional proxy
 	s.proxyConnections(ctx, clientConn, backendConn, session)
@@ -329,7 +353,7 @@ func (s *Server) proxyConnections(ctx context.Context, clientConn, backendConn n
 		session.AddBytesSent(written)
 		clientToBackendErr = err
 		if err != nil && err != io.EOF {
-			logger.Warn("error copying", "from", clientAddr, "to", backendAddr, "error", err)
+			logger.Warn("error copying", "name", s.name, "from", clientAddr, "to", backendAddr, "error", err)
 		}
 		// Close backend write side to signal EOF
 		if tcpConn, ok := backendConn.(*net.TCPConn); ok {
@@ -344,7 +368,7 @@ func (s *Server) proxyConnections(ctx context.Context, clientConn, backendConn n
 		session.AddBytesReceived(written)
 		backendToClientErr = err
 		if err != nil && err != io.EOF {
-			logger.Warn("error copying", "from", backendAddr, "to", clientAddr, "error", err)
+			logger.Warn("error copying", "name", s.name, "from", backendAddr, "to", clientAddr, "error", err)
 		}
 		// Close client write side to signal EOF
 		if tcpConn, ok := clientConn.(*net.TCPConn); ok {
@@ -378,6 +402,7 @@ func (s *Server) proxyConnections(ctx context.Context, clientConn, backendConn n
 	}
 
 	logger.Info("proxy session completed",
+		"name", s.name,
 		"client_addr", clientAddr,
 		"backend_addr", backendAddr,
 		"total_bytes", totalBytes,
@@ -407,13 +432,13 @@ func (s *Server) periodicCleanup(ctx context.Context) {
 			// Clean up idle connections
 			idleCleanup := s.connections.CleanupIdle(s.config.IdleTimeout)
 			if idleCleanup > 0 {
-				logger.Info("cleaned up idle connections", "count", idleCleanup)
+				logger.Info("cleaned up idle connections", "name", s.name, "count", idleCleanup)
 			}
 
 			// Clean up stale connections (fallback)
 			staleCleanup := s.connections.CleanupStale(s.config.IdleTimeout * 2)
 			if staleCleanup > 0 {
-				logger.Info("cleaned up stale connections", "count", staleCleanup)
+				logger.Info("cleaned up stale connections", "name", s.name, "count", staleCleanup)
 			}
 
 			// Log connection statistics
@@ -421,7 +446,7 @@ func (s *Server) periodicCleanup(ctx context.Context) {
 			totalSent, totalReceived := s.connections.GetTotalBytes()
 
 			if activeCount > 0 {
-				logger.Info("connections", "active_count", activeCount, "bytes_sent", totalSent, "bytes_received", totalReceived)
+				logger.Info("connections", "name", s.name, "active_count", activeCount, "bytes_sent", totalSent, "bytes_received", totalReceived)
 			}
 		}
 	}
@@ -432,11 +457,11 @@ func (s *Server) DisconnectAll(ctx context.Context) {
 	logger := common.GetLoggerFromContext(ctx)
 	activeConnections := s.connections.GetCount()
 	if activeConnections == 0 {
-		logger.Info("no active connections to disconnect")
+		logger.Info("no active connections to disconnect", "name", s.name)
 		return
 	}
 
-	logger.Info("disconnecting all active connections", "count", activeConnections)
+	logger.Info("disconnecting all active connections", "name", s.name, "count", activeConnections)
 
 	// Get all active sessions and close them
 	sessions := s.connections.GetAllSessions()

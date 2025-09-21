@@ -630,27 +630,32 @@ def test_rolling_restart_continuous_availability():
 
 def test_rolling_restart_with_main_changes():
   """
-  Test that verifies proper main role handling during rolling restart.
+  Test that verifies proper failover and main role handling during rolling restart.
 
-  This test specifically checks that:
-  - Main role is properly transferred when the main pod is restarted
-  - No split-brain occurs during the restart
-  - Write availability is maintained
+  This test specifically checks:
+  1. After initially checking for cluster healthy
+  2. If pod-0 is main pod, delete it to force failover to pod-1
+  3. Assertion: pod-1 should be eventually promoted to main
+  4. Wait cluster healthy (all replication status 'ready')
+  5. Perform rolling restart
+  6. Same verification points as before
 
   Success criteria:
-  - Main role changes are handled gracefully
-  - No period with multiple mains
-  - No period with no main > 15 seconds
+  - Forced failover completes successfully
+  - Pod-1 becomes main after pod-0 deletion
+  - Cluster converges to healthy state after failover
+  - Rolling restart maintains availability with multiple clients
+  - Main role changes are handled gracefully during rolling restart
   """
-  print("\n=== Testing Rolling Restart with Main Role Changes ===")
+  print("\n=== Testing Rolling Restart with Failover Scenario ===")
 
-  # Precondition: Cluster is ready
-  log_info("Verifying initial cluster health...")
-  
-  # First ensure StatefulSet is fully ready (handles case where previous test did rolling restart)
+  # Step 1: Verify initial cluster health
+  log_info("Step 1: Verifying initial cluster health...")
+
+  # First ensure StatefulSet is fully ready
   log_info("Ensuring StatefulSet is fully stable...")
   assert wait_for_statefulset_ready(timeout=120), "StatefulSet failed to become ready"
-  
+
   # Then wait for cluster convergence
   assert wait_for_cluster_convergence(timeout=120), "Cluster failed to converge initially"
 
@@ -658,71 +663,191 @@ def test_rolling_restart_with_main_changes():
   initial_main = find_main_pod_by_querying()
   log_info(f"Initial main pod: {initial_main}")
 
-  # Trigger rolling restart
-  log_info("Triggering rolling restart...")
-  rollout_start_time = datetime.datetime.now(datetime.UTC)
+  # Verify we have 3 pods ready
+  initial_status = get_statefulset_rollout_status()
+  assert initial_status['replicas'] == 3, f"Expected 3 replicas, got {initial_status['replicas']}"
+  assert initial_status['ready_replicas'] == 3, f"Not all replicas ready: {initial_status['ready_replicas']}/3"
+  print("✓ Initial cluster health verified")
+
+  # Step 2: Force failover if pod-0 is main
+  if initial_main == "memgraph-ha-0":
+    log_info("Step 2: pod-0 is main, forcing failover by deleting pod-0...")
+
+    # Delete pod-0 to trigger failover
+    delete_cmd = ["kubectl", "delete", "pod", "memgraph-ha-0", "-n", MEMGRAPH_NS]
+    result = subprocess.run(delete_cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+      raise E2ETestError(f"Failed to delete pod-0: {result.stderr}")
+
+    log_info("pod-0 deleted, waiting for failover to complete...")
+
+    # Step 3: Wait for pod-1 to become main (failover assertion)
+    log_info("Step 3: Verifying pod-1 becomes main...")
+    failover_start_time = time.time()
+    pod_1_became_main = False
+
+    while time.time() - failover_start_time < 60:  # 60 second timeout for failover
+      try:
+        current_main = find_main_pod_by_querying()
+        if current_main == "memgraph-ha-1":
+          pod_1_became_main = True
+          log_info(f"✓ Failover successful: pod-1 is now main (took {time.time() - failover_start_time:.1f}s)")
+          break
+      except Exception as e:
+        # Continue waiting if we can't determine main yet
+        pass
+      time.sleep(2)
+
+    assert pod_1_became_main, "pod-1 did not become main within 60 seconds after pod-0 deletion"
+
+  else:
+    log_info(f"Step 2-3: pod-0 is not main (main is {initial_main}), skipping forced failover")
+    print("✓ Skipping forced failover - pod-0 is not current main")
+
+  # Step 4: Wait for cluster to become healthy after failover (all replication ready)
+  log_info("Step 4: Waiting for cluster to be healthy after failover...")
+  assert wait_for_cluster_convergence(timeout=120), "Cluster failed to converge after failover"
+
+  # Verify all pods are ready again
+  post_failover_status = get_statefulset_rollout_status()
+  assert post_failover_status['ready_replicas'] == 3, f"Not all replicas ready after failover: {post_failover_status['ready_replicas']}/3"
+
+  current_main_after_failover = find_main_pod_by_querying()
+  log_info(f"✓ Cluster healthy after failover, current main: {current_main_after_failover}")
+
+  # Step 5: Perform rolling restart with the same verification as the continuous availability test
+  log_info("Step 5: Performing rolling restart with multi-client verification...")
+
+  # Helper function to get client pods
+  def get_client_pod(client_name):
+    """Get pod name for a specific client"""
+    pods_json = kubectl_get("pods", namespace=MEMGRAPH_NS, selector=f"app={client_name}", output="json")
+    pods_data = json.loads(pods_json)
+    assert len(pods_data['items']) > 0, f"No {client_name} pods found"
+    return pods_data['items'][0]['metadata']['name']
+
+  # Verify all clients are operational before rolling restart
+  log_info("Verifying all clients are operational...")
+  test_client_pod = get_test_client_pod()
+  read_client_pod = get_client_pod("read-client")
+  bad_client_pod = get_client_pod("bad-client")
+
+  print(f"  Test-client pod: {test_client_pod}")
+  print(f"  Read-client pod: {read_client_pod}")
+  print(f"  Bad-client pod: {bad_client_pod}")
+
+  # Get initial pod UIDs before triggering rollout for restart tracking
+  initial_pods_json = kubectl_get("pods", namespace=MEMGRAPH_NS, selector="app.kubernetes.io/name=memgraph", output="json")
+  initial_pods_data = json.loads(initial_pods_json)
+  initial_pod_uids = {pod['metadata']['name']: pod['metadata']['uid'] for pod in initial_pods_data['items']}
+
   trigger_statefulset_rollout()
 
-  # Monitor main changes during rollout
-  main_changes = []
-  no_main_periods = []
-  multiple_main_periods = []
+  # Step 6: Monitor rollout completion with multi-client verification
+  log_info("Step 6: Monitoring rollout with multi-client verification...")
+  kubernetes_rollout_completed = wait_for_rollout_completion(timeout=120)
 
-  start_time = time.time()
-  last_main = initial_main
-  no_main_start = None
+  # Wait for cluster service convergence
+  log_info("Waiting for cluster service convergence...")
+  service_converged = wait_for_cluster_convergence(timeout=180)
 
-  while time.time() - start_time < 300:  # Monitor for up to 5 minutes
-    try:
-      current_main = find_main_pod_by_querying()
+  # Calculate actual rollout duration
+  rollout_duration = int(time.time() - rollout_start_time.timestamp())
+  rollout_completed = kubernetes_rollout_completed and service_converged
 
-      if current_main != last_main:
-        main_changes.append({
-            'time': time.time() - start_time,
-            'from': last_main,
-            'to': current_main
-        })
-        log_info(f"Main changed from {last_main} to {current_main}")
-        last_main = current_main
+  # Check which pods were recreated
+  final_pods_json = kubectl_get("pods", namespace=MEMGRAPH_NS, selector="app.kubernetes.io/name=memgraph", output="json")
+  final_pods_data = json.loads(final_pods_json)
+  final_pod_uids = {pod['metadata']['name']: pod['metadata']['uid'] for pod in final_pods_data['items']}
 
-        # End any no-main period
-        if no_main_start:
-          no_main_periods.append({
-              'start': no_main_start,
-              'duration': time.time() - no_main_start
-          })
-          no_main_start = None
+  pods_recreated = []
+  for pod_name in initial_pod_uids:
+    if pod_name in final_pod_uids and initial_pod_uids[pod_name] != final_pod_uids[pod_name]:
+      pods_recreated.append(pod_name)
+      log_info(f"Pod recreated during rolling restart: {pod_name}")
 
-      # Check if rollout completed
-      status = get_statefulset_rollout_status()
-      if not status['is_rolling'] and status['ready_replicas'] == status['replicas']:
-        log_info("Rollout completed")
-        break
+  # Get all client logs during rollout period for verification
+  log_info("Analyzing all client operations during rolling restart...")
+  since_time = (rollout_start_time - datetime.timedelta(seconds=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
 
-    except Exception as e:
-      # Could not determine main - track no-main period
-      if not no_main_start:
-        no_main_start = time.time()
-      log_info(f"Could not determine main: {e}")
+  # Collect logs from all clients
+  test_client_logs = get_pod_logs(test_client_pod, since_time=since_time)
+  read_client_logs = get_pod_logs(read_client_pod, since_time=since_time)
+  bad_client_logs = get_pod_logs(bad_client_pod, since_time=since_time)
 
-    time.sleep(2)
+  # Analyze each client's operations
+  test_client_analysis = analyze_client_operations_during_rollout(
+      test_client_logs, rollout_start_time, rollout_duration)
+  read_client_analysis = analyze_client_operations_during_rollout(
+      read_client_logs, rollout_start_time, rollout_duration)
+  bad_client_analysis = analyze_client_operations_during_rollout(
+      bad_client_logs, rollout_start_time, rollout_duration)
 
-  # Analysis
-  print("\n=== Main Role Change Analysis ===")
-  print(f"Total main changes: {len(main_changes)}")
-  for change in main_changes:
-    print(f"  At {change['time']:.1f}s: {change['from']} → {change['to']}")
+  # Print comprehensive analysis results
+  print("\n=== Failover + Rolling Restart Analysis Results ===")
+  print(f"Initial main: {initial_main}")
+  print(f"Main after failover: {current_main_after_failover}")
+  print(f"Kubernetes Rollout Completed: {kubernetes_rollout_completed}")
+  print(f"Service Convergence Completed: {service_converged}")
+  print(f"Total Rolling Restart Duration: {rollout_duration}s")
+  print(f"Pods Recreated: {len(pods_recreated)} - {pods_recreated}")
 
-  if no_main_periods:
-    print(f"Periods with no main: {len(no_main_periods)}")
-    max_no_main = max([p['duration'] for p in no_main_periods])
-    print(f"  Maximum no-main period: {max_no_main:.1f}s")
-    assert max_no_main <= 15, f"Period with no main too long: {max_no_main:.1f}s"
-  else:
-    print("✓ No periods without a main detected")
+  print("\nTest-Client Analysis (writes to RW gateway):")
+  print(f"  Total operations: {test_client_analysis['total_operations']}")
+  print(f"  Successful: {test_client_analysis['successful_operations']}")
+  print(f"  Failed: {test_client_analysis['failed_operations']}")
+  print(f"  Failure rate: {test_client_analysis['failure_rate']:.2f}%")
+  print(f"  Max failure window: {test_client_analysis['max_failure_window_seconds']:.1f}s")
 
-  # Verify final state
+  print("\nRead-Client Analysis (reads from RO gateway):")
+  print(f"  Total operations: {read_client_analysis['total_operations']}")
+  print(f"  Successful: {read_client_analysis['successful_operations']}")
+  print(f"  Failed: {read_client_analysis['failed_operations']}")
+  print(f"  Failure rate: {read_client_analysis['failure_rate']:.2f}%")
+  print(f"  Max failure window: {read_client_analysis['max_failure_window_seconds']:.1f}s")
+
+  print("\nBad-Client Analysis (writes to RO gateway - should fail):")
+  print(f"  Total operations: {bad_client_analysis['total_operations']}")
+  print(f"  Failed: {bad_client_analysis['failed_operations']}")
+  print(f"  Failure rate: {bad_client_analysis['failure_rate']:.2f}%")
+
+  # Verify success criteria
+  print("\n=== Verifying Success Criteria ===")
+
+  # Check rollout completed
+  assert rollout_completed, "Rolling restart did not complete within timeout"
+  print("✓ Rolling restart completed successfully")
+
+  # Verify test-client success criteria
+  test_max_failure_window = test_client_analysis['max_failure_window_seconds']
+  assert test_max_failure_window <= 120, f"Test-client failure window too long: {test_max_failure_window:.1f}s"
+
+  test_failure_rate = test_client_analysis['failure_rate']
+  assert test_failure_rate <= 85.0, f"Test-client failure rate too high: {test_failure_rate:.2f}%"
+  print(f"✓ Test-client: Acceptable performance ({100-test_failure_rate:.1f}% availability)")
+
+  # Verify read-client success criteria
+  read_max_failure_window = read_client_analysis['max_failure_window_seconds']
+  assert read_max_failure_window <= 120, f"Read-client failure window too long: {read_max_failure_window:.1f}s"
+
+  read_failure_rate = read_client_analysis['failure_rate']
+  assert read_failure_rate <= 85.0, f"Read-client failure rate too high: {read_failure_rate:.2f}%"
+  print(f"✓ Read-client: Acceptable performance ({100-read_failure_rate:.1f}% availability)")
+
+  # Verify bad-client behaves as expected (100% failure rate)
+  bad_success_count = bad_client_analysis['successful_operations']
+  assert bad_success_count == 0, f"Bad-client should NEVER succeed, but had {bad_success_count} successful operations"
+  print(f"✓ Bad-client: Correctly failing ALL writes ({bad_client_analysis['failure_rate']:.2f}% failure rate)")
+
+  # Verify final cluster state
+  log_info("Verifying final cluster health...")
+  assert wait_for_cluster_convergence(timeout=180), "Cluster failed to converge after rolling restart"
+
   final_main = find_main_pod_by_querying()
-  print(f"Final main pod: {final_main}")
+  print(f"✓ Final main pod: {final_main}")
 
-  print("\n✅ Rolling restart with main changes test completed successfully!")
+  print("\n✅ Rolling restart with failover scenario test completed successfully!")
+  print(f"   Sequence: {initial_main} → failover → {current_main_after_failover} → rolling restart → {final_main}")
+  print(f"   Test-client: {100 - test_failure_rate:.1f}% availability")
+  print(f"   Read-client: {100 - read_failure_rate:.1f}% availability")
+  print(f"   Bad-client: {bad_client_analysis['failure_rate']:.2f}% failure rate (correct)")

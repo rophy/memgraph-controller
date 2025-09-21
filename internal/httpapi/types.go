@@ -21,6 +21,7 @@ type ClusterStatus struct {
 	SyncReplicaHealthy    bool                  `json:"sync_replica_healthy"`
 	ReconciliationMetrics ReconciliationMetrics `json:"reconciliation_metrics"`
 	ReplicaRegistrations  []ReplicaRegistration `json:"replica_registrations"`
+	ReadGatewayStatus     *ReadGatewayStatus    `json:"read_gateway_status,omitempty"`
 }
 
 // PodStatus represents the status of a single pod for API response
@@ -48,4 +49,28 @@ type ReplicaRegistration struct {
 	Address   string `json:"address"`    // Socket address (e.g., "10.244.0.4:10000")
 	SyncMode  string `json:"sync_mode"`  // "sync" or "async"
 	IsHealthy bool   `json:"is_healthy"` // Overall replication health
+}
+
+// ReadGatewayStatus represents the status of the read gateway
+type ReadGatewayStatus struct {
+	Enabled           bool   `json:"enabled"`
+	CurrentUpstream   string `json:"current_upstream"`
+	UpstreamPodName   string `json:"upstream_pod_name,omitempty"`
+	UpstreamHealthy   bool   `json:"upstream_healthy"`
+	ConnectionStats   GatewayConnectionStats `json:"connection_stats"`
+	HealthCheckStats  HealthCheckStats `json:"health_check_stats"`
+}
+
+// GatewayConnectionStats represents connection statistics for a gateway
+type GatewayConnectionStats struct {
+	ActiveConnections   int64 `json:"active_connections"`
+	TotalConnections    int64 `json:"total_connections"`
+	RejectedConnections int64 `json:"rejected_connections"`
+	Errors              int64 `json:"errors"`
+}
+
+// HealthCheckStats represents health check statistics
+type HealthCheckStats struct {
+	ConsecutiveFailures int  `json:"consecutive_failures"`
+	LastHealthStatus    bool `json:"last_health_status"`
 }

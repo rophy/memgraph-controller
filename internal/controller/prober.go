@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"fmt"
 	"sync"
 	"time"
 
@@ -27,7 +28,7 @@ func DefaultProberConfig() ProberConfig {
 	}
 }
 
-// HealthProber monitors the health of the main Memgraph pod and triggers failover when needed
+// HealthProber monitors the health of the main Memgraph pod and read gateway upstream
 type HealthProber struct {
 	controller          *MemgraphController
 	config              ProberConfig
@@ -35,16 +36,22 @@ type HealthProber struct {
 	runningCh           chan struct{}
 	consecutiveFailures int
 	lastHealthStatus    bool
+
+	// Read gateway upstream health tracking (independent from main pod health)
+	readGatewayConsecutiveFailures int
+	lastReadGatewayHealthStatus    bool
 }
 
 // NewHealthProber creates a new health prober instance
 func NewHealthProber(controller *MemgraphController, config ProberConfig) *HealthProber {
 	return &HealthProber{
-		controller:          controller,
-		config:              config,
-		runningCh:           nil, // Will be initialized in Start()
-		consecutiveFailures: 0,
-		lastHealthStatus:    true,
+		controller:                     controller,
+		config:                         config,
+		runningCh:                      nil, // Will be initialized in Start()
+		consecutiveFailures:            0,
+		lastHealthStatus:               true,
+		readGatewayConsecutiveFailures: 0,
+		lastReadGatewayHealthStatus:    true,
 	}
 }
 
@@ -115,7 +122,7 @@ func (p *HealthProber) runHealthCheckLoop(ctx context.Context) {
 	}
 }
 
-// performHealthCheck performs a single health check against the main pod
+// performHealthCheck performs a single health check against the main pod and read gateway upstream
 func (p *HealthProber) performHealthCheck(ctx context.Context) {
 	logger := common.GetLoggerFromContext(ctx)
 	// Create timeout context for this specific health check
@@ -151,8 +158,11 @@ func (p *HealthProber) performHealthCheck(ctx context.Context) {
 		return
 	}
 
-	// Health check succeeded
+	// Health check succeeded for main pod
 	p.recordSuccess(ctx, targetMainPodName)
+
+	// Also perform read gateway upstream health check (independent from main pod health)
+	p.performReadGatewayUpstreamHealthCheck(ctx)
 }
 
 // recordFailure records a health check failure and triggers failover if threshold is reached
@@ -240,5 +250,157 @@ func (p *HealthProber) triggerFailover(ctx context.Context) {
 		common.GetLogger().Info("Health prober: successfully queued failover check event")
 	default:
 		common.GetLogger().Error("Health prober: failover check queue is full, event dropped")
+	}
+}
+
+// performReadGatewayUpstreamHealthCheck performs health check on read gateway upstream
+func (p *HealthProber) performReadGatewayUpstreamHealthCheck(ctx context.Context) {
+	logger := common.GetLoggerFromContext(ctx)
+
+	// Skip if read gateway is not enabled
+	if p.controller.readGatewayServer == nil {
+		return
+	}
+
+	// Get current read gateway upstream
+	currentUpstream := p.controller.readGatewayServer.GetUpstreamAddress()
+	if currentUpstream == "" {
+		// No upstream set - reset failure count
+		p.resetReadGatewayFailures(ctx)
+		return
+	}
+
+	// Create timeout context for this specific health check
+	checkCtx, cancel := context.WithTimeout(ctx, p.config.Timeout)
+	defer cancel()
+
+	// Find the upstream node and ping it
+	upstreamNode, err := p.findUpstreamNode(currentUpstream)
+	if err != nil {
+		logger.Debug("read gateway health check: could not find upstream node",
+			"upstream_address", currentUpstream,
+			"error", err)
+		p.recordReadGatewayFailure(ctx, currentUpstream)
+		return
+	}
+
+	// Ping the upstream node
+	err = upstreamNode.Ping(checkCtx)
+	if err != nil {
+		logger.Debug("read gateway health check: upstream ping failed",
+			"upstream_address", currentUpstream,
+			"error", err,
+			"consecutive_failures", p.readGatewayConsecutiveFailures+1,
+			"failure_threshold", p.config.FailureThreshold)
+		p.recordReadGatewayFailure(ctx, currentUpstream)
+		return
+	}
+
+	// Health check succeeded
+	p.recordReadGatewaySuccess(ctx, currentUpstream)
+}
+
+// findUpstreamNode finds the MemgraphNode corresponding to the upstream address
+func (p *HealthProber) findUpstreamNode(upstreamAddress string) (*MemgraphNode, error) {
+	// Validate upstream address format
+	if len(upstreamAddress) <= 5 || upstreamAddress[len(upstreamAddress)-5:] != ":7687" {
+		return nil, fmt.Errorf("invalid upstream address format: %s", upstreamAddress)
+	}
+
+	// Find the node with matching address
+	for _, node := range p.controller.cluster.MemgraphNodes {
+		if nodeAddress, err := node.GetBoltAddress(); err == nil {
+			if nodeAddress == upstreamAddress {
+				return node, nil
+			}
+		}
+	}
+
+	return nil, fmt.Errorf("upstream node not found for address: %s", upstreamAddress)
+}
+
+// recordReadGatewayFailure records a read gateway upstream health check failure
+func (p *HealthProber) recordReadGatewayFailure(ctx context.Context, upstreamAddress string) {
+	logger := common.GetLoggerFromContext(ctx)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.readGatewayConsecutiveFailures++
+	p.lastReadGatewayHealthStatus = false
+
+	// Check if we've reached the failure threshold
+	if p.readGatewayConsecutiveFailures == p.config.FailureThreshold {
+		logger.Warn("🔄 READ GATEWAY UPSTREAM FAILURE: threshold reached, switching upstream",
+			"upstream_address", upstreamAddress,
+			"consecutive_failures", p.readGatewayConsecutiveFailures,
+			"failure_threshold", p.config.FailureThreshold)
+
+		// Trigger immediate upstream switching
+		go p.triggerReadGatewayUpstreamSwitch(ctx, upstreamAddress)
+
+		// Don't reset the counter - will be reset when switch succeeds
+	}
+}
+
+// recordReadGatewaySuccess records a read gateway upstream health check success
+func (p *HealthProber) recordReadGatewaySuccess(ctx context.Context, upstreamAddress string) {
+	logger := common.GetLoggerFromContext(ctx)
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	wasUnhealthy := p.readGatewayConsecutiveFailures > 0
+	p.readGatewayConsecutiveFailures = 0
+	p.lastReadGatewayHealthStatus = true
+
+	if wasUnhealthy {
+		logger.Info("✅ Read gateway upstream recovered",
+			"upstream_address", upstreamAddress,
+			"previous_failures", p.readGatewayConsecutiveFailures)
+	} else {
+		logger.Debug("Read gateway upstream health check successful", "upstream_address", upstreamAddress)
+	}
+}
+
+// resetReadGatewayFailures resets read gateway failure counters
+func (p *HealthProber) resetReadGatewayFailures(ctx context.Context) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	if p.readGatewayConsecutiveFailures > 0 {
+		p.readGatewayConsecutiveFailures = 0
+		p.lastReadGatewayHealthStatus = true
+	}
+}
+
+// triggerReadGatewayUpstreamSwitch triggers switching of read gateway upstream
+func (p *HealthProber) triggerReadGatewayUpstreamSwitch(ctx context.Context, failedUpstream string) {
+	logger := common.GetLoggerFromContext(ctx)
+
+	// Guard against nil controller (for testing)
+	if p.controller == nil {
+		logger.Warn("Health prober: cannot switch read gateway upstream with nil controller")
+		return
+	}
+
+	logger.Info("Health prober: switching read gateway upstream due to health failures",
+		"failed_upstream", failedUpstream)
+
+	// Create timeout context for upstream switching
+	switchCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Trigger upstream switching
+	p.controller.updateReadGatewayUpstream(switchCtx)
+
+	newUpstream := p.controller.readGatewayServer.GetUpstreamAddress()
+	if newUpstream != failedUpstream {
+		logger.Info("Read gateway upstream switch completed",
+			"old_upstream", failedUpstream,
+			"new_upstream", newUpstream)
+		// Reset failure counter after successful switch
+		p.resetReadGatewayFailures(ctx)
+	} else {
+		logger.Warn("Read gateway upstream switch failed - no alternative upstream available",
+			"failed_upstream", failedUpstream)
 	}
 }

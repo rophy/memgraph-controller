@@ -106,7 +106,7 @@ func (node *MemgraphNode) GetReplicationRole(ctx context.Context) (string, error
 		if err != nil {
 			return "", err
 		}
-		roleResp, err := node.client.QueryReplicationRoleWithRetry(ctx, boltAddress)
+		roleResp, err := node.client.QueryReplicationRole(ctx, boltAddress)
 		if err != nil {
 			return "", fmt.Errorf("failed to query replication role for node %s: %w", node.name, err)
 		}
@@ -131,7 +131,7 @@ func (node *MemgraphNode) GetReplicas(ctx context.Context) ([]ReplicaInfo, error
 		if err != nil {
 			return nil, err
 		}
-		replicasResp, err := node.client.QueryReplicasWithRetry(ctx, boltAddress)
+		replicasResp, err := node.client.QueryReplicas(ctx, boltAddress)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query replicas for node %s: %w", node.name, err)
 		}
@@ -153,7 +153,7 @@ func (node *MemgraphNode) SetToMainRole(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	err = node.client.SetReplicationRoleToMainWithRetry(ctx, boltAddress)
+	err = node.client.SetReplicationRoleToMain(ctx, boltAddress)
 	if err != nil {
 		return err
 	}
@@ -187,7 +187,7 @@ func (node *MemgraphNode) SetToReplicaRole(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	err = node.client.SetReplicationRoleToReplicaWithRetry(ctx, boltAddress)
+	err = node.client.SetReplicationRoleToReplica(ctx, boltAddress)
 	if err != nil {
 		return err
 	}
@@ -203,7 +203,7 @@ func (node *MemgraphNode) Ping(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return node.client.Ping(ctx, boltAddress)
+	return node.client.Ping(ctx, boltAddress, 3*time.Second)
 }
 
 // InvalidateConnection closes existing connections to this node
@@ -221,7 +221,7 @@ func (node *MemgraphNode) QueryStorageInfo(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	storageInfo, err := node.client.QueryStorageInfoWithRetry(ctx, boltAddress)
+	storageInfo, err := node.client.QueryStorageInfo(ctx, boltAddress)
 	if err != nil {
 		return fmt.Errorf("failed to query storage info for node %s: %w", node.name, err)
 	}
@@ -239,7 +239,7 @@ func (node *MemgraphNode) DropReplica(ctx context.Context, replicaName string) e
 	if err != nil {
 		return err
 	}
-	err = node.client.DropReplicaWithRetry(ctx, boltAddress, replicaName)
+	err = node.client.DropReplica(ctx, boltAddress, replicaName)
 	if err != nil {
 		return err
 	}

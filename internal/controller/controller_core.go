@@ -48,7 +48,6 @@ type MemgraphController struct {
 	// This prevents race conditions between these operations
 	operationMu sync.Mutex
 
-
 	// Cluster operations
 	cluster *MemgraphCluster
 
@@ -360,47 +359,6 @@ func (c *MemgraphController) TestConnection() error {
 	}
 
 	logger.Info("Successfully connected to Kubernetes API", "app_name", c.config.AppName, "namespace", c.config.Namespace)
-	return nil
-}
-
-// TestMemgraphConnections tests connections to all discovered Memgraph pods
-func (c *MemgraphController) TestMemgraphConnections(ctx context.Context) error {
-	ctx, logger := common.WithAttr(ctx, "thread", "testMemgraphConnections")
-	err := c.cluster.Refresh(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to discover pods: %w", err)
-	}
-	pods := c.cluster.MemgraphNodes
-
-	if len(pods) == 0 {
-		return fmt.Errorf("no pods found with label app.kubernetes.io/name=%s", c.config.AppName)
-	}
-
-	logger.Info("Testing Memgraph connections", "pod_count", len(pods))
-
-	var lastErr error
-	connectedCount := 0
-	for podName, pod := range pods {
-		endpoint, err := pod.GetBoltAddress()
-		if err != nil {
-			logger.Info("❌ Pod has no IP address", "pod", podName, "error", err)
-			lastErr = err
-			continue
-		}
-		if err := c.memgraphClient.TestConnection(ctx, endpoint); err != nil {
-			logger.Info("❌ Failed to connect to pod", "pod", podName, "endpoint", endpoint, "error", err)
-			lastErr = err
-		} else {
-			logger.Info("✅ Successfully connected to pod", "pod", podName, "endpoint", endpoint)
-			connectedCount++
-		}
-	}
-
-	if connectedCount == 0 {
-		return fmt.Errorf("failed to connect to any Memgraph pods: %w", lastErr)
-	}
-
-	logger.Info("Successfully tested Memgraph connections", "connected_count", connectedCount, "total_pods", len(pods))
 	return nil
 }
 

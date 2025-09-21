@@ -34,8 +34,8 @@ echo "Setting $POD_2 to REPLICA role"
 kubectl exec -c memgraph "$POD_2" -- bash -c 'echo "SET REPLICATION ROLE TO REPLICA WITH PORT 10000;" | mgconsole --username=memgraph'
 
 # Register replicas on the main pod
-echo "Registering $POD_1 as SYNC replica"
-kubectl exec -c memgraph "$POD_0" -- bash -c "echo \"REGISTER REPLICA replica1 SYNC TO \\\"$POD_1_IP:10000\\\";\" | mgconsole --username=memgraph"
+echo "Registering $POD_1 as STRICT_SYNC replica"
+kubectl exec -c memgraph "$POD_0" -- bash -c "echo \"REGISTER REPLICA replica1 STRICT_SYNC TO \\\"$POD_1_IP:10000\\\";\" | mgconsole --username=memgraph"
 
 echo "Registering $POD_2 as ASYNC replica"
 kubectl exec -c memgraph "$POD_0" -- bash -c "echo \"REGISTER REPLICA replica2 ASYNC TO \\\"$POD_2_IP:10000\\\";\" | mgconsole --username=memgraph"

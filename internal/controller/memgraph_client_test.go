@@ -1,7 +1,9 @@
 package controller
 import (
 	"context"
+	"strings"
 	"testing"
+	"time"
 
 	"memgraph-controller/internal/common"
 )
@@ -17,24 +19,23 @@ func TestMemgraphClient_QueryReplicationRole_EmptyAddress(t *testing.T) {
 	}
 
 	expectedMsg := "bolt address is empty"
-	if err.Error() != expectedMsg {
-		t.Errorf("Error message = %s, want %s", err.Error(), expectedMsg)
+	if !strings.Contains(err.Error(), expectedMsg) {
+		t.Errorf("Error message should contain '%s', got: %s", expectedMsg, err.Error())
 	}
 }
 
-func TestMemgraphClient_TestConnection_EmptyAddress(t *testing.T) {
+func TestMemgraphClient_Ping_EmptyAddress(t *testing.T) {
 	config := &common.Config{}
 	client := NewMemgraphClient(config)
-	// Note: TestConnection uses a separate driver, so it doesn't need the connection pool
 
-	err := client.TestConnection(context.Background(), "")
+	err := client.Ping(context.Background(), "", 5*time.Second)
 	if err == nil {
 		t.Error("Expected error for empty bolt address, got nil")
 	}
 
 	expectedMsg := "bolt address is empty"
-	if err.Error() != expectedMsg {
-		t.Errorf("Error message = %s, want %s", err.Error(), expectedMsg)
+	if !strings.Contains(err.Error(), expectedMsg) {
+		t.Errorf("Error message should contain '%s', got: %s", expectedMsg, err.Error())
 	}
 }
 func TestNewMemgraphClient(t *testing.T) {

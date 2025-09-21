@@ -9,15 +9,12 @@ import (
 
 	"memgraph-controller/internal/common"
 
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
-	"github.com/neo4j/neo4j-go-driver/v5/neo4j/config"
 	"gopkg.in/yaml.v3"
 )
 
 type MemgraphClient struct {
 	config         *common.Config
 	connectionPool *ConnectionPool // Will be set from ClusterState
-	retryConfig    RetryConfig
 }
 
 type ReplicationRole struct {
@@ -318,11 +315,6 @@ func NewMemgraphClient(config *common.Config) *MemgraphClient {
 	return &MemgraphClient{
 		config:         config,
 		connectionPool: NewConnectionPool(config), // Each client has its own connection pool
-		retryConfig: RetryConfig{
-			MaxRetries: 3,
-			BaseDelay:  1 * time.Second,
-			MaxDelay:   10 * time.Second,
-		},
 	}
 }
 
@@ -333,36 +325,7 @@ func (mc *MemgraphClient) Close(ctx context.Context) {
 }
 
 func (mc *MemgraphClient) QueryReplicationRole(ctx context.Context, boltAddress string) (*ReplicationRole, error) {
-	if boltAddress == "" {
-		return nil, fmt.Errorf("bolt address is empty")
-	}
-
-	// Create driver for this specific instance
-	driver, err := neo4j.NewDriverWithContext(
-		fmt.Sprintf("bolt://%s", boltAddress),
-		neo4j.NoAuth(),
-		func(c *config.Config) {
-			c.ConnectionAcquisitionTimeout = 10 * time.Second
-			c.SocketConnectTimeout = 5 * time.Second
-		},
-	)
-	if err != nil {
-		return nil, fmt.Errorf("failed to create driver for %s: %w", boltAddress, err)
-	}
-	defer driver.Close(ctx)
-
-	// Test connectivity
-	err = driver.VerifyConnectivity(ctx)
-	if err != nil {
-		return nil, fmt.Errorf("failed to verify connectivity to %s: %w", boltAddress, err)
-	}
-
-	// Execute SHOW REPLICATION ROLE query
-	session := driver.NewSession(ctx, neo4j.SessionConfig{})
-	defer session.Close(ctx)
-
-	// Use auto-commit mode for replication queries (Memgraph doesn't allow them in managed transactions)
-	result, err := session.Run(ctx, "SHOW REPLICATION ROLE", nil)
+	result, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW REPLICATION ROLE", 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query replication role from %s: %w", boltAddress, err)
 	}
@@ -390,217 +353,110 @@ func (mc *MemgraphClient) QueryReplicationRole(ctx context.Context, boltAddress 
 	return nil, fmt.Errorf("no results returned from SHOW REPLICATION ROLE")
 }
 
-func (mc *MemgraphClient) TestConnection(ctx context.Context, boltAddress string) error {
+// QueryReplicas queries the replicas with retry logic and connection pooling
+func (mc *MemgraphClient) QueryReplicas(ctx context.Context, boltAddress string) (*ReplicasResponse, error) {
 	logger := common.GetLoggerFromContext(ctx)
-	if boltAddress == "" {
-		return fmt.Errorf("bolt address is empty")
-	}
-
-	driver, err := neo4j.NewDriverWithContext(
-		fmt.Sprintf("bolt://%s", boltAddress),
-		neo4j.NoAuth(),
-		func(c *config.Config) {
-			c.ConnectionAcquisitionTimeout = 5 * time.Second
-			c.SocketConnectTimeout = 3 * time.Second
-		},
-	)
+	txResult, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW REPLICAS", 5*time.Second)
 	if err != nil {
-		return fmt.Errorf("failed to create driver for %s: %w", boltAddress, err)
-	}
-	defer driver.Close(ctx)
-
-	err = driver.VerifyConnectivity(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to verify connectivity to %s: %w", boltAddress, err)
+		return nil, fmt.Errorf("failed to query replicas from %s: %w", boltAddress, err)
 	}
 
-	logger.Info("Successfully connected to Memgraph", "bolt_address", boltAddress)
-	return nil
-}
+	var replicas []ReplicaInfo
+	for txResult.Next(ctx) {
+		record := txResult.Record()
 
-// QueryReplicationRoleWithRetry queries the replication role with retry logic and connection pooling
-func (mc *MemgraphClient) QueryReplicationRoleWithRetry(ctx context.Context, boltAddress string) (*ReplicationRole, error) {
-	logger := common.GetLoggerFromContext(ctx)
-	if boltAddress == "" {
-		return nil, fmt.Errorf("bolt address is empty")
-	}
+		replica := ReplicaInfo{}
 
-	var result *ReplicationRole
-	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
+		if name, found := record.Get("name"); found {
+			if nameStr, ok := name.(string); ok {
+				replica.Name = nameStr
+			}
 		}
 
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+		if socketAddr, found := record.Get("socket_address"); found {
+			if socketAddrStr, ok := socketAddr.(string); ok {
+				replica.SocketAddress = socketAddrStr
 			}
-		}()
-
-		// Use auto-commit mode for replication queries
-		txResult, err := session.Run(ctx, "SHOW REPLICATION ROLE", nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute SHOW REPLICATION ROLE: %w", err)
 		}
 
-		if txResult.Next(ctx) {
-			record := txResult.Record()
-			role, found := record.Get("replication role")
-			if !found {
-				return fmt.Errorf("replication role field not found in result")
+		if syncMode, found := record.Get("sync_mode"); found {
+			if syncModeStr, ok := syncMode.(string); ok {
+				replica.SyncMode = syncModeStr
 			}
-
-			roleStr, ok := role.(string)
-			if !ok {
-				return fmt.Errorf("replication role is not a string: %T", role)
-			}
-
-			result = &ReplicationRole{Role: roleStr}
-			return nil
 		}
 
-		return fmt.Errorf("no results returned from SHOW REPLICATION ROLE")
-	}, mc.retryConfig)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to query replication role from %s after retries: %w", boltAddress, err)
-	}
-
-	logger.Info("Queried replication role", "bolt_address", boltAddress, "role", result.Role)
-	return result, nil
-}
-
-// QueryReplicasWithRetry queries the replicas with retry logic and connection pooling
-func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddress string) (*ReplicasResponse, error) {
-	logger := common.GetLoggerFromContext(ctx)
-	if boltAddress == "" {
-		return nil, fmt.Errorf("bolt address is empty")
-	}
-
-	var result *ReplicasResponse
-	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
+		// Extract system_info field
+		if systemInfo, found := record.Get("system_info"); found {
+			if systemInfoStr, ok := systemInfo.(string); ok {
+				replica.SystemInfo = systemInfoStr
+			}
 		}
 
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
-			}
-		}()
+		// Extract and parse data_info field
+		if dataInfo, found := record.Get("data_info"); found {
+			if dataInfoStr, ok := dataInfo.(string); ok {
+				// Case 1: data_info is a string (as expected)
+				replica.DataInfo = dataInfoStr
 
-		// Use auto-commit mode for replication queries
-		txResult, err := session.Run(ctx, "SHOW REPLICAS", nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute SHOW REPLICAS: %w", err)
-		}
-
-		var replicas []ReplicaInfo
-		for txResult.Next(ctx) {
-			record := txResult.Record()
-
-			replica := ReplicaInfo{}
-
-			if name, found := record.Get("name"); found {
-				if nameStr, ok := name.(string); ok {
-					replica.Name = nameStr
-				}
-			}
-
-			if socketAddr, found := record.Get("socket_address"); found {
-				if socketAddrStr, ok := socketAddr.(string); ok {
-					replica.SocketAddress = socketAddrStr
-				}
-			}
-
-			if syncMode, found := record.Get("sync_mode"); found {
-				if syncModeStr, ok := syncMode.(string); ok {
-					replica.SyncMode = syncModeStr
-				}
-			}
-
-			// Extract system_info field
-			if systemInfo, found := record.Get("system_info"); found {
-				if systemInfoStr, ok := systemInfo.(string); ok {
-					replica.SystemInfo = systemInfoStr
-				}
-			}
-
-			// Extract and parse data_info field
-			if dataInfo, found := record.Get("data_info"); found {
-				if dataInfoStr, ok := dataInfo.(string); ok {
-					// Case 1: data_info is a string (as expected)
-					replica.DataInfo = dataInfoStr
-
-					// Parse the data_info field for health assessment
-					if parsed, err := parseDataInfo(dataInfoStr); err != nil {
-						logger.Warn("Failed to parse data_info for replica", "replica_name", replica.Name, "error", err)
-						// Create fallback status
-						replica.ParsedDataInfo = &DataInfoStatus{
-							Status:      "parse_error",
-							Behind:      -1,
-							IsHealthy:   false,
-							ErrorReason: fmt.Sprintf("Parse error: %v", err),
-						}
-					} else {
-						replica.ParsedDataInfo = parsed
-					}
-				} else if dataInfoMap, ok := dataInfo.(map[string]interface{}); ok {
-					// Case 2: data_info is a map (Neo4j driver auto-parsed the YAML)
-
-					// Convert map back to JSON string for storage
-					if jsonBytes, err := json.Marshal(dataInfoMap); err == nil {
-						replica.DataInfo = string(jsonBytes)
-					} else {
-						replica.DataInfo = fmt.Sprintf("%+v", dataInfoMap)
-					}
-
-					// Parse the map directly for health assessment
-					if parsed, err := parseDataInfoMap(dataInfoMap); err != nil {
-						logger.Warn("Failed to parse data_info map for replica", "replica_name", replica.Name, "error", err)
-						replica.ParsedDataInfo = &DataInfoStatus{
-							Status:      "parse_error",
-							Behind:      -1,
-							IsHealthy:   false,
-							ErrorReason: fmt.Sprintf("Map parse error: %v", err),
-						}
-					} else {
-						replica.ParsedDataInfo = parsed
-					}
-				} else {
-					replica.DataInfo = fmt.Sprintf("%v", dataInfo)
+				// Parse the data_info field for health assessment
+				if parsed, err := parseDataInfo(dataInfoStr); err != nil {
+					logger.Warn("Failed to parse data_info for replica", "replica_name", replica.Name, "error", err)
+					// Create fallback status
 					replica.ParsedDataInfo = &DataInfoStatus{
-						Status:      "type_error",
+						Status:      "parse_error",
 						Behind:      -1,
 						IsHealthy:   false,
-						ErrorReason: fmt.Sprintf("data_info field has unexpected type: %T", dataInfo),
+						ErrorReason: fmt.Sprintf("Parse error: %v", err),
 					}
+				} else {
+					replica.ParsedDataInfo = parsed
+				}
+			} else if dataInfoMap, ok := dataInfo.(map[string]interface{}); ok {
+				// Case 2: data_info is a map (Neo4j driver auto-parsed the YAML)
+
+				// Convert map back to JSON string for storage
+				if jsonBytes, err := json.Marshal(dataInfoMap); err == nil {
+					replica.DataInfo = string(jsonBytes)
+				} else {
+					replica.DataInfo = fmt.Sprintf("%+v", dataInfoMap)
+				}
+
+				// Parse the map directly for health assessment
+				if parsed, err := parseDataInfoMap(dataInfoMap); err != nil {
+					logger.Warn("Failed to parse data_info map for replica", "replica_name", replica.Name, "error", err)
+					replica.ParsedDataInfo = &DataInfoStatus{
+						Status:      "parse_error",
+						Behind:      -1,
+						IsHealthy:   false,
+						ErrorReason: fmt.Sprintf("Map parse error: %v", err),
+					}
+				} else {
+					replica.ParsedDataInfo = parsed
 				}
 			} else {
-				// No data_info field found - create default status
-				replica.DataInfo = ""
+				replica.DataInfo = fmt.Sprintf("%v", dataInfo)
 				replica.ParsedDataInfo = &DataInfoStatus{
-					Status:      "missing",
+					Status:      "type_error",
 					Behind:      -1,
 					IsHealthy:   false,
-					ErrorReason: "data_info field not present in SHOW REPLICAS output",
+					ErrorReason: fmt.Sprintf("data_info field has unexpected type: %T", dataInfo),
 				}
 			}
-
-			replicas = append(replicas, replica)
+		} else {
+			// No data_info field found - create default status
+			replica.DataInfo = ""
+			replica.ParsedDataInfo = &DataInfoStatus{
+				Status:      "missing",
+				Behind:      -1,
+				IsHealthy:   false,
+				ErrorReason: "data_info field not present in SHOW REPLICAS output",
+			}
 		}
 
-		result = &ReplicasResponse{Replicas: replicas}
-		return nil
-	}, mc.retryConfig)
-
-	if err != nil {
-		return nil, fmt.Errorf("failed to query replicas from %s after retries: %w", boltAddress, err)
+		replicas = append(replicas, replica)
 	}
+
+	result := &ReplicasResponse{Replicas: replicas}
 
 	logger.Info("Queried replicas", "bolt_address", boltAddress, "replica_count", len(result.Replicas))
 	for _, replica := range result.Replicas {
@@ -611,139 +467,34 @@ func (mc *MemgraphClient) QueryReplicasWithRetry(ctx context.Context, boltAddres
 }
 
 // Ping verifies target bolt address is reachable
-func (mc *MemgraphClient) Ping(ctx context.Context, boltAddress string) error {
-	start := time.Now()
-	if boltAddress == "" {
-		return fmt.Errorf("bolt address is empty")
-	}
-
-	driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
+func (mc *MemgraphClient) Ping(ctx context.Context, boltAddress string, timeout time.Duration) error {
+	_, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "RETURN 1", timeout)
 	if err != nil {
-		return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
-	}
-
-	session := driver.NewSession(ctx, neo4j.SessionConfig{})
-	defer func() {
-		logger := common.GetLoggerFromContext(ctx)
-		if closeErr := session.Close(ctx); closeErr != nil {
-			logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
-		}
-		logger.Debug("🕑 Ping completed", "bolt_address", boltAddress, "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
-	}()
-
-	_, err = session.Run(ctx, "RETURN 1", nil)
-	if err != nil {
-		return fmt.Errorf("failed to execute RETURN 1: %w", err)
+		return fmt.Errorf("failed to ping %s: %w", boltAddress, err)
 	}
 	return nil
 }
 
-// SetReplicationRoleToMainWithRetry sets the replication role to MAIN with retry logic
-func (mc *MemgraphClient) SetReplicationRoleToMainWithRetry(ctx context.Context, boltAddress string) error {
-	logger := common.GetLoggerFromContext(ctx)
-	if boltAddress == "" {
-		return fmt.Errorf("bolt address is empty")
-	}
-
-	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
-		}
-
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
-			}
-		}()
-
-		// Use auto-commit mode for replication commands
-		_, err = session.Run(ctx, "SET REPLICATION ROLE TO MAIN", nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute SET REPLICATION ROLE TO MAIN: %w", err)
-		}
-
-		logger.Info("Successfully set replication role to MAIN", "bolt_address", boltAddress)
-		return nil
-	}, mc.retryConfig)
-
-	if err != nil {
-		return fmt.Errorf("failed to set replication role to MAIN for %s after retries: %w", boltAddress, err)
-	}
-
-	return nil
-}
-
-// SetReplicationRoleToMain sets the replication role to MAIN without retry (fast failover)
+// SetReplicationRoleToMain sets the replication role to MAIN
 func (mc *MemgraphClient) SetReplicationRoleToMain(ctx context.Context, boltAddress string) error {
-	logger := common.GetLoggerFromContext(ctx)
-	if boltAddress == "" {
-		return fmt.Errorf("bolt address is empty")
-	}
-
-	driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
+	_, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SET REPLICATION ROLE TO MAIN", 5*time.Second)
 	if err != nil {
-		return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
+		return fmt.Errorf("failed to set replication role to MAIN for %s: %w", boltAddress, err)
 	}
-
-	session := driver.NewSession(ctx, neo4j.SessionConfig{})
-	defer func() {
-		if closeErr := session.Close(ctx); closeErr != nil {
-			logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
-		}
-	}()
-
-	// Use auto-commit mode for replication commands
-	_, err = session.Run(ctx, "SET REPLICATION ROLE TO MAIN", nil)
-	if err != nil {
-		return fmt.Errorf("failed to execute SET REPLICATION ROLE TO MAIN: %w", err)
-	}
-
-	logger.Info("Successfully set replication role to MAIN (fast failover)", "bolt_address", boltAddress)
 	return nil
 }
 
-// SetReplicationRoleToReplicaWithRetry sets the replication role to REPLICA with retry logic
-func (mc *MemgraphClient) SetReplicationRoleToReplicaWithRetry(ctx context.Context, boltAddress string) error {
-	logger := common.GetLoggerFromContext(ctx)
-	if boltAddress == "" {
-		return fmt.Errorf("bolt address is empty")
-	}
-
-	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
-		}
-
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
-			}
-		}()
-
-		// Use auto-commit mode for replication commands
-		_, err = session.Run(ctx, "SET REPLICATION ROLE TO REPLICA WITH PORT 10000", nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute SET REPLICATION ROLE TO REPLICA: %w", err)
-		}
-
-		logger.Info("Successfully set replication role to REPLICA", "bolt_address", boltAddress)
-		return nil
-	}, mc.retryConfig)
-
+// SetReplicationRoleToReplica sets the replication role to REPLICA
+func (mc *MemgraphClient) SetReplicationRoleToReplica(ctx context.Context, boltAddress string) error {
+	_, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SET REPLICATION ROLE TO REPLICA WITH PORT 10000", 5*time.Second)
 	if err != nil {
-		return fmt.Errorf("failed to set replication role to REPLICA for %s after retries: %w", boltAddress, err)
+		return fmt.Errorf("failed to set replication role to REPLICA for %s: %w", boltAddress, err)
 	}
-
 	return nil
 }
 
 // RegisterReplica registers a replica with the main using specified mode (STRICT_SYNC or ASYNC)
 func (mc *MemgraphClient) RegisterReplica(ctx context.Context, mainBoltAddress, replicaName, replicaAddress, syncMode string) error {
-	logger := common.GetLoggerFromContext(ctx)
 	if mainBoltAddress == "" {
 		return fmt.Errorf("main bolt address is empty")
 	}
@@ -756,173 +507,65 @@ func (mc *MemgraphClient) RegisterReplica(ctx context.Context, mainBoltAddress, 
 	if syncMode != "STRICT_SYNC" && syncMode != "ASYNC" {
 		return fmt.Errorf("invalid sync mode: %s (must be STRICT_SYNC or ASYNC)", syncMode)
 	}
-
-	driver, err := mc.connectionPool.GetDriver(ctx, mainBoltAddress)
+	_, err := mc.connectionPool.RunQueryWithTimeout(ctx, mainBoltAddress, fmt.Sprintf("REGISTER REPLICA %s %s TO \"%s\"", replicaName, syncMode, replicaAddress), 5*time.Second)
 	if err != nil {
-		return fmt.Errorf("failed to get driver for %s: %w", mainBoltAddress, err)
-	}
-	session := driver.NewSession(ctx, neo4j.SessionConfig{})
-	defer func() {
-		if closeErr := session.Close(ctx); closeErr != nil {
-			logger.Warn("Failed to close session", "bolt_address", mainBoltAddress, "error", closeErr)
-		}
-	}()
-
-	// Use auto-commit mode for replication commands
-	query := fmt.Sprintf("REGISTER REPLICA %s %s TO \"%s\"", replicaName, syncMode, replicaAddress)
-	_, err = session.Run(ctx, query, nil)
-	if err != nil {
-		return fmt.Errorf("failed to execute REGISTER REPLICA: %w", err)
+		return fmt.Errorf("failed to register replica %s: %w", replicaName, err)
 	}
 	return nil
 }
 
-// DropReplicaWithRetry removes a replica registration from the main
-func (mc *MemgraphClient) DropReplicaWithRetry(ctx context.Context, mainBoltAddress, replicaName string) error {
-	logger := common.GetLoggerFromContext(ctx)
-	if mainBoltAddress == "" {
-		return fmt.Errorf("main bolt address is empty")
-	}
-	if replicaName == "" {
-		return fmt.Errorf("replica name is empty")
-	}
-
-	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, mainBoltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", mainBoltAddress, err)
-		}
-
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", mainBoltAddress, "error", closeErr)
-			}
-		}()
-
-		// Use auto-commit mode for replication commands
-		query := fmt.Sprintf("DROP REPLICA %s", replicaName)
-		_, err = session.Run(ctx, query, nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute DROP REPLICA: %w", err)
-		}
-
-		logger.Info("Successfully dropped replica from main", "replica_name", replicaName, "main_bolt_address", mainBoltAddress)
-		return nil
-	}, mc.retryConfig)
-
+// DropReplica removes a replica registration from the main
+func (mc *MemgraphClient) DropReplica(ctx context.Context, mainBoltAddress, replicaName string) error {
+	_, err := mc.connectionPool.RunQueryWithTimeout(ctx, mainBoltAddress, fmt.Sprintf("DROP REPLICA %s", replicaName), 5*time.Second)
 	if err != nil {
-		return fmt.Errorf("failed to drop replica %s from main %s after retries: %w",
-			replicaName, mainBoltAddress, err)
+		return fmt.Errorf("failed to drop replica %s: %w", replicaName, err)
 	}
-
 	return nil
 }
 
-// QueryStorageInfoWithRetry queries storage information with retry logic
-func (mc *MemgraphClient) QueryStorageInfoWithRetry(ctx context.Context, boltAddress string) (*StorageInfo, error) {
-	logger := common.GetLoggerFromContext(ctx)
+// QueryStorageInfo queries storage information
+func (mc *MemgraphClient) QueryStorageInfo(ctx context.Context, boltAddress string) (*StorageInfo, error) {
 	if boltAddress == "" {
 		return nil, fmt.Errorf("bolt address is empty")
 	}
 
-	var result *StorageInfo
-	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
-		}
+	var storageInfo *StorageInfo
 
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
-			}
-		}()
-
-		// Execute SHOW STORAGE INFO
-		txResult, err := session.Run(ctx, "SHOW STORAGE INFO", nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute SHOW STORAGE INFO: %w", err)
-		}
-
-		storageInfo := &StorageInfo{}
-		for txResult.Next(ctx) {
-			record := txResult.Record()
-
-			// Extract storage_info field which is typically a string representation
-			if storageInfoField, found := record.Get("storage info"); found {
-				if _, ok := storageInfoField.(string); ok {
-					// Parse the storage info string to extract vertex and edge counts
-					// This is a simplified parser - in practice might need more robust parsing
-					storageInfo.VertexCount = 0 // Default to 0
-					storageInfo.EdgeCount = 0   // Default to 0
-
-					// For now, assume empty storage (suitable for bootstrap check)
-					// TODO: Implement proper storage info parsing if needed
-				}
-			}
-
-			// Alternative: look for specific vertex_count and edge_count fields
-			if vertexCount, found := record.Get("vertex_count"); found {
-				if count, ok := vertexCount.(int64); ok {
-					storageInfo.VertexCount = count
-				}
-			}
-			if edgeCount, found := record.Get("edge_count"); found {
-				if count, ok := edgeCount.(int64); ok {
-					storageInfo.EdgeCount = count
-				}
-			}
-		}
-
-		result = storageInfo
-		return nil
-	}, mc.retryConfig)
-
+	// Execute SHOW STORAGE INFO
+	txResult, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW STORAGE INFO", 5*time.Second)
 	if err != nil {
-		return nil, fmt.Errorf("failed to query storage info from %s after retries: %w", boltAddress, err)
+		return nil, fmt.Errorf("failed to execute SHOW STORAGE INFO: %w", err)
 	}
 
-	return result, nil
-}
+	storageInfo = &StorageInfo{}
+	for txResult.Next(ctx) {
+		record := txResult.Record()
 
-// ExecuteCommandWithRetry executes a raw Memgraph command with retry logic
-func (mc *MemgraphClient) ExecuteCommandWithRetry(ctx context.Context, boltAddress, command string) error {
-	logger := common.GetLoggerFromContext(ctx)
-	if boltAddress == "" {
-		return fmt.Errorf("bolt address is empty")
-	}
-	if command == "" {
-		return fmt.Errorf("command is empty")
-	}
+		// Extract storage_info field which is typically a string representation
+		if storageInfoField, found := record.Get("storage info"); found {
+			if _, ok := storageInfoField.(string); ok {
+				// Parse the storage info string to extract vertex and edge counts
+				// This is a simplified parser - in practice might need more robust parsing
+				storageInfo.VertexCount = 0 // Default to 0
+				storageInfo.EdgeCount = 0   // Default to 0
 
-	err := WithRetry(ctx, func() error {
-		driver, err := mc.connectionPool.GetDriver(ctx, boltAddress)
-		if err != nil {
-			return fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
-		}
-
-		session := driver.NewSession(ctx, neo4j.SessionConfig{})
-		defer func() {
-			if closeErr := session.Close(ctx); closeErr != nil {
-				logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+				// For now, assume empty storage (suitable for bootstrap check)
+				// TODO: Implement proper storage info parsing if needed
 			}
-		}()
-
-		// Execute the raw command
-		_, err = session.Run(ctx, command, nil)
-		if err != nil {
-			return fmt.Errorf("failed to execute command '%s': %w", command, err)
 		}
 
-		return nil
-	}, mc.retryConfig)
-
-	if err != nil {
-		return fmt.Errorf("failed to execute command '%s' on %s after retries: %w", command, boltAddress, err)
+		// Alternative: look for specific vertex_count and edge_count fields
+		if vertexCount, found := record.Get("vertex_count"); found {
+			if count, ok := vertexCount.(int64); ok {
+				storageInfo.VertexCount = count
+			}
+		}
+		if edgeCount, found := record.Get("edge_count"); found {
+			if count, ok := edgeCount.(int64); ok {
+				storageInfo.EdgeCount = count
+			}
+		}
 	}
 
-	logger.Info("Successfully executed command", "command", command, "bolt_address", boltAddress)
-	return nil
+	return storageInfo, nil
 }

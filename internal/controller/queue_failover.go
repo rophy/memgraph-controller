@@ -103,7 +103,7 @@ func (c *MemgraphController) handleFailoverCheckEvent(ctx context.Context, event
 
 	// Set the failover check needed flag.
 	// reconciliation will try best to check this flag and stop early.
-	c.failoverCheckNeeded.Store(true)
+	// c.failoverCheckNeeded.Store(true)
 
 	// Acquire shared mutex before performing failover check
 	// This prevents race conditions with reconciliation
@@ -145,7 +145,6 @@ func (c *MemgraphController) lastChancePing(ctx context.Context, podName string)
 	return nil
 }
 
-
 // performFailoverCheck implements the failover check logic
 func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 	logger := common.GetLoggerFromContext(ctx)
@@ -153,7 +152,6 @@ func (c *MemgraphController) performFailoverCheck(ctx context.Context) error {
 	defer func() {
 		logger.Info("performFailoverCheck completed", "duration_ms", float64(time.Since(start).Nanoseconds())/1e6)
 	}()
-
 
 	targetMainIndex, err := c.GetTargetMainIndex(ctx)
 	if err != nil {

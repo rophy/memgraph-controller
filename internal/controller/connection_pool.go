@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"sync"
 	"time"
 
@@ -17,12 +16,6 @@ type ConnectionPool struct {
 	podIPs  map[string]string                  // podName -> currentIP
 	mutex   sync.RWMutex
 	config  *common.Config
-}
-
-type RetryConfig struct {
-	MaxRetries int
-	BaseDelay  time.Duration
-	MaxDelay   time.Duration
 }
 
 func NewConnectionPool(config *common.Config) *ConnectionPool {
@@ -154,92 +147,61 @@ func (cp *ConnectionPool) Close(ctx context.Context) {
 	cp.podIPs = make(map[string]string)
 }
 
-func WithRetry(ctx context.Context, operation func() error, retryConfig RetryConfig) error {
+// RunQueryWithTimeout runs a query with a guaranteed timeout
+func (cp *ConnectionPool) RunQueryWithTimeout(ctx context.Context, boltAddress string, query string, timeout time.Duration) (neo4j.ResultWithContext, error) {
 	logger := common.GetLoggerFromContext(ctx)
-	var lastErr error
 
-	for attempt := 0; attempt <= retryConfig.MaxRetries; attempt++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		err := operation()
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-
-		if attempt == retryConfig.MaxRetries {
-			break
-		}
-
-		// Calculate delay with exponential backoff
-		delay := retryConfig.BaseDelay * time.Duration(1<<uint(attempt))
-		if delay > retryConfig.MaxDelay {
-			delay = retryConfig.MaxDelay
-		}
-
-		logger.Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
+	if boltAddress == "" {
+		return nil, fmt.Errorf("bolt address is empty")
 	}
 
-	return fmt.Errorf("operation failed after %d attempts: %w", retryConfig.MaxRetries+1, lastErr)
+	type queryResult struct {
+		result neo4j.ResultWithContext
+		err    error
+	}
+
+	resultChan := make(chan queryResult, 1)
+
+	// Run query in goroutine
+	go func() {
+
+		result, err := cp.RunQuery(ctx, boltAddress, query)
+		resultChan <- queryResult{
+			result: result,
+			err:    err,
+		}
+	}()
+
+	// Guaranteed timeout using select
+	select {
+	case res := <-resultChan:
+		return res.result, res.err
+	case <-time.After(timeout):
+		logger.Warn("RunQueryWithTimeout timed out", "bolt_address", boltAddress, "query", query, "timeout", timeout)
+		return nil, fmt.Errorf("bolt query timed out after %v", timeout)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
 }
 
-// WithRetryAndRefresh performs retry with pod IP refresh on connection failures
-func WithRetryAndRefresh(ctx context.Context, operation func() error, retryConfig RetryConfig, refreshFunc func() error) error {
+// RunQuery runs a query
+func (cp *ConnectionPool) RunQuery(ctx context.Context, boltAddress string, query string) (neo4j.ResultWithContext, error) {
 	logger := common.GetLoggerFromContext(ctx)
-	var lastErr error
 
-	for attempt := 0; attempt <= retryConfig.MaxRetries; attempt++ {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
-		err := operation()
-		if err == nil {
-			return nil
-		}
-
-		lastErr = err
-
-		if attempt == retryConfig.MaxRetries {
-			break
-		}
-
-		// On connectivity errors, refresh pod information before retry
-		if strings.Contains(err.Error(), "ConnectivityError") || strings.Contains(err.Error(), "i/o timeout") {
-			if refreshFunc != nil {
-				if refreshErr := refreshFunc(); refreshErr != nil {
-					logger.Warn("failed to refresh pod info", "error", refreshErr)
-				}
-			}
-		}
-
-		// Calculate delay with exponential backoff
-		delay := retryConfig.BaseDelay * time.Duration(1<<uint(attempt))
-		if delay > retryConfig.MaxDelay {
-			delay = retryConfig.MaxDelay
-		}
-
-		logger.Warn("operation failed", "attempt", attempt+1, "max_retries", retryConfig.MaxRetries+1, "error", err, "delay", delay)
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(delay):
-		}
+	driver, err := cp.GetDriver(ctx, boltAddress)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get driver for %s: %w", boltAddress, err)
 	}
 
-	return fmt.Errorf("operation failed after %d attempts: %w", retryConfig.MaxRetries+1, lastErr)
+	// Create session
+	session := driver.NewSession(ctx, neo4j.SessionConfig{})
+	defer func() {
+		if closeErr := session.Close(ctx); closeErr != nil {
+			logger.Warn("Failed to close session", "bolt_address", boltAddress, "error", closeErr)
+		}
+	}()
+
+	// Run query
+	result, err := session.Run(ctx, query, nil)
+	return result, err
 }

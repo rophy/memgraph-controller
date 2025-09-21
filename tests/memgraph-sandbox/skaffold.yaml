@@ -19,3 +19,6 @@ deploy:
     - name: memgraph-sandbox
       chartPath: .
       wait: true
+    - name: test-client
+      chartPath: ../client/charts/test-client
+  

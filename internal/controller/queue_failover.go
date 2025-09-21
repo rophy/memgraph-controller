@@ -278,6 +278,27 @@ func (c *MemgraphController) executeFailoverInternal(ctx context.Context) error 
 		)
 		return fmt.Errorf("cached replica status is not ready")
 	}
+
+	// Check that ALL replicas are ready before failover to prevent data lineage breaks
+	for _, replica := range replicas {
+		if replica.ParsedDataInfo == nil {
+			logger.Error("🚨 failover: replica has nil data_info, unsafe to perform failover",
+				"replica_name", replica.Name,
+			)
+			return fmt.Errorf("replica %s has nil data_info, unsafe to perform failover", replica.Name)
+		}
+		if replica.ParsedDataInfo.Status != "ready" {
+			logger.Error("🚨 failover: replica not ready, unsafe to perform failover",
+				"replica_name", replica.Name,
+				"status", replica.ParsedDataInfo.Status,
+				"data_info", replica.DataInfo,
+			)
+			return fmt.Errorf("replica %s not ready (status: %s), unsafe to perform failover", replica.Name, replica.ParsedDataInfo.Status)
+		}
+		logger.Debug("failover: replica ready", "replica_name", replica.Name, "status", replica.ParsedDataInfo.Status)
+	}
+	logger.Info("failover: all replicas are ready, proceeding with failover", "replica_count", len(replicas))
+
 	err = c.lastChancePing(ctx, targetSyncReplicaName)
 	if err != nil {
 		logger.Error("🚨 failover: sync replica pod is not reachable, unsafe to perform failover", "pod_name", targetSyncReplicaName)

@@ -176,6 +176,50 @@ STRICT_SYNC mode prevents the dual-main issue during rolling restart:
 2. It cannot write data because pod-1 (now the actual main) is no longer its STRICT_SYNC replica
 3. This prevents data divergence that would occur with regular SYNC mode
 
+## Network Partition and Failover Behavior
+
+### Async Replica Isolation Constraint
+
+**Critical Memgraph Characteristic**: When an async replica is disconnected from the main during a network partition, it will **refuse to rejoin the cluster after failover**, even if the data between the new main and sync replica is perfectly synchronized.
+
+#### The Problem Scenario
+
+1. **Initial State**: Main with sync replica and async replica, all synchronized
+2. **Network Partition**: Async replica becomes isolated (e.g., NetworkPolicy blocking traffic)
+3. **Main Failure**: Original main fails, controller promotes sync replica to new main
+4. **Partition Removal**: Network connectivity restored to async replica
+5. **Rejection**: Async replica refuses to rejoin with error:
+   ```
+   You cannot register Replica <name> to this Main because at one point
+   Replica <name> acted as the Main instance. Both the Main and Replica
+   <name> now hold unique data. Please resolve data conflicts and start
+   the replication on a clean instance.
+   ```
+
+#### Root Cause
+
+During isolation, the async replica **automatically promotes itself to main** when it cannot reach the original main. When the network partition is resolved, Memgraph's split-brain protection detects that the async replica previously acted as main and refuses to allow it to become a replica again, regardless of actual data consistency.
+
+#### Controller Design Implications
+
+**The controller cannot simply assume isolated async replicas will rejoin after failover.** Key constraints:
+
+1. **Proactive Management Required**: Controller must track and manage isolated replicas during failover
+2. **Clean Rejoin Process**: Isolated async replicas need data cleanup/reset before re-registration
+3. **Failover Timing**: Consider dropping unreachable async replicas before promoting sync replica
+4. **Monitoring**: Track replica isolation state and handle rejoining scenarios explicitly
+
+#### Current Controller Limitation
+
+The current controller logic "trusts Memgraph auto-retry" for replica health issues, but this fails for split-brain scenarios where Memgraph explicitly refuses the registration. The controller should detect this specific error pattern and take corrective action (drop + clean + re-register).
+
+#### NetworkPolicy Testing Insights
+
+- NetworkPolicy blocks **new connections** but preserves **existing connections**
+- After pod restart, NetworkPolicy effectively isolates the replica
+- Controller health checks and replication queries fail due to connection timeouts
+- This creates realistic network partition scenarios for testing failover behavior
+
 ---
 
 *Pure Memgraph Community Edition 3.5.1 specifications*

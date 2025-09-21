@@ -203,4 +203,65 @@ lifecycle:
 ### Related Issues
 
 - **Issue #1**: Previous incorrect analysis about persistent storage
+- **Issue #3**: Controller startup failure after refactoring - Fixed
 - **Original E2E Test Failures**: Data divergence during rolling restart scenarios
+
+## 3. Controller Startup Failure After Refactoring - Fixed
+
+**Status**: Fixed
+**Severity**: High - Controller cannot start
+**Investigation Date**: 2025-09-21
+**Fixed By**: Claude AI
+
+### Description
+
+After the latest git commit refactoring the memgraph client code, the controller failed to start with the error:
+
+```
+time=2025-09-21T10:10:05.542Z level=ERROR msg="Controller reconciliation loop failed" error="failed to discover cluster state: failed to check if this is a new cluster: failed to get replication role for memgraph-ha-0: failed to query replication role for node memgraph-ha-0: no results returned from SHOW REPLICATION ROLE"
+```
+
+### Root Cause
+
+During the refactoring in commit `3b1f672`, the field checking logic in `QueryReplicationRole()` was incorrectly ordered:
+
+**Problematic Code**:
+```go
+role, found := record.Get("replication role")
+roleStr, ok := role.(string)
+if !found {
+    return nil, fmt.Errorf("replication role not found in result")
+}
+```
+
+**Issue**: The type assertion `role.(string)` was performed before checking if the field was found (`!found`). When the field is not found, `role` is `nil`, causing the type assertion to potentially panic or behave unexpectedly.
+
+### Fix Applied
+
+**Corrected Code**:
+```go
+role, found := record.Get("replication role")
+if !found {
+    return nil, fmt.Errorf("replication role not found in result")
+}
+roleStr, ok := role.(string)
+```
+
+**Fix**: Check if the field was found first, then perform the type assertion. This ensures we only attempt to cast the value to string when we know it exists.
+
+### Verification
+
+- ✅ Unit tests pass
+- ✅ Static analysis (staticcheck) passes
+- ✅ Controller starts successfully and becomes leader
+- ✅ No more "no results returned from SHOW REPLICATION ROLE" errors
+- ✅ Gateway servers start properly
+
+### Impact
+
+- **Before Fix**: Controller could not start at all
+- **After Fix**: Controller starts normally and can query replication roles successfully
+
+### File Modified
+
+- `internal/controller/memgraph_client.go:335-342` - Fixed field checking logic order

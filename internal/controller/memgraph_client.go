@@ -325,45 +325,49 @@ func (mc *MemgraphClient) Close(ctx context.Context) {
 }
 
 func (mc *MemgraphClient) QueryReplicationRole(ctx context.Context, boltAddress string) (*ReplicationRole, error) {
-	result, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW REPLICATION ROLE", 5*time.Second)
+	logger := common.GetLoggerFromContext(ctx)
+	logger.Info("DEBUG: QueryReplicationRole starting", "bolt_address", boltAddress)
+
+	records, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW REPLICATION ROLE", 5*time.Second)
 	if err != nil {
+		logger.Error("DEBUG: RunQueryWithTimeout failed", "error", err)
 		return nil, fmt.Errorf("failed to query replication role from %s: %w", boltAddress, err)
 	}
 
-	if result.Next(ctx) {
-		record := result.Record()
-		role, found := record.Get("replication_role")
+	logger.Info("DEBUG: RunQueryWithTimeout succeeded, checking records", "record_count", len(records))
+	if len(records) > 0 {
+		logger.Info("DEBUG: Found records")
+		record := records[0]
+		role, found := record.Get("replication role")
+
 		if !found {
-			// Try alternative field name (some versions use different naming)
-			role, found = record.Get("replication role")
-			if !found {
-				return nil, fmt.Errorf("replication_role field not found in result")
-			}
+			return nil, fmt.Errorf("replication role not found in result")
 		}
 
 		roleStr, ok := role.(string)
 		if !ok {
-			return nil, fmt.Errorf("replication_role is not a string: %T", role)
+			return nil, fmt.Errorf("replication role is not a string: %T", role)
 		}
 
 		replicationRole := &ReplicationRole{Role: roleStr}
+		logger.Info("DEBUG: Successfully got replication role", "role", roleStr)
 		return replicationRole, nil
 	}
 
+	logger.Error("DEBUG: No records returned")
 	return nil, fmt.Errorf("no results returned from SHOW REPLICATION ROLE")
 }
 
 // QueryReplicas queries the replicas with retry logic and connection pooling
 func (mc *MemgraphClient) QueryReplicas(ctx context.Context, boltAddress string) (*ReplicasResponse, error) {
 	logger := common.GetLoggerFromContext(ctx)
-	txResult, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW REPLICAS", 5*time.Second)
+	records, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW REPLICAS", 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query replicas from %s: %w", boltAddress, err)
 	}
 
 	var replicas []ReplicaInfo
-	for txResult.Next(ctx) {
-		record := txResult.Record()
+	for _, record := range records {
 
 		replica := ReplicaInfo{}
 
@@ -532,14 +536,13 @@ func (mc *MemgraphClient) QueryStorageInfo(ctx context.Context, boltAddress stri
 	var storageInfo *StorageInfo
 
 	// Execute SHOW STORAGE INFO
-	txResult, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW STORAGE INFO", 5*time.Second)
+	records, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW STORAGE INFO", 5*time.Second)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute SHOW STORAGE INFO: %w", err)
 	}
 
 	storageInfo = &StorageInfo{}
-	for txResult.Next(ctx) {
-		record := txResult.Record()
+	for _, record := range records {
 
 		// Extract storage_info field which is typically a string representation
 		if storageInfoField, found := record.Get("storage info"); found {

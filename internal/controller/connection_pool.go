@@ -148,7 +148,7 @@ func (cp *ConnectionPool) Close(ctx context.Context) {
 }
 
 // RunQueryWithTimeout runs a query with a guaranteed timeout
-func (cp *ConnectionPool) RunQueryWithTimeout(ctx context.Context, boltAddress string, query string, timeout time.Duration) (neo4j.ResultWithContext, error) {
+func (cp *ConnectionPool) RunQueryWithTimeout(ctx context.Context, boltAddress string, query string, timeout time.Duration) ([]*neo4j.Record, error) {
 	logger := common.GetLoggerFromContext(ctx)
 
 	if boltAddress == "" {
@@ -156,26 +156,25 @@ func (cp *ConnectionPool) RunQueryWithTimeout(ctx context.Context, boltAddress s
 	}
 
 	type queryResult struct {
-		result neo4j.ResultWithContext
-		err    error
+		records []*neo4j.Record
+		err     error
 	}
 
 	resultChan := make(chan queryResult, 1)
 
 	// Run query in goroutine
 	go func() {
-
-		result, err := cp.RunQuery(ctx, boltAddress, query)
+		records, err := cp.RunQuery(ctx, boltAddress, query)
 		resultChan <- queryResult{
-			result: result,
-			err:    err,
+			records: records,
+			err:     err,
 		}
 	}()
 
 	// Guaranteed timeout using select
 	select {
 	case res := <-resultChan:
-		return res.result, res.err
+		return res.records, res.err
 	case <-time.After(timeout):
 		logger.Warn("RunQueryWithTimeout timed out", "bolt_address", boltAddress, "query", query, "timeout", timeout)
 		return nil, fmt.Errorf("bolt query timed out after %v", timeout)
@@ -184,8 +183,8 @@ func (cp *ConnectionPool) RunQueryWithTimeout(ctx context.Context, boltAddress s
 	}
 }
 
-// RunQuery runs a query
-func (cp *ConnectionPool) RunQuery(ctx context.Context, boltAddress string, query string) (neo4j.ResultWithContext, error) {
+// RunQuery runs a query and returns collected records
+func (cp *ConnectionPool) RunQuery(ctx context.Context, boltAddress string, query string) ([]*neo4j.Record, error) {
 	logger := common.GetLoggerFromContext(ctx)
 
 	driver, err := cp.GetDriver(ctx, boltAddress)
@@ -201,7 +200,13 @@ func (cp *ConnectionPool) RunQuery(ctx context.Context, boltAddress string, quer
 		}
 	}()
 
-	// Run query
+	// Run query and collect all records
 	result, err := session.Run(ctx, query, nil)
-	return result, err
+	if err != nil {
+		return nil, err
+	}
+
+	// Collect all records while session is still open
+	records, err := result.Collect(ctx)
+	return records, err
 }

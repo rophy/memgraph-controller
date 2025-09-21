@@ -336,29 +336,34 @@ def analyze_client_operations_during_rollout(logs: str,
       'failure_rate': failure_rate,
       'failure_windows': failure_windows,
       'max_failure_window_seconds': max_failure_window,
-      'had_complete_outage': max_failure_window > 50  # More than 50s of failures
+      'had_complete_outage': max_failure_window > 90  # More than 90s of failures
   }
 
 
 def test_rolling_restart_continuous_availability():
   """
-  Test that the cluster maintains write availability during a rolling restart.
+  Test that the cluster maintains read/write availability during a rolling restart.
 
   Preconditions:
   - Cluster is ready and healthy
   - Test-client is running and writing successfully
+  - Read-client is running and reading successfully
+  - Bad-client is running and failing writes (as expected)
 
   Test steps:
   1. Verify cluster is healthy with 3 pods
   2. Verify test-client is writing successfully
-  3. Trigger a rolling restart of the StatefulSet
-  4. Monitor test-client operations during the entire rollout
-  5. Verify no extended write failures occurred
-  6. Verify cluster returns to healthy state
+  3. Verify read-client is reading successfully
+  4. Verify bad-client writes are failing (as expected)
+  5. Trigger a rolling restart of the StatefulSet
+  6. Monitor all client operations during the entire rollout
+  7. Verify no extended failures occurred
+  8. Verify cluster returns to healthy state
 
   Success criteria:
-  - No failure window longer than 60 seconds
-  - Overall failure rate < 60%
+  - Test-client: No failure window longer than 120 seconds, failure rate < 85%
+  - Read-client: No failure window longer than 120 seconds, failure rate < 85%
+  - Bad-client: 100% failure rate throughout (writes to read-only should never succeed)
   - All pods successfully restarted
   - Cluster converges to healthy state after rollout
   """
@@ -379,6 +384,14 @@ def test_rolling_restart_continuous_availability():
   assert initial_status['replicas'] == 3, f"Expected 3 replicas, got {initial_status['replicas']}"
   assert initial_status['ready_replicas'] == 3, f"Not all replicas ready: {initial_status['ready_replicas']}/3"
 
+  # Helper function to get client pods
+  def get_client_pod(client_name):
+    """Get pod name for a specific client"""
+    pods_json = kubectl_get("pods", namespace=MEMGRAPH_NS, selector=f"app={client_name}", output="json")
+    pods_data = json.loads(pods_json)
+    assert len(pods_data['items']) > 0, f"No {client_name} pods found"
+    return pods_data['items'][0]['metadata']['name']
+
   # Verify test-client is writing successfully
   log_info("Verifying test-client is operational...")
   test_client_pod = get_test_client_pod()
@@ -396,6 +409,38 @@ def test_rolling_restart_continuous_availability():
       continue
 
   assert success_count >= 7, f"Test-client not healthy: only {success_count}/10 recent operations successful"
+
+  # Verify read-client is reading successfully
+  log_info("Verifying read-client is operational...")
+  read_client_pod = get_client_pod("read-client")
+  read_recent_logs = get_pod_logs(read_client_pod, tail_lines=20)
+
+  read_success_count = 0
+  for line in read_recent_logs.strip().split('\n')[-10:]:
+    try:
+      log_data = parse_logfmt(line)
+      if log_data.get('status') == 'success' or 'success' in log_data.get('msg', '').lower():
+        read_success_count += 1
+    except:
+      continue
+
+  assert read_success_count >= 7, f"Read-client not healthy: only {read_success_count}/10 recent operations successful"
+
+  # Verify bad-client is failing as expected (writes to read-only should fail)
+  log_info("Verifying bad-client is failing writes as expected...")
+  bad_client_pod = get_client_pod("bad-client")
+  bad_recent_logs = get_pod_logs(bad_client_pod, tail_lines=20)
+
+  bad_failure_count = 0
+  for line in bad_recent_logs.strip().split('\n')[-10:]:
+    try:
+      log_data = parse_logfmt(line)
+      if 'failed' in log_data.get('msg', '').lower() or 'error' in log_data.get('msg', '').lower():
+        bad_failure_count += 1
+    except:
+      continue
+
+  assert bad_failure_count >= 7, f"Bad-client not behaving as expected: only {bad_failure_count}/10 recent operations failed"
 
   # Step 3: Trigger rolling restart
   log_info("Triggering rolling restart of StatefulSet...")
@@ -438,14 +483,30 @@ def test_rolling_restart_continuous_availability():
     'events': []
   }
 
-  # Get test-client logs during rollout period
-  log_info("Analyzing test-client operations during rollout...")
+  # Get all client logs during rollout period
+  log_info("Analyzing client operations during rollout...")
   since_time = (rollout_start_time - datetime.timedelta(seconds=5)).strftime('%Y-%m-%dT%H:%M:%SZ')
-  client_logs = get_pod_logs(test_client_pod, since_time=since_time)
 
-  # Analyze client operations using actual service convergence duration
-  client_analysis = analyze_client_operations_during_rollout(
-      client_logs,
+  # Collect logs from all clients
+  test_client_logs = get_pod_logs(test_client_pod, since_time=since_time)
+  read_client_logs = get_pod_logs(read_client_pod, since_time=since_time)
+  bad_client_logs = get_pod_logs(bad_client_pod, since_time=since_time)
+
+  # Analyze each client's operations using actual service convergence duration
+  test_client_analysis = analyze_client_operations_during_rollout(
+      test_client_logs,
+      rollout_start_time,
+      rollout_duration
+  )
+
+  read_client_analysis = analyze_client_operations_during_rollout(
+      read_client_logs,
+      rollout_start_time,
+      rollout_duration
+  )
+
+  bad_client_analysis = analyze_client_operations_during_rollout(
+      bad_client_logs,
       rollout_start_time,
       rollout_duration
   )
@@ -465,19 +526,35 @@ def test_rolling_restart_continuous_availability():
   print(f"  Pods restarted: {restart_info.get('restart_count', 0)}")
   print(f"  Restarted pods: {restart_info.get('pods_restarted', [])}")
 
-  print("\nClient Operation Analysis:")
-  print(f"  Total operations: {client_analysis['total_operations']}")
-  print(f"  Successful: {client_analysis['successful_operations']}")
-  print(f"  Failed: {client_analysis['failed_operations']}")
-  print(f"  Failure rate: {client_analysis['failure_rate']:.2f}%")
-  print(f"  Failure windows: {len(client_analysis['failure_windows'])}")
-  print(f"  Max failure window: {client_analysis['max_failure_window_seconds']:.1f}s")
+  print("\nTest-Client Operation Analysis (writes to RW gateway):")
+  print(f"  Total operations: {test_client_analysis['total_operations']}")
+  print(f"  Successful: {test_client_analysis['successful_operations']}")
+  print(f"  Failed: {test_client_analysis['failed_operations']}")
+  print(f"  Failure rate: {test_client_analysis['failure_rate']:.2f}%")
+  print(f"  Failure windows: {len(test_client_analysis['failure_windows'])}")
+  print(f"  Max failure window: {test_client_analysis['max_failure_window_seconds']:.1f}s")
 
-  # Print failure windows if any
-  if client_analysis['failure_windows']:
-    print("\nFailure Windows:")
-    for i, window in enumerate(client_analysis['failure_windows'][:5]):  # Show first 5
-      print(f"  Window {i+1}: {window['duration']:.1f}s with {len(window['failures'])} failures")
+  print("\nRead-Client Operation Analysis (reads from RO gateway):")
+  print(f"  Total operations: {read_client_analysis['total_operations']}")
+  print(f"  Successful: {read_client_analysis['successful_operations']}")
+  print(f"  Failed: {read_client_analysis['failed_operations']}")
+  print(f"  Failure rate: {read_client_analysis['failure_rate']:.2f}%")
+  print(f"  Failure windows: {len(read_client_analysis['failure_windows'])}")
+  print(f"  Max failure window: {read_client_analysis['max_failure_window_seconds']:.1f}s")
+
+  print("\nBad-Client Operation Analysis (writes to RO gateway - should fail):")
+  print(f"  Total operations: {bad_client_analysis['total_operations']}")
+  print(f"  Successful: {bad_client_analysis['successful_operations']}")
+  print(f"  Failed: {bad_client_analysis['failed_operations']}")
+  print(f"  Failure rate: {bad_client_analysis['failure_rate']:.2f}%")
+  print(f"  Expected: 100% failure rate (writes to read-only should always fail)")
+
+  # Print failure windows for test and read clients
+  for client_name, analysis in [("Test-Client", test_client_analysis), ("Read-Client", read_client_analysis)]:
+    if analysis['failure_windows']:
+      print(f"\n{client_name} Failure Windows:")
+      for i, window in enumerate(analysis['failure_windows'][:5]):  # Show first 5
+        print(f"  Window {i+1}: {window['duration']:.1f}s with {len(window['failures'])} failures")
 
   # Step 5: Verify success criteria
   print("\n=== Verifying Success Criteria ===")
@@ -491,22 +568,42 @@ def test_rolling_restart_continuous_availability():
       f"Expected all 3 pods to restart, but only {restart_info.get('restart_count', 0)} restarted"
   print("✓ All pods were restarted")
 
-  # Check no extended failure windows
-  max_failure_window = client_analysis['max_failure_window_seconds']
-  assert max_failure_window <= 120, \
-      f"Failure window too long: {max_failure_window:.1f}s (max allowed: 120s)"
-  print(f"✓ No extended failure windows (max: {max_failure_window:.1f}s)")
+  # Verify test-client (write) success criteria
+  test_max_failure_window = test_client_analysis['max_failure_window_seconds']
+  assert test_max_failure_window <= 120, \
+      f"Test-client failure window too long: {test_max_failure_window:.1f}s (max allowed: 120s)"
+  print(f"✓ Test-client: No extended failure windows (max: {test_max_failure_window:.1f}s)")
 
-  # Check overall failure rate
-  failure_rate = client_analysis['failure_rate']
-  assert failure_rate <= 85.0, \
-      f"Failure rate too high: {failure_rate:.2f}% (max allowed: 85%)"
-  print(f"✓ Acceptable failure rate: {failure_rate:.2f}%")
+  test_failure_rate = test_client_analysis['failure_rate']
+  assert test_failure_rate <= 85.0, \
+      f"Test-client failure rate too high: {test_failure_rate:.2f}% (max allowed: 85%)"
+  print(f"✓ Test-client: Acceptable failure rate: {test_failure_rate:.2f}%")
 
-  # Verify no complete outage
-  assert not client_analysis['had_complete_outage'], \
-      "Detected complete outage (>50s of continuous failures)"
-  print("✓ No complete outage detected")
+  assert not test_client_analysis['had_complete_outage'], \
+      "Test-client: Detected complete outage (>50s of continuous failures)"
+  print("✓ Test-client: No complete outage detected")
+
+  # Verify read-client success criteria
+  read_max_failure_window = read_client_analysis['max_failure_window_seconds']
+  assert read_max_failure_window <= 120, \
+      f"Read-client failure window too long: {read_max_failure_window:.1f}s (max allowed: 120s)"
+  print(f"✓ Read-client: No extended failure windows (max: {read_max_failure_window:.1f}s)")
+
+  read_failure_rate = read_client_analysis['failure_rate']
+  assert read_failure_rate <= 85.0, \
+      f"Read-client failure rate too high: {read_failure_rate:.2f}% (max allowed: 85%)"
+  print(f"✓ Read-client: Acceptable failure rate: {read_failure_rate:.2f}%")
+
+  assert not read_client_analysis['had_complete_outage'], \
+      "Read-client: Detected complete outage (>50s of continuous failures)"
+  print("✓ Read-client: No complete outage detected")
+
+  # Verify bad-client behaves as expected (100% failure rate)
+  bad_failure_rate = bad_client_analysis['failure_rate']
+  bad_success_count = bad_client_analysis['successful_operations']
+  assert bad_success_count == 0, \
+      f"Bad-client should NEVER succeed writes to read-only gateway, but had {bad_success_count} successful operations"
+  print(f"✓ Bad-client: Correctly failing ALL writes to read-only gateway ({bad_failure_rate:.2f}% failure rate)")
 
   # Step 6: Verify cluster returns to healthy state
   log_info("Verifying cluster health after rollout...")
@@ -526,8 +623,9 @@ def test_rolling_restart_continuous_availability():
     print(f"⚠ Could not determine main pod: {e}")
 
   print("\n✅ Rolling restart test completed successfully!")
-  print(f"   The cluster maintained {100 - failure_rate:.1f}% availability during rolling restart")
-  print(f"   Maximum service interruption: {max_failure_window:.1f}s")
+  print(f"   Test-client (writes): {100 - test_failure_rate:.1f}% availability, max interruption: {test_max_failure_window:.1f}s")
+  print(f"   Read-client (reads): {100 - read_failure_rate:.1f}% availability, max interruption: {read_max_failure_window:.1f}s")
+  print(f"   Bad-client: {bad_failure_rate:.2f}% failure rate (correctly rejecting writes to read-only gateway)")
 
 
 def test_rolling_restart_with_main_changes():

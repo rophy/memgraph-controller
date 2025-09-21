@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -546,8 +547,13 @@ func (c *MemgraphController) selectBestReplica(ctx context.Context) (*MemgraphNo
 		replicas = append(replicas, node)
 	}
 
-	// Select the best replica (for now, just pick the first healthy one)
-	// TODO: In future, could implement round-robin or least-connections
+	// Order replica nodes by name descending
+	sort.Slice(replicas, func(i, j int) bool {
+		return replicas[i].GetName() > replicas[j].GetName()
+	})
+
+	// The best replica is the LAST one in a StatefulSet
+	// Such that SYNC replica is the least preferred one.
 	if len(replicas) > 0 {
 		return replicas[0], nil
 	}

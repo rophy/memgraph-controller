@@ -45,7 +45,14 @@ deploy:
       wait: false
       setValues:
         args: ["read", "bolt://memgraph-gateway-read:7687"]
-        
+    - name: bad-client
+      chartPath: tests/client/charts/test-client
+      namespace: memgraph
+      createNamespace: false
+      wait: false
+      setValues:
+        args: ["write", "bolt://memgraph-gateway-read:7687"]
+
   logs:
     prefix: podAndContainer
 

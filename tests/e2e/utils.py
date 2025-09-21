@@ -628,6 +628,7 @@ def wait_for_cluster_convergence(timeout: int = 60) -> bool:
 
         if perfect_convergence:
           elapsed = int(time.time() - start_time)
+          log_info(replicas_data)
           log_info(
               f"✅ Cluster fully converged after {elapsed}s: main={main_pod}, "
               f"1 strict_sync + 1 async replica (all ready, behind=0)")

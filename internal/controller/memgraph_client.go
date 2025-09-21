@@ -326,7 +326,6 @@ func (mc *MemgraphClient) Close(ctx context.Context) {
 
 func (mc *MemgraphClient) QueryReplicationRole(ctx context.Context, boltAddress string) (*ReplicationRole, error) {
 	logger := common.GetLoggerFromContext(ctx)
-	logger.Info("DEBUG: QueryReplicationRole starting", "bolt_address", boltAddress)
 
 	records, err := mc.connectionPool.RunQueryWithTimeout(ctx, boltAddress, "SHOW REPLICATION ROLE", 5*time.Second)
 	if err != nil {
@@ -334,28 +333,30 @@ func (mc *MemgraphClient) QueryReplicationRole(ctx context.Context, boltAddress 
 		return nil, fmt.Errorf("failed to query replication role from %s: %w", boltAddress, err)
 	}
 
-	logger.Info("DEBUG: RunQueryWithTimeout succeeded, checking records", "record_count", len(records))
-	if len(records) > 0 {
-		logger.Info("DEBUG: Found records")
-		record := records[0]
-		role, found := record.Get("replication role")
-
-		if !found {
-			return nil, fmt.Errorf("replication role not found in result")
-		}
-
-		roleStr, ok := role.(string)
-		if !ok {
-			return nil, fmt.Errorf("replication role is not a string: %T", role)
-		}
-
-		replicationRole := &ReplicationRole{Role: roleStr}
-		logger.Info("DEBUG: Successfully got replication role", "role", roleStr)
-		return replicationRole, nil
+	if len(records) == 0 {
+		// Should never happen.
+		logger.Error("☢️QueryReplicationRole: No records returned", "bolt_address", boltAddress)
+		return nil, fmt.Errorf("no results returned from SHOW REPLICATION ROLE")
 	}
 
-	logger.Error("DEBUG: No records returned")
-	return nil, fmt.Errorf("no results returned from SHOW REPLICATION ROLE")
+	record := records[0]
+	role, found := record.Get("replication role")
+
+	if !found {
+		// Should never happen.
+		logger.Error("☢️QueryReplicationRole: replication role not found in result", "bolt_address", boltAddress)
+		return nil, fmt.Errorf("replication role not found in result")
+	}
+
+	roleStr, ok := role.(string)
+	if !ok {
+		// Should never happen.
+		logger.Error("☢️QueryReplicationRole: replication role is not a string", "bolt_address", boltAddress, "role", role)
+		return nil, fmt.Errorf("replication role is not a string: %T", role)
+	}
+
+	replicationRole := &ReplicationRole{Role: roleStr}
+	return replicationRole, nil
 }
 
 // QueryReplicas queries the replicas with retry logic and connection pooling

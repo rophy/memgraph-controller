@@ -176,7 +176,7 @@ func (cp *ConnectionPool) RunQueryWithTimeout(ctx context.Context, boltAddress s
 	case res := <-resultChan:
 		return res.records, res.err
 	case <-time.After(timeout):
-		logger.Warn("RunQueryWithTimeout timed out", "bolt_address", boltAddress, "query", query, "timeout", timeout)
+		logger.Warn("🚨RunQueryWithTimeout timed out", "bolt_address", boltAddress, "query", query, "timeout", timeout)
 		return nil, fmt.Errorf("bolt query timed out after %v", timeout)
 	case <-ctx.Done():
 		return nil, ctx.Err()

@@ -483,14 +483,22 @@ def wait_for_statefulset_ready(statefulset_name: str = "memgraph-ha",
 
 def wait_for_cluster_convergence(timeout: int = 60) -> bool:
   """
-  Wait for cluster to converge to main-sync-async topology by checking pods directly
-  Uses the same approach as scripts/check.sh
+  Wait for cluster to fully converge to healthy main-sync-async topology.
+
+  Ensures complete convergence by verifying:
+  1. 3 memgraph pods are "ready" in Kubernetes status
+  2. Roles: exactly 1 main pod, 2 replica pods
+  3. Main pod has exactly 1 strict_sync + 1 async replication
+  4. Both replicas have status="ready" and behind=0 (fully caught up)
+
+  This prevents split-brain scenarios by ensuring no dual-main states exist
+  and all replication links are fully synchronized before proceeding.
 
   Args:
       timeout: Maximum wait time in seconds
 
   Returns:
-      True if converged, raises exception on timeout
+      True if fully converged, raises exception on timeout
   """
   start_time = time.time()
   log_info("⏳ Waiting for cluster convergence...")
@@ -566,37 +574,70 @@ def wait_for_cluster_convergence(timeout: int = 60) -> bool:
           time.sleep(2)
           continue
 
-        # Count sync and async replicas and check their status
+        # Count sync and async replicas and check their status and sync state
         sync_count = 0
         async_count = 0
         ready_sync_count = 0
         ready_async_count = 0
+        sync_behind_zero_count = 0
+        async_behind_zero_count = 0
 
         for replica in replicas_data:
           sync_mode = replica.get('sync_mode', '').strip('"')
           data_info = replica.get('data_info', '')
 
+          # Parse data_info YAML flow string to check status and behind count
+          # Note: data_info format is YAML flow: {memgraph: {behind: 0, status: "ready", ts: 142}}
+          try:
+            if data_info and data_info != 'Null' and data_info != '{}':
+              import yaml
+              # Parse YAML flow string format
+              data_dict = yaml.safe_load(data_info)
+              memgraph_info = data_dict.get('memgraph', {}) if isinstance(data_dict, dict) else {}
+              status = memgraph_info.get('status', '')
+              behind = memgraph_info.get('behind', -1)
+            else:
+              # Empty data_info means replica is BROKEN and needs to be fixed
+              status = 'broken'
+              behind = -1
+          except (yaml.YAMLError, ValueError, AttributeError, TypeError):
+            status = 'broken'
+            behind = -1
+
           if sync_mode in ['sync', 'strict_sync']:
             sync_count += 1
-            # Check if replica status is "ready" in data_info
-            if 'ready' in data_info:
+            # Check if replica status is "ready" and behind is 0
+            if status == 'ready':
               ready_sync_count += 1
+            if behind == 0:
+              sync_behind_zero_count += 1
           elif sync_mode == 'async':
             async_count += 1
-            # Check if replica status is "ready" in data_info
-            if 'ready' in data_info:
+            # Check if replica status is "ready" and behind is 0
+            if status == 'ready':
               ready_async_count += 1
+            if behind == 0:
+              async_behind_zero_count += 1
 
-        if sync_count == 1 and async_count == 1 and ready_sync_count == 1 and ready_async_count == 1:
+        # Check for perfect convergence: 1 strict_sync + 1 async, both ready and caught up
+        perfect_convergence = (
+          sync_count == 1 and async_count == 1 and
+          ready_sync_count == 1 and ready_async_count == 1 and
+          sync_behind_zero_count == 1 and async_behind_zero_count == 1
+        )
+
+        if perfect_convergence:
           elapsed = int(time.time() - start_time)
           log_info(
-              f"✅ Cluster converged after {elapsed}s: main={main_pod}, 1 sync + 1 async replica (all ready)")
+              f"✅ Cluster fully converged after {elapsed}s: main={main_pod}, "
+              f"1 strict_sync + 1 async replica (all ready, behind=0)")
           return True
         else:
           elapsed = int(time.time() - start_time)
           log_info(
-              f"⏳ Waiting for proper topology... main={main_pod}, sync={sync_count}/{ready_sync_count} ready, "
-              f"async={async_count}/{ready_async_count} ready ({elapsed}s/{timeout}s)")
+              f"⏳ Waiting for full convergence... main={main_pod}, "
+              f"strict_sync={sync_count}({ready_sync_count} ready, {sync_behind_zero_count} behind=0), "
+              f"async={async_count}({ready_async_count} ready, {async_behind_zero_count} behind=0) ({elapsed}s/{timeout}s)")
 
       except MemgraphQueryError as e:
         elapsed = int(time.time() - start_time)

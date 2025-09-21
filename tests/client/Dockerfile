@@ -26,7 +26,7 @@ USER python
 # Set default environment variables
 ENV NEO4J_USERNAME="" \
     NEO4J_PASSWORD="" \
-    WRITE_INTERVAL=1000
+    LOOP_INTERVAL=1000
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
@@ -35,5 +35,4 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
 # Entry point for the application
 ENTRYPOINT ["python", "/app/client.py"]
 
-# Default command for e2e tests - write to gateway
-CMD ["write", "bolt://memgraph-gateway:7687"]
+CMD ["idle"]

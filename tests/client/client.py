@@ -112,7 +112,7 @@ class Neo4jClient:
         )
 
         self.metrics = MetricsTracker()
-        self.write_interval = int(os.getenv('WRITE_INTERVAL', '1000')) / 1000.0  # Convert to seconds
+        self.loop_interval = int(os.getenv('LOOP_INTERVAL', '1000')) / 1000.0  # Convert to seconds
         self.running = False
         self.paused = False
 
@@ -255,7 +255,7 @@ class Neo4jClient:
             return await self.start_write_loop()
 
         self.running = True
-        logger.info("Starting write loop", extra={"interval_ms": int(self.write_interval * 1000)})
+        logger.info("Starting write loop", extra={"interval_ms": int(self.loop_interval * 1000)})
 
         while self.running:
             if not self.paused:
@@ -263,7 +263,7 @@ class Neo4jClient:
             else:
                 logger.info("Client paused - waiting for resume signal")
 
-            await asyncio.sleep(self.write_interval)
+            await asyncio.sleep(self.loop_interval)
 
     async def start_read_loop(self):
         """Start the continuous read loop"""
@@ -274,7 +274,7 @@ class Neo4jClient:
             return await self.start_read_loop()
 
         self.running = True
-        logger.info("Starting read loop", extra={"interval_ms": int(self.write_interval * 1000)})
+        logger.info("Starting read loop", extra={"interval_ms": int(self.loop_interval * 1000)})
 
         while self.running:
             if not self.paused:
@@ -282,7 +282,7 @@ class Neo4jClient:
             else:
                 logger.info("Client paused - waiting for resume signal")
 
-            await asyncio.sleep(self.write_interval)
+            await asyncio.sleep(self.loop_interval)
 
     def pause(self):
         """Pause the client write loop"""
@@ -536,7 +536,7 @@ Examples:
 Environment Variables:
   NEO4J_USERNAME    - Username for authentication (default: memgraph)
   NEO4J_PASSWORD    - Password for authentication (default: empty)
-  WRITE_INTERVAL    - Write interval in milliseconds (default: 1000)
+  loop_interval    - Write interval in milliseconds (default: 1000)
 """)
 
 

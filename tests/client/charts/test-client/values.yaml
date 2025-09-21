@@ -12,7 +12,7 @@ env:
   # Neo4j/Memgraph connection settings
   NEO4J_USERNAME: "memgraph"
   NEO4J_PASSWORD: ""
-  WRITE_INTERVAL: "1000"  # Write interval in milliseconds
+  LOOP_INTERVAL: "1000"  # Write interval in milliseconds
 
 # Resource limits (shared by both clients)
 resources:
@@ -23,21 +23,8 @@ resources:
     memory: "256Mi"
     cpu: "200m"
 
-# Test client configuration (write mode to RW gateway)
-testClient:
-  enabled: true
-  replicaCount: 1
-  # Custom command and args support (for sandbox flexibility)
-  # Leave empty for default behavior
-  command: ["python", "/app/client.py"]
-  args: ["write", "bolt://memgraph-gateway:7687"]
-
-# Read client configuration (read mode to RO gateway)
-readClient:
-  enabled: true
-  replicaCount: 1
-  command: ["python", "/app/client.py"]
-  args: ["read", "bolt://memgraph-gateway-read:7687"]
-
-# Namespace (optional)
-namespace: memgraph
+replicaCount: 1
+# Custom command and args support (for sandbox flexibility)
+# Leave empty for default behavior
+command: ["python", "/app/client.py"]
+args: ["idle"]

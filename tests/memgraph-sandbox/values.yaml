@@ -19,10 +19,6 @@ test-client:
     repository: test-client
     tag: latest
     pullPolicy: IfNotPresent
-  # Sandbox mode: idle by default
-  command: ["python", "/app/client.py"]
-  args: ["idle"]
   env:
     NEO4J_USERNAME: "memgraph"
     NEO4J_PASSWORD: ""
-    WRITE_INTERVAL: "1000"

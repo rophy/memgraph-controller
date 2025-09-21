@@ -37,7 +37,15 @@ deploy:
       createNamespace: false
       wait: false
       setValues:
-        env.WRITE_INTERVAL: "1000"
+        args: ["write", "bolt://memgraph-gateway:7687"]
+    - name: read-client
+      chartPath: tests/client/charts/test-client
+      namespace: memgraph
+      createNamespace: false
+      wait: false
+      setValues:
+        args: ["read", "bolt://memgraph-gateway-read:7687"]
+        
   logs:
     prefix: podAndContainer
 

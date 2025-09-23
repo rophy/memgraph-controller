@@ -42,10 +42,10 @@ kubectl exec -c memgraph "$POD_2" -- bash -c 'echo "SET REPLICATION ROLE TO REPL
 
 # Register replicas on the main pod
 echo "Registering $POD_0 as STRICT_SYNC replica"
-kubectl exec -c memgraph "$MAIN_POD" -- bash -c "echo \"REGISTER REPLICA replica1 STRICT_SYNC TO \\\"$POD_0_IP:10000\\\";\" | mgconsole --username=memgraph"
+kubectl exec -c memgraph "$MAIN_POD" -- bash -c "echo \"REGISTER REPLICA replica0 STRICT_SYNC TO \\\"memgraph-sandbox-0.memgraph-sandbox.memgraph.svc.cluster.local\\\";\" | mgconsole --username=memgraph"
 
 echo "Registering $POD_2 as ASYNC replica"
-kubectl exec -c memgraph "$MAIN_POD" -- bash -c "echo \"REGISTER REPLICA replica2 ASYNC TO \\\"$POD_2_IP:10000\\\";\" | mgconsole --username=memgraph"
+kubectl exec -c memgraph "$MAIN_POD" -- bash -c "echo \"REGISTER REPLICA replica2 ASYNC TO \\\"memgraph-sandbox-2.memgraph-sandbox.memgraph.svc.cluster.local\\\";\" | mgconsole --username=memgraph"
 
 # Verify the setup
 echo "Verifying replication setup..."

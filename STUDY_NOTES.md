@@ -147,7 +147,15 @@ The `data_info` field from `SHOW REPLICAS` provides replication health metrics i
 ```
 - Empty object indicates replication is not working properly
 - Failure reason typically recorded in MAIN pod logs
-- Requires re-registration of the replica to restore replication
+- Likely indicates an un-recoverable error
+
+**Data Diverged:**
+```yaml
+"{memgraph: {behind: -284, status: \"diverged\", ts: 115}}"
+```
+- status: "diverged" = replica data has diverged from main
+- THIS IS AN UN-RECOVERING ERROR and controller's goal is to avoid this at all costs
+- It means our contoller needs to improve the failover or reconciliation logics
 
 #### Parsing Notes
 

@@ -291,7 +291,7 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 		s.promMetrics.UpdateGatewayConnections(int(atomic.LoadInt64(&s.activeConnections)))
 	}
 
-	logger.Debug("established", "name", s.name, "client_ip", clientIP)
+	logger.Debug("established", "name", s.name, "client_ip", clientIP, "upstream_address", s.upstreamAddress)
 
 	// Track the connection
 	session := s.connections.Track(clientConn)
@@ -329,7 +329,8 @@ func (s *Server) handleConnection(ctx context.Context, clientConn net.Conn) {
 	defer backendConn.Close()
 
 	session.SetBackendConnection(backendConn)
-	logger.Info("Connection established to main", "name", s.name, "client_addr", clientAddr, "session_id", session.ID)
+	logger.Info("Connection established to main",
+		"name", s.name, "client_addr", clientAddr, "session_id", session.ID, "upstream_address", upstreamAddress)
 
 	// Start bidirectional proxy
 	s.proxyConnections(ctx, clientConn, backendConn, session)
@@ -465,14 +466,21 @@ func (s *Server) DisconnectAll(ctx context.Context) {
 
 	// Get all active sessions and close them
 	sessions := s.connections.GetAllSessions()
-	disconnectedCount := 0
+
+	// Use WaitGroup to ensure all connections are closed before returning
+	var wg sync.WaitGroup
 	for _, session := range sessions {
-		go func(s *ProxySession) {
-			s.Close()
-		}(session) // Close asynchronously to avoid blocking
-		disconnectedCount++
+		wg.Add(1)
+		go func(sess *ProxySession) {
+			defer wg.Done()
+			sess.Close()
+		}(session)
 	}
 
+	// Wait for all goroutines to complete
+	wg.Wait()
+
+	logger.Info("all connections disconnected cleanly", "name", s.name, "count", len(sessions))
 }
 
 // GetStats returns current gateway statistics

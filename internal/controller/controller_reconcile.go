@@ -3,7 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"memgraph-controller/internal/common"
@@ -213,93 +212,26 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		replicaMap[replica.Name] = replica
 	}
 
-	// Get the target sync replica to ensure we handle it properly
-	targetSyncReplicaNode, _ := c.getTargetSyncReplicaNode(ctx)
-	var targetSyncReplicaName string
-	if targetSyncReplicaNode != nil {
-		targetSyncReplicaName = targetSyncReplicaNode.GetReplicaName()
-	}
-	// Iterate through replicaMap and check for issues that require dropping replicas
+	// Log replication status for monitoring (no longer drop/re-register based on IP changes)
 	for replicaName, replicaInfo := range replicaMap {
-
 		if c.shouldSkipForFailover(ctx) {
 			return nil // Retry on next tick
 		}
 
-		ipAddress := strings.Split(replicaInfo.SocketAddress, ":")[0]
 		podName := replicaInfo.GetPodName()
-		pod, err := c.getPodFromCache(podName)
-
-		// Check pod availability first
-		if err != nil || !isPodReady(pod) {
-			logger.Info("Step 4: Skipping replica check - pod missing or not ready", "pod_name", podName)
-			continue
-		}
-
-		// Ensure pod has a valid IP address
-		if pod.Status.PodIP == "" {
-			logger.Info("Step 4: Skipping replica check - pod has no IP address", "pod_name", podName)
-			continue
-		}
-
-		// Check replication health (actual Memgraph replication status)
 		replicationHealthy := replicaInfo.IsHealthy()
 
-		// Check IP correctness
-		ipCorrect := (ipAddress == pod.Status.PodIP)
-
-		// Apply the logic: only drop when replication is unhealthy AND IP is incorrect
-		// AND the pod is ready with a valid IP (so we can re-register)
-		if !replicationHealthy && !ipCorrect {
-			isSyncReplica := (replicaName == targetSyncReplicaName || replicaInfo.SyncMode == "strict_sync")
-
-			logger.Info("Step 4: Replica has both unhealthy replication and incorrect IP - will drop and re-register",
+		if replicationHealthy {
+			logger.Debug("Replica has healthy replication status",
 				"pod_name", podName,
 				"replica_name", replicaName,
-				"replica_ip", ipAddress,
-				"pod_ip", pod.Status.PodIP,
-				"replication_healthy", replicationHealthy,
-				"health_reason", replicaInfo.GetHealthReason(),
 				"sync_mode", replicaInfo.SyncMode)
-
-			// For sync replicas, be more cautious but still fix IP issues
-			if isSyncReplica {
-				logger.Warn("Step 4: STRICT_SYNC replica has both replication and IP issues - dropping to fix",
-					"pod_name", podName,
-					"replica_name", replicaName)
-			}
-
-			// Drop the replica that has both issues
-			if err := targetMainNode.DropReplica(ctx, replicaName); err != nil {
-				logger.Error("Failed to drop replica with replication and IP issues", "pod_name", podName, "error", err)
-				continue
-			}
-			logger.Info("Dropped replica with replication and IP issues", "pod_name", podName)
-			delete(replicaMap, replicaName) // Remove from map to allow re-registration
-
-		} else if !replicationHealthy && ipCorrect {
-			// Replication unhealthy but IP correct - let Memgraph handle retries
-			logger.Info("Step 4: Replica has unhealthy replication but correct IP - trusting Memgraph auto-retry",
-				"pod_name", podName,
-				"replica_name", replicaName,
-				"health_reason", replicaInfo.GetHealthReason(),
-				"sync_mode", replicaInfo.SyncMode)
-
-		} else if replicationHealthy && !ipCorrect {
-			// This should not happen - healthy replication with wrong IP is contradictory
-			logger.Warn("Step 4: Replica reports healthy replication but has incorrect IP - investigating",
-				"pod_name", podName,
-				"replica_name", replicaName,
-				"replica_ip", ipAddress,
-				"pod_ip", pod.Status.PodIP,
-				"health_reason", replicaInfo.GetHealthReason(),
-				"sync_mode", replicaInfo.SyncMode)
-
 		} else {
-			// Both replication healthy and IP correct - perfect state
-			logger.Debug("Step 4: Replica is healthy with correct IP",
+			logger.Info("Replica has unhealthy replication status - letting Memgraph handle retries",
 				"pod_name", podName,
-				"replica_name", replicaName)
+				"replica_name", replicaName,
+				"health_reason", replicaInfo.GetHealthReason(),
+				"sync_mode", replicaInfo.SyncMode)
 		}
 	}
 
@@ -349,13 +281,13 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		if node.GetName() == syncReplicaNode.GetName() {
 			syncMode = "STRICT_SYNC"
 		}
-		ipAddress := node.GetIpAddress()
-		// Specifying replication address without port implies port 10000.
-		err = targetMainNode.RegisterReplica(ctx, replicaName, ipAddress, syncMode)
+		replicationAddress := node.GetReplicationFQDN(c.config.StatefulSetName, c.config.Namespace)
+		// FQDN address with default replication port 10000
+		err = targetMainNode.RegisterReplica(ctx, replicaName, replicationAddress, syncMode)
 		if err != nil {
-			logger.Info("Failed to register replication", "replica_name", replicaName, "address", ipAddress, "sync_mode", syncMode)
+			logger.Info("Failed to register replication", "replica_name", replicaName, "address", replicationAddress, "sync_mode", syncMode)
 		}
-		logger.Info("Registered replication", "replica_name", replicaName, "address", ipAddress, "sync_mode", syncMode)
+		logger.Info("Registered replication", "replica_name", replicaName, "address", replicationAddress, "sync_mode", syncMode)
 	}
 
 	return nil

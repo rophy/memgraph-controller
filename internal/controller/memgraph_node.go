@@ -98,6 +98,12 @@ func (node *MemgraphNode) GetIpAddress() string {
 	return node.ipAddress
 }
 
+// GetReplicationFQDN returns the FQDN address for replication registration
+// Format: <pod-name>.<service-name>.<namespace>.svc.cluster.local
+func (node *MemgraphNode) GetReplicationFQDN(serviceName, namespace string) string {
+	return fmt.Sprintf("%s.%s.%s.svc.cluster.local", node.name, serviceName, namespace)
+}
+
 // GetReplicationRole returns the cached replication role, querying it if not already known
 func (node *MemgraphNode) GetReplicationRole(ctx context.Context, tryRefresh bool) (string, error) {
 	logger := common.GetLoggerFromContext(ctx)

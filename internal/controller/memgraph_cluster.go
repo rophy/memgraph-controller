@@ -259,7 +259,8 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 
 	// Step 2: Run command against pod-0 to set up strict sync replication
 	logger.Info("step 2: setting up strict sync replication from pod-0 to pod-1", "pod0_name", pod0Name, "pod1_name", pod1Name)
-	if err := pod0Node.RegisterReplica(ctx, pod1Node.GetReplicaName(), pod1Node.ipAddress, "STRICT_SYNC"); err != nil {
+	replicationAddress := pod1Node.GetReplicationFQDN(mc.config.StatefulSetName, mc.config.Namespace)
+	if err := pod0Node.RegisterReplica(ctx, pod1Node.GetReplicaName(), replicationAddress, "STRICT_SYNC"); err != nil {
 		return fmt.Errorf("step 2 failed - register STRICT_SYNC replica: %w", err)
 	}
 

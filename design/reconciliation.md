@@ -67,7 +67,7 @@ SET REPLICATION ROLE TO REPLICA WITH PORT 10000
 2. Run this command against pod-0 to set up sync replication:
 
 ```mgconsole
-REGISTER REPLICA <pod_1_name> SYNC TO "<pod_1_ip>:10000"
+REGISTER REPLICA <pod_1_name> SYNC TO "<pod_1_fqdn>"
 ```
 3. Run this command against pod-0 to verify replication:
 

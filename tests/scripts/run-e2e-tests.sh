@@ -96,7 +96,7 @@ run_python_tests() {
     # Run pytest with verbose output and short traceback
     # Using -x to stop on first failure for faster feedback
     # -s shows stdout/stderr from tests
-    local pytest_args="-v -s --tb=short"
+    local pytest_args="-v -s -x --tb=short"
     
     # Add specific test selection if provided as argument
     if [ $# -gt 0 ]; then

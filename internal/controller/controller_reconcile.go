@@ -290,6 +290,12 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 				"address", replicationAddress,
 				"sync_mode", syncMode,
 				"error", err)
+			err = targetMainNode.DropReplica(ctx, replicaName)
+			if err != nil {
+				logger.Warn("Failed to drop replication",
+					"replica_name", replicaName,
+					"error", err)
+			}
 		}
 		logger.Info("Registered replication", "replica_name", replicaName, "address", replicationAddress, "sync_mode", syncMode)
 	}

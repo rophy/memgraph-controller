@@ -2,11 +2,15 @@ package controller
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"memgraph-controller/internal/common"
 	"memgraph-controller/internal/httpapi"
+
+	"github.com/neo4j/neo4j-go-driver/v5/neo4j"
 )
 
 // Run starts the controller reconciliation loop
@@ -284,20 +288,38 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		replicationAddress := node.GetReplicationFQDN(c.config.StatefulSetName, c.config.Namespace)
 		// FQDN address with default replication port 10000
 		err = targetMainNode.RegisterReplica(ctx, replicaName, replicationAddress, syncMode)
-		if err != nil {
-			logger.Warn("Failed to register replication",
+		if err == nil {
+			logger.Info("Registered replication",
 				"replica_name", replicaName,
 				"address", replicationAddress,
-				"sync_mode", syncMode,
-				"error", err)
-			err = targetMainNode.DropReplica(ctx, replicaName)
-			if err != nil {
-				logger.Warn("Failed to drop replication",
-					"replica_name", replicaName,
-					"error", err)
-			}
+				"sync_mode", syncMode)
+			continue
 		}
-		logger.Info("Registered replication", "replica_name", replicaName, "address", replicationAddress, "sync_mode", syncMode)
+
+		var neo4jErr *neo4j.Neo4jError
+		// Couldn't register replica replica0. Error: 3
+		// Error 3 means diverged data, which is not recoverable.
+		if errors.As(err, &neo4jErr) &&
+			neo4jErr.Code == "Memgraph.ClientError.MemgraphError.MemgraphError" &&
+			strings.Contains(neo4jErr.Msg, "Error: 3") {
+			logger.Error("☢ Failed to register replication - diverged data",
+				"replica_name", replicaName,
+				"address", replicationAddress,
+				"sync_mode", syncMode)
+			continue
+		}
+		// Otherwise, drop the replica and try again.
+		logger.Warn("Failed to register replication",
+			"replica_name", replicaName,
+			"address", replicationAddress,
+			"sync_mode", syncMode,
+			"error", err)
+		err = targetMainNode.DropReplica(ctx, replicaName)
+		if err != nil {
+			logger.Warn("Failed to drop replication",
+				"replica_name", replicaName,
+				"error", err)
+		}
 	}
 
 	return nil

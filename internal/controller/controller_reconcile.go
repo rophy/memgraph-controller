@@ -285,7 +285,11 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		// FQDN address with default replication port 10000
 		err = targetMainNode.RegisterReplica(ctx, replicaName, replicationAddress, syncMode)
 		if err != nil {
-			logger.Info("Failed to register replication", "replica_name", replicaName, "address", replicationAddress, "sync_mode", syncMode)
+			logger.Warn("Failed to register replication",
+				"replica_name", replicaName,
+				"address", replicationAddress,
+				"sync_mode", syncMode,
+				"error", err)
 		}
 		logger.Info("Registered replication", "replica_name", replicaName, "address", replicationAddress, "sync_mode", syncMode)
 	}

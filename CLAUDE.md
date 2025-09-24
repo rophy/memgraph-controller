@@ -51,13 +51,13 @@ This ensures you stay informed about all modifications and maintains control ove
 
 **NEVER run kubectl port-forward to investigate issues. Run commands inside the test client pod which is deployed by skaffold.**
 
-The neo4j-client pod includes curl and jq for API testing:
+The test-client pod includes curl and jq for API testing:
 ```bash
 # Check controller status from inside the cluster
-kubectl exec -n memgraph neo4j-client-<pod-suffix> -- curl -s http://memgraph-controller:8080/api/v1/status | kubectl exec -i -n memgraph neo4j-client-<pod-suffix> -- jq '.'
+kubectl exec -n memgraph test-client-<pod-suffix> -- curl -s http://memgraph-controller:8080/api/v1/status | kubectl exec -i -n memgraph test-client-<pod-suffix> -- jq '.'
 
 # Or simpler form within the same pod
-kubectl exec -n memgraph <neo4j-client-pod> -- sh -c "curl -s http://memgraph-controller:8080/api/v1/status | jq '.pods[] | {name: .name, role: .memgraph_role}'"
+kubectl exec -n memgraph <test-client-pod> -- sh -c "curl -s http://memgraph-controller:8080/api/v1/status | jq '.pods[] | {name: .name, role: .memgraph_role}'"
 ```
 
 ## Debugging Memgraph Replication

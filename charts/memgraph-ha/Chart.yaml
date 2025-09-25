@@ -7,5 +7,5 @@ appVersion: "2.21.1"
 
 dependencies:
 - name: memgraph
-  version: "0.2.7"
+  version: "0.2.8"
   repository: "https://memgraph.github.io/helm-charts"

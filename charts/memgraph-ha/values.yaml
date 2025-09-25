@@ -68,6 +68,54 @@ memgraph:
       failureThreshold: 1440
       periodSeconds: 5
 
+  # Lifecycle hooks for graceful shutdown
+  lifecycleHooks:
+    preStop:
+      exec:
+        command:
+          - /bin/sh
+          - -c
+          - |
+            # Call controller preStop hook API to clear gateway upstreams
+            # This prevents new connections to this terminating pod
+            echo "PreStop: Calling controller prestop-hook API using Python..."
+            python3 -c "
+            import urllib.request
+            import urllib.error
+            import json
+            import time
+
+            def call_prestop_api():
+                try:
+                    url = 'http://memgraph-controller:8080/api/v1/admin/prestop-hook'
+                    request = urllib.request.Request(url, method='POST')
+                    request.add_header('Content-Type', 'application/json')
+
+                    # Set timeout and attempt the request
+                    with urllib.request.urlopen(request, timeout=10) as response:
+                        result = response.read().decode('utf-8')
+                        print('PreStop: API response:', result)
+                        return True
+                except urllib.error.URLError as e:
+                    print('PreStop: API call failed:', str(e))
+                    return False
+                except Exception as e:
+                    print('PreStop: Unexpected error:', str(e))
+                    return False
+
+            # Try up to 2 times with delay
+            for attempt in range(2):
+                if call_prestop_api():
+                    break
+                if attempt < 1:
+                    time.sleep(1)
+                    print('PreStop: Retrying API call...')
+
+            print('PreStop: PreStop hook API call completed')
+            " || true
+            # Give gateway time to process upstream clearing
+            sleep 2
+
   # Init container for system configuration
   sysctlInitContainer:
     enabled: true
@@ -135,6 +183,10 @@ controller:
 
     # Read Gateway configuration (disabled by default)
     enableReadGateway: false
+
+    # Admin API configuration (for preStop hooks and debugging)
+    enableAdminAPI: true
+
     logging:
       level: "debug"
       addSource: false

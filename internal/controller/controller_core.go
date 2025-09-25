@@ -694,6 +694,32 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 	return totalConnections, nil
 }
 
+// ClearGatewayUpstreams clears the upstream addresses for both gateways (for preStop hooks)
+func (c *MemgraphController) ClearGatewayUpstreams(ctx context.Context) error {
+	logger := common.GetLoggerFromContext(ctx)
+	logger.Info("Admin API: PreStop hook - clearing gateway upstreams")
+
+	// Clear main gateway upstream
+	if c.gatewayServer != nil {
+		c.gatewayServer.SetUpstreamAddress(ctx, "")
+		logger.Info("Admin API: Cleared main gateway upstream")
+	}
+
+	// Clear read gateway upstream
+	if c.readGatewayServer != nil {
+		c.readGatewayServer.SetUpstreamAddress(ctx, "")
+		logger.Info("Admin API: Cleared read gateway upstream")
+	}
+
+	if c.gatewayServer == nil && c.readGatewayServer == nil {
+		logger.Warn("Admin API: No gateway servers found to clear upstreams")
+		return fmt.Errorf("no gateway servers available")
+	}
+
+	logger.Info("Admin API: Successfully cleared all gateway upstreams")
+	return nil
+}
+
 // handleReadGatewayUpstreamFailure handles upstream failures reported by the read gateway
 func (c *MemgraphController) handleReadGatewayUpstreamFailure(ctx context.Context, upstreamAddress string, err error) {
 	logger := common.GetLoggerFromContext(ctx)

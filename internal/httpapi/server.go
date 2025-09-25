@@ -47,6 +47,7 @@ func NewHTTPServer(controller ControllerInterface, config *common.Config) *HTTPS
 	// Admin endpoints (only enabled if ENABLE_ADMIN_API=true)
 	if os.Getenv("ENABLE_ADMIN_API") == "true" {
 		mux.HandleFunc("/api/v1/admin/reset-connections", httpServer.handleResetConnections)
+		mux.HandleFunc("/api/v1/admin/prestop-hook", httpServer.handlePreStopHook)
 	}
 
 	return httpServer
@@ -303,4 +304,47 @@ func (h *HTTPServer) handleResetConnections(w http.ResponseWriter, r *http.Reque
 	}
 
 	logger.Info("Admin API: Successfully reset connections", "count", closedCount)
+}
+
+// handlePreStopHook handles POST /api/v1/admin/prestop-hook requests
+func (h *HTTPServer) handlePreStopHook(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	logger := common.GetLogger()
+	logger.Info("Admin API: PreStop hook - clearing gateway upstreams")
+
+	// Create context with timeout
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Clear gateway upstreams
+	err := h.controller.ClearGatewayUpstreams(ctx)
+	if err != nil {
+		logger.Info("Failed to clear gateway upstreams", "error", err)
+		http.Error(w, fmt.Sprintf("Failed to clear gateway upstreams: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	// Prepare response
+	response := map[string]interface{}{
+		"status":    "success",
+		"timestamp": time.Now(),
+		"message":   "Gateway upstreams cleared successfully",
+		"action":    "prestop_hook_executed",
+	}
+
+	// Set response headers
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+
+	// Encode and send response
+	if err := json.NewEncoder(w).Encode(response); err != nil {
+		logger.Info("Failed to encode prestop hook response", "error", err)
+		return
+	}
+
+	logger.Info("Admin API: PreStop hook completed successfully")
 }

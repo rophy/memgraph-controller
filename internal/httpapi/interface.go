@@ -11,6 +11,7 @@ type ControllerInterface interface {
 	GetLeaderElection() LeaderElectionInterface
 	IsRunning() bool
 	ResetAllConnections(ctx context.Context) (int, error)
+	ClearGatewayUpstreams(ctx context.Context) error
 }
 
 // LeaderElectionInterface defines the methods needed from leader election

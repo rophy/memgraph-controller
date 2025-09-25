@@ -54,6 +54,11 @@ func (m *MockController) ResetAllConnections(ctx context.Context) (int, error) {
 	return 3, nil
 }
 
+func (m *MockController) ClearGatewayUpstreams(ctx context.Context) error {
+	// Mock implementation - just return success
+	return nil
+}
+
 // MockLeaderElection implements LeaderElectionInterface for testing
 type MockLeaderElection struct{
 	isLeader bool

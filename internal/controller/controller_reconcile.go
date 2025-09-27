@@ -26,6 +26,11 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	c.isRunning = true
 	c.mu.Unlock()
 
+	// Start probers
+	if c.healthProber != nil {
+		c.healthProber.Start(ctx)
+	}
+
 	// Start periodic reconciliation timer
 	ticker := time.NewTicker(c.config.ReconcileInterval)
 	defer ticker.Stop()
@@ -69,25 +74,6 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 					return fmt.Errorf("failed to set target main index in ConfigMap: %w", err)
 				}
 				logger.Info("✅ Cluster discovered with target main index", "index", targetMainIndex)
-			}
-
-			// Enable gateway connections.
-			if targetMainNode, err := c.getTargetMainNode(ctx); err == nil {
-				if boltAddress, err := targetMainNode.GetBoltAddress(); err == nil {
-					c.gatewayServer.SetUpstreamAddress(ctx, boltAddress)
-
-					// Update read-only gateway if enabled
-					c.updateReadGatewayUpstream(ctx)
-				} else {
-					logger.Error("Failed to get bolt address for main node", "error", err)
-				}
-			} else {
-				logger.Error("Failed to get target main node", "error", err)
-			}
-
-			// Start probers
-			if c.healthProber != nil {
-				c.healthProber.Start(ctx)
 			}
 
 			if err := c.performReconciliationActions(ctx); err != nil {
@@ -191,14 +177,6 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		return nil // Retry on next tick
 	}
 
-	// SetUpstreamAddress() reconciles on changes, just pass latest address.
-	mainBoltAddress, err := targetMainNode.GetBoltAddress()
-	if err != nil {
-		logger.Info("Failed to get bolt address for target main node", "error", err)
-		return err
-	}
-	c.gatewayServer.SetUpstreamAddress(ctx, mainBoltAddress)
-
 	// Update read-only gateway if enabled
 	c.updateReadGatewayUpstream(ctx)
 
@@ -239,6 +217,13 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		}
 	}
 
+	targetMainPod, err := c.getPodFromCache(targetMainNode.GetName())
+	if err != nil {
+		logger.Error("Failed to get target main pod", "error", err)
+		return err
+	}
+	isAllPodsReady := isPodReady(targetMainPod)
+
 	// Iterate through all replica nodes and reconcile their states.
 	for podName, node := range c.cluster.MemgraphNodes {
 		if podName == targetMainNode.GetName() {
@@ -252,6 +237,7 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		pod, err := c.getPodFromCache(podName)
 		if err != nil || !isPodReady(pod) {
 			logger.Info("Replica pod is not ready", "pod_name", podName)
+			isAllPodsReady = false
 			continue // Skip if pod not ready
 		}
 
@@ -322,6 +308,13 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		}
 	}
 
+	if isAllPodsReady {
+		err = c.reconcileGateway(ctx)
+		if err != nil {
+			logger.Error("Failed to reconcile gateway", "error", err)
+			return err
+		}
+	}
 	return nil
 }
 
@@ -339,4 +332,34 @@ func (c *MemgraphController) GetReconciliationMetrics() httpapi.ReconciliationMe
 		LastReconciliationReason:  c.metrics.LastReconciliationReason,
 		LastReconciliationError:   c.metrics.LastReconciliationError,
 	}
+}
+
+// reconcileGateway sets up the gateway server for the cluster.
+func (c *MemgraphController) reconcileGateway(ctx context.Context) error {
+	if c.gatewayServer == nil {
+		return fmt.Errorf("gateway server is not set")
+	}
+	targetMainNode, err := c.getTargetMainNode(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main node: %w", err)
+	}
+	pod, err := c.getPodFromCache(targetMainNode.GetName())
+	if err != nil {
+		return fmt.Errorf("failed to get target main pod: %w", err)
+	}
+	if !isPodReady(pod) {
+		return fmt.Errorf("target main pod is not ready")
+	}
+	if pod.ObjectMeta.DeletionTimestamp != nil {
+		return fmt.Errorf("target main pod is being deleted")
+	}
+	boltAddress, err := targetMainNode.GetBoltAddress()
+	if err != nil {
+		return fmt.Errorf("failed to get bolt address for target main node: %w", err)
+	}
+	if c.isHealthy(ctx) != nil {
+		return fmt.Errorf("cluster is not healthy")
+	}
+	c.gatewayServer.SetUpstreamAddress(ctx, boltAddress)
+	return nil
 }

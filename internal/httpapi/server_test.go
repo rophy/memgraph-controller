@@ -54,13 +54,13 @@ func (m *MockController) ResetAllConnections(ctx context.Context) (int, error) {
 	return 3, nil
 }
 
-func (m *MockController) ClearGatewayUpstreams(ctx context.Context) error {
+func (m *MockController) HandlePreStopHook(ctx context.Context) error {
 	// Mock implementation - just return success
 	return nil
 }
 
 // MockLeaderElection implements LeaderElectionInterface for testing
-type MockLeaderElection struct{
+type MockLeaderElection struct {
 	isLeader bool
 }
 
@@ -158,7 +158,7 @@ func TestHTTPServerMethodNotAllowed(t *testing.T) {
 
 func TestHTTPServerLivenessProbe(t *testing.T) {
 	config := &common.Config{HTTPPort: "8080"}
-	
+
 	// Test when controller is running
 	controller := &MockController{isRunning: true}
 	httpServer := NewHTTPServer(controller, config)
@@ -166,7 +166,7 @@ func TestHTTPServerLivenessProbe(t *testing.T) {
 	req := httptest.NewRequest("GET", "/livez", nil)
 	w := httptest.NewRecorder()
 	httpServer.handleLiveness(w, req)
-	
+
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status 200 when controller is running, got %d", w.Code)
 	}
@@ -175,7 +175,7 @@ func TestHTTPServerLivenessProbe(t *testing.T) {
 	controller.isRunning = false
 	w = httptest.NewRecorder()
 	httpServer.handleLiveness(w, req)
-	
+
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("Expected status 503 when controller is not running, got %d", w.Code)
 	}
@@ -183,7 +183,7 @@ func TestHTTPServerLivenessProbe(t *testing.T) {
 
 func TestHTTPServerReadinessProbe(t *testing.T) {
 	config := &common.Config{HTTPPort: "8080"}
-	
+
 	// Test when controller is leader
 	controller := &MockController{isLeader: true, isRunning: true}
 	httpServer := NewHTTPServer(controller, config)
@@ -191,7 +191,7 @@ func TestHTTPServerReadinessProbe(t *testing.T) {
 	req := httptest.NewRequest("GET", "/readyz", nil)
 	w := httptest.NewRecorder()
 	httpServer.handleReadiness(w, req)
-	
+
 	if w.Code != http.StatusOK {
 		t.Errorf("Expected status 200 when controller is leader, got %d", w.Code)
 	}
@@ -200,7 +200,7 @@ func TestHTTPServerReadinessProbe(t *testing.T) {
 	controller.isLeader = false
 	w = httptest.NewRecorder()
 	httpServer.handleReadiness(w, req)
-	
+
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("Expected status 503 when controller is not leader, got %d", w.Code)
 	}

@@ -417,10 +417,6 @@ func (c *MemgraphController) getHealthyRole(ctx context.Context, podName string)
 		logger.Warn("getHealthyRole: pod %s exists but has no IP", "pod_name", podName)
 		return "", false
 	}
-	if pod.ObjectMeta.DeletionTimestamp != nil {
-		logger.Warn("getHealthyRole: pod %s is being deleted", "pod_name", podName)
-		return "", false
-	}
 	if !isPodReady(pod) {
 		logger.Warn("getHealthyRole: pod %s is not ready", "pod_name", podName)
 		return "", false

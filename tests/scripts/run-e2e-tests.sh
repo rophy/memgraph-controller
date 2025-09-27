@@ -68,50 +68,125 @@ check_prerequisites() {
 
 setup_python_environment() {
     log_info "🐍 Setting up Python test environment..."
-    
+
     local test_dir="tests/e2e"
     if [ ! -d "$test_dir" ]; then
         log_error "Python test directory '$test_dir' not found"
         exit 1
     fi
-    
+
     if [ ! -f "$test_dir/requirements.txt" ]; then
         log_error "requirements.txt not found in '$test_dir'"
         exit 1
     fi
-    
+
     # Install/upgrade requirements
     log_info "📦 Installing Python dependencies..."
     cd "$test_dir"
-    
+
     cd - > /dev/null
+}
+
+get_leader_controller_pod() {
+    log_info "🔍 Identifying leader controller pod..."
+
+    # Get controller pods with Ready status
+    local leader_pod
+    leader_pod=$(kubectl get pods -n memgraph -l app=memgraph-controller -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep "True" | head -1 | cut -d' ' -f1)
+
+    if [ -z "$leader_pod" ]; then
+        log_warning "⚠️  No ready controller pod found"
+        return 1
+    fi
+
+    log_info "✅ Leader controller pod: $leader_pod"
+    echo "$leader_pod"
+}
+
+dump_controller_logs() {
+    local since_time="$1"
+
+    log_info "📋 Dumping controller leader logs since test start..."
+
+    # Create logs directory if it doesn't exist
+    mkdir -p logs
+
+    # Get leader controller pod
+    local leader_pod
+    if ! leader_pod=$(get_leader_controller_pod); then
+        log_warning "⚠️  Skipping log dump - no leader controller found"
+        return 0
+    fi
+
+    # Generate timestamp for log file
+    local timestamp
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    local log_file="logs/controller_${timestamp}.log"
+
+    log_info "📝 Dumping logs from $leader_pod since $since_time to $log_file"
+
+    # Dump logs with timestamps, filtering from test start time
+    local kubectl_cmd="kubectl logs -n memgraph $leader_pod --timestamps"
+    if [ -n "$since_time" ]; then
+        kubectl_cmd="$kubectl_cmd --since-time=$since_time"
+    fi
+
+    if $kubectl_cmd > "$log_file"; then
+        log_success "✅ Controller logs saved to $log_file"
+
+        # Show log file size and line count for reference
+        local lines size
+        lines=$(wc -l < "$log_file")
+        size=$(du -h "$log_file" | cut -f1)
+
+        if [ "$lines" -eq 0 ]; then
+            log_info "📊 Log file is empty - no controller logs since test start"
+        else
+            log_info "📊 Log file contains $lines lines ($size) since test start"
+        fi
+    else
+        log_error "❌ Failed to dump controller logs"
+        return 1
+    fi
 }
 
 run_python_tests() {
     log_info "🚀 Running Python E2E Tests"
     log_info "=" * 50
-    
+
     local test_dir="tests/e2e"
-    
+    local test_result=0
+
+    # Capture test start time in RFC3339 format for kubectl logs --since-time
+    local test_start_time
+    test_start_time=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    log_info "📅 Test started at: $test_start_time"
+
     # Run pytest with verbose output and short traceback
     # Using -x to stop on first failure for faster feedback
     # -s shows stdout/stderr from tests
     local pytest_args="-v -s -x --tb=short"
-    
+
     # Add specific test selection if provided as argument
     if [ $# -gt 0 ]; then
         pytest_args="$pytest_args $*"
     fi
-    
+
     log_info "Running: python -m pytest $pytest_args $test_dir"
-    
+
     if python -m pytest $pytest_args "$test_dir"; then
         log_success "🎉 All Python E2E tests passed!"
-        return 0
+        test_result=0
     else
         log_error "💥 Some Python E2E tests failed!"
-        return 1
+        test_result=1
     fi
+
+    # Always dump controller logs after tests finish (regardless of test result)
+    echo
+    dump_controller_logs "$test_start_time"
+
+    return $test_result
 }
 
 main() {

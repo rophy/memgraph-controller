@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
 	"memgraph-controller/internal/common"
@@ -316,8 +317,16 @@ func (h *HTTPServer) handlePreStopHook(w http.ResponseWriter, r *http.Request) {
 
 	podName := r.PathValue("pod_name")
 
-	// Wait for up to 60 seconds for the preStop hook to complete
-	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+	// Get timeout from environment variable, default to 600 seconds
+	timeoutSeconds := 600
+	if envTimeout := os.Getenv("PRESTOP_TIMEOUT_SECONDS"); envTimeout != "" {
+		if parsed, err := strconv.Atoi(envTimeout); err == nil && parsed > 0 {
+			timeoutSeconds = parsed
+		}
+	}
+
+	// Wait for up to the configured seconds for the preStop hook to complete
+	ctx, cancel := context.WithTimeout(r.Context(), time.Duration(timeoutSeconds)*time.Second)
 	defer cancel()
 
 	ctx, logger := common.NewLoggerContext(ctx)

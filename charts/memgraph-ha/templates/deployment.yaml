@@ -43,6 +43,8 @@ spec:
           value: {{ .Values.controller.env.statefulsetName | quote }}
         - name: RELEASE_NAME
           value: {{ .Release.Name | quote }}
+        - name: PRESTOP_TIMEOUT_SECONDS
+          value: {{ .Values.controller.env.preStopTimeoutSeconds | quote }}
         # Leader election environment variables
         - name: POD_NAME
           valueFrom:

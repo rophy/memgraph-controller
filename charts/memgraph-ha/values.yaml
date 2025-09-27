@@ -84,12 +84,19 @@ memgraph:
           - |
             # Call controller preStop hook API
             # Which will try to wait for the cluster to be in a stable state
+            timeout_seconds=${PRESTOP_TIMEOUT_SECONDS:-600}
             python3 -c "
             import os
             import requests
             pod_name = os.getenv('POD_NAME')
-            requests.post('http://memgraph-controller:8080/prestop-hook/' + pod_name, timeout=60)
+            timeout = int(os.getenv('PRESTOP_TIMEOUT_SECONDS', '600'))
+            requests.post('http://memgraph-controller:8080/prestop-hook/' + pod_name, timeout=timeout)
             " || true
+
+  # Environment variables for memgraph pods
+  env:
+    - name: PRESTOP_TIMEOUT_SECONDS
+      value: "{{ .Values.controller.env.preStopTimeoutSeconds }}"
 
   # Init container for system configuration
   sysctlInitContainer:
@@ -130,6 +137,7 @@ controller:
   env:
     appName: memgraph
     reconcileInterval: "30s"
+    preStopTimeoutSeconds: 600
     boltPort: "7687"
     httpPort: "8080"
     statefulsetName: memgraph-ha

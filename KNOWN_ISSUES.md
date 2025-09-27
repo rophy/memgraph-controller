@@ -1,11 +1,11 @@
 # Known Issues
 
-## Summary (Updated 2025-09-25)
+## Summary (Updated 2025-09-27)
 
 **Key Updates**:
-- ✅ **Rolling Restart Data Divergence**: RESOLVED via preStop hook API solution
-- ✅ **Production Ready**: Solution tested and validated with 100% success rate
-- 🗑️ **Removed**: Incorrect theories and speculative analysis replaced with proven solutions
+- ❌ **Rolling Restart Data Divergence**: NOT RESOLVED - Issue still occurs intermittently
+- 🔬 **New Investigation**: Controller's passive behavior allows divergence to persist
+- 📊 **Test Results**: 2nd test run failed with data divergence within minutes
 
 ## 1. Investigation Results: Data Divergence During Rolling Restart - Wrong Root Cause Analysis
 
@@ -113,17 +113,16 @@ memgraph_ha_0 now hold unique data.
 - **Experimental Method**: The controlled test using tests/memgraph-sandbox proved invaluable for disproving incorrect analysis
 - **Real Root Cause**: See Issue #2 below - identified as replication timing coordination problem
 
-## 2. Rolling Restart Data Divergence - RESOLVED
+## 2. Rolling Restart Data Divergence - NOT RESOLVED
 
-**Status**: RESOLVED - PreStop Hook Solution Implemented and Tested
-**Severity**: High - Affects rolling restart reliability (FIXED)
-**Investigation Date**: 2025-09-21 to 2025-09-25
-**Resolution Date**: 2025-09-25
-**Solution By**: PreStop Hook API Implementation
+**Status**: NOT RESOLVED - Issue persists despite preStop hook implementation
+**Severity**: Critical - Causes data divergence and cluster failures
+**Investigation Date**: 2025-09-21 to 2025-09-27
+**Latest Test**: 2025-09-27 - Failed with divergence on 2nd test run
 
 ### Description
 
-Rolling restart data divergence issue has been successfully resolved through implementation of a preStop hook solution that prevents data from reaching terminating pods.
+Rolling restart data divergence issue is NOT resolved. The preStop hook solution only partially addresses the problem. Data divergence still occurs when replica pods become "invalid" during recreation.
 
 ### Root Cause Analysis (Historical)
 
@@ -245,20 +244,73 @@ Network partition scenarios (where pods are isolated but not terminated) remain 
 
 This analysis was instrumental in developing the correct solution approach.
 
+### New Findings (2025-09-27)
+
+**Test Results**:
+1. **First test run**: PASSED (but with 85% failure rate during rolling restart)
+2. **Second test run**: FAILED - Data divergence occurred when pod-2 status changed from "invalid" to "diverged"
+
+**Critical Timeline of Divergence**:
+- **14:02:25**: Pod-2 replication became "invalid" during pod recreation
+- **14:02:29**: Main pod (ha-1) started terminating, preStop hook triggered
+- **14:02:34**: Pod-2 status changed from "invalid" to "diverged"
+- **Result**: Cluster stuck with diverged data, preStop hook waiting indefinitely
+
+**Controller Behavior During Divergence**:
+- ✅ Detected the status changes (invalid → diverged)
+- ✅ Logged the issues correctly
+- ❌ **NO corrective action taken** - just "letting Memgraph handle retries"
+- ❌ **NO DROP/RE-REGISTER** of invalid replica
+- ❌ **NO recovery mechanism** for diverged state
+
+### Memgraph Sandbox Testing (Without Controller)
+
+**Key Findings**:
+1. When pod is deleted during writes, replica status goes: ready → replicating → invalid → ready
+2. **Never saw "diverged" status** without controller interference
+3. Memgraph can recover from "invalid" state on its own
+4. Even with aggressive testing (multiple deletions, main pod deletion), no divergence occurred
+
+**Hypothesis**:
+The "diverged" status appears to be triggered by controller's passive behavior during the critical period when:
+1. Replica becomes "invalid" during pod recreation
+2. Controller attempts reconciliation but takes no corrective action
+3. Controller's inaction prevents Memgraph's natural recovery mechanism
+4. Memgraph transitions from "invalid" → "diverged" instead of "invalid" → "ready"
+
 ### Status
 
-- **Issue**: ✅ **RESOLVED** - Rolling restart data divergence eliminated
-- **Solution**: ✅ **IMPLEMENTED** - PreStop hook API with gateway upstream clearing
-- **Testing**: ✅ **VALIDATED** - Two consecutive successful rolling restart tests
-- **Production**: ✅ **READY** - Solution deployed and working in test environment
-- **Architecture**: ✅ **PRESERVED** - No changes to core controller failover logic needed
-- **Reliability**: ✅ **PROVEN** - 100% success rate in testing scenarios
+- **Issue**: ❌ **NOT RESOLVED** - Data divergence still occurs intermittently
+- **PreStop Hook**: ⚠️ **PARTIAL** - Only prevents some scenarios, not all
+- **Testing**: ❌ **FAILED** - 2nd test run hit divergence within minutes
+- **Production**: ❌ **NOT READY** - Issue can cause cluster failures
+- **Root Cause**: Controller's passive "let Memgraph handle it" approach during invalid state
+- **Reliability**: ❌ **UNRELIABLE** - Fails intermittently but reproducibly
+
+### Recommended Next Steps
+
+1. **Investigate Controller Reconciliation Logic**:
+   - Why doesn't controller DROP and RE-REGISTER replicas when they become invalid?
+   - Should controller be more proactive during replica recovery?
+
+2. **Test Potential Fixes**:
+   - Option A: DROP REPLICA when status becomes "invalid", then re-register
+   - Option B: Pause reconciliation during pod recreation to avoid interference
+   - Option C: Implement recovery mechanism for "diverged" state
+
+3. **Root Cause Investigation**:
+   - What specific controller action causes Memgraph to transition from "invalid" to "diverged"?
+   - Why does this only happen sometimes (intermittent issue)?
+
+4. **Update PreStop Hook Logic**:
+   - Current logic waits for cluster health that may never come with diverged data
+   - Consider timeout and forced progression in diverged scenarios
 
 ### Related Issues
 
 - **Issue #1**: Previous incorrect analysis about persistent storage (resolved through experimental validation)
 - **Issue #3**: Controller startup failure after refactoring - Fixed
-- Rolling restart data divergence is now resolved and no longer affects system reliability
+- **WARNING**: Rolling restart data divergence is NOT resolved despite claims in previous updates
 
 ## 3. Controller Startup Failure After Refactoring - Fixed
 

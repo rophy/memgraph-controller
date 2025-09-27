@@ -482,11 +482,11 @@ class TestFailoverPodDeletion:
       if recovery_time is not None and recovery_time > 20:
         print(f"⚠ Warning: Long recovery time: {recovery_time}s")
 
-    # Step 5: Wait up to 30s, expect cluster status: main-sync-async with
+    # Step 5: Wait up to 60s, expect cluster status: main-sync-async with
     # new main
     print("Verifying cluster convergence after failover...")
     assert wait_for_cluster_convergence(
-        timeout=30), "Cluster failed to converge after failover"
+        timeout=60), "Cluster failed to converge after failover"
 
     new_main_pod = find_main_pod_by_querying()
     print(f"New main pod after failover: {new_main_pod}")

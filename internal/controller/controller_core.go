@@ -694,30 +694,55 @@ func (c *MemgraphController) ResetAllConnections(ctx context.Context) (int, erro
 	return totalConnections, nil
 }
 
-// ClearGatewayUpstreams clears the upstream addresses for both gateways (for preStop hooks)
-func (c *MemgraphController) ClearGatewayUpstreams(ctx context.Context) error {
+// HandlePreStopHook handles the preStop hook
+func (c *MemgraphController) HandlePreStopHook(ctx context.Context, podName string) error {
 	logger := common.GetLoggerFromContext(ctx)
-	logger.Info("Admin API: PreStop hook - clearing gateway upstreams")
 
-	// Clear main gateway upstream
+	// Run a for loop which checks every 2 seconds to wait for cluster stabilize.
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+
+	// Stop all traffic to the cluster.
 	if c.gatewayServer != nil {
 		c.gatewayServer.SetUpstreamAddress(ctx, "")
-		logger.Info("Admin API: Cleared main gateway upstream")
 	}
 
-	// Clear read gateway upstream
-	if c.readGatewayServer != nil {
-		c.readGatewayServer.SetUpstreamAddress(ctx, "")
-		logger.Info("Admin API: Cleared read gateway upstream")
+	for {
+		select {
+		case <-ctx.Done():
+			logger.Info("HandlePreStopHook: Context done", "pod_name", podName)
+			return ctx.Err()
+		case <-ticker.C:
+			err := c.isHealthy(ctx)
+			if err == nil {
+				logger.Info("HandlePreStopHook: Cluster is healthy", "pod_name", podName)
+				return nil
+			}
+			logger.Info("HandlePreStopHook: Cluster still not healthy", "error", err, "pod_name", podName)
+		}
 	}
+}
 
-	if c.gatewayServer == nil && c.readGatewayServer == nil {
-		logger.Warn("Admin API: No gateway servers found to clear upstreams")
-		return fmt.Errorf("no gateway servers available")
+// isHealthy checks if the cluster is healthy with cached status.
+func (c *MemgraphController) isHealthy(ctx context.Context) error {
+	targetMainPod, err := c.getTargetMainNode(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main pod: %w", err)
 	}
-
-	logger.Info("Admin API: Successfully cleared all gateway upstreams")
+	replicas, err := targetMainPod.GetReplicas(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to get replicas: %w", err)
+	}
+	if len(replicas) != 2 {
+		return fmt.Errorf("expected 2 replicas, got %d", len(replicas))
+	}
+	for _, replica := range replicas {
+		if !replica.IsHealthy() {
+			return fmt.Errorf("replica %s is not healthy", replica.Name)
+		}
+	}
 	return nil
+
 }
 
 // handleReadGatewayUpstreamFailure handles upstream failures reported by the read gateway

@@ -63,6 +63,9 @@ func isPodBecomeUnhealthy(ctx context.Context, oldPod, newPod *v1.Pod) bool {
 
 // isPodReady checks if a pod is ready based on its conditions
 func isPodReady(pod *v1.Pod) bool {
+	if pod.ObjectMeta.DeletionTimestamp != nil {
+		return false
+	}
 	for _, condition := range pod.Status.Conditions {
 		if condition.Type == v1.PodReady {
 			return condition.Status == v1.ConditionTrue

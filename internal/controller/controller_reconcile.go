@@ -143,9 +143,6 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 
 	logger.Info("performReconciliationActions started")
 
-	if c.shouldSkipForFailover(ctx) {
-		return nil // Retry on next tick
-	}
 	// List all memgraph pods with kubernetes status
 	err = c.cluster.Refresh(ctx)
 	if err != nil {
@@ -160,12 +157,11 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	// If TargetMainPod is not ready, queue failover and wait
 	err = c.performFailoverCheck(ctx)
 	if err != nil {
-		logger.Info("Failover check failed", "error", err)
+		logger.Warn("Failover check failed", "error", err)
 		reconcileErr = err
 		if c.promMetrics != nil {
 			c.promMetrics.RecordError("reconciliation")
 		}
-		return nil // Retry on next tick
 	}
 	targetMainNode, err := c.getTargetMainNode(ctx)
 	if err != nil {
@@ -196,9 +192,6 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 
 	// Log replication status for monitoring (no longer drop/re-register based on IP changes)
 	for replicaName, replicaInfo := range replicaMap {
-		if c.shouldSkipForFailover(ctx) {
-			return nil // Retry on next tick
-		}
 
 		podName := replicaInfo.GetPodName()
 		replicationHealthy := replicaInfo.IsHealthy()
@@ -209,11 +202,21 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 				"replica_name", replicaName,
 				"sync_mode", replicaInfo.SyncMode)
 		} else {
-			logger.Info("Replica has unhealthy replication status - letting Memgraph handle retries",
-				"pod_name", podName,
-				"replica_name", replicaName,
-				"health_reason", replicaInfo.GetHealthReason(),
-				"sync_mode", replicaInfo.SyncMode)
+			if replicaInfo.ParsedDataInfo.Status == "diverged" {
+				logger.Error("☢ Replication has diverged",
+					"pod_name", podName,
+					"replica_name", replicaName,
+					"sync_mode", replicaInfo.SyncMode,
+					"behind", replicaInfo.ParsedDataInfo.Behind)
+			} else {
+				logger.Info("Replica has unhealthy replication status - letting Memgraph handle retries",
+					"pod_name", podName,
+					"replica_name", replicaName,
+					"health_reason", replicaInfo.GetHealthReason(),
+					"sync_mode", replicaInfo.SyncMode,
+					"behind", replicaInfo.ParsedDataInfo.Behind)
+			}
+
 		}
 	}
 
@@ -228,10 +231,6 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	for podName, node := range c.cluster.MemgraphNodes {
 		if podName == targetMainNode.GetName() {
 			continue // Skip main node
-		}
-
-		if c.shouldSkipForFailover(ctx) {
-			return nil // Retry on next tick
 		}
 
 		pod, err := c.getPodFromCache(podName)

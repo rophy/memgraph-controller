@@ -465,7 +465,12 @@ func (mc *MemgraphClient) QueryReplicas(ctx context.Context, boltAddress string)
 
 	logger.Info("Queried replicas", "bolt_address", boltAddress, "replica_count", len(result.Replicas))
 	for _, replica := range result.Replicas {
-		logger.Info("Replica found", "name", replica.Name, "socket_address", replica.SocketAddress, "sync_mode", replica.SyncMode)
+		logger.Info("Replica found",
+			"name", replica.Name,
+			"socket_address", replica.SocketAddress,
+			"sync_mode", replica.SyncMode,
+			"parsed_data_info", replica.ParsedDataInfo,
+		)
 	}
 
 	return result, nil

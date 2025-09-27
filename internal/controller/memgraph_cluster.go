@@ -274,7 +274,11 @@ func (mc *MemgraphCluster) initializeCluster(ctx context.Context) error {
 	// Check if replica shows as ready
 	found := false
 	for _, replica := range replicasResponse {
-		logger.Info("replica found", "replica_name", replica.Name, "sync_mode", replica.SyncMode)
+		logger.Info("replica found",
+			"replica_name", replica.Name,
+			"sync_mode", replica.SyncMode,
+			"parsed_data_info", replica.ParsedDataInfo,
+		)
 		if replica.Name == pod1Node.GetReplicaName() && replica.SyncMode == "strict_sync" {
 			found = true
 			// Parse data_info to check if replica is ready

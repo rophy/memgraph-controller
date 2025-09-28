@@ -54,7 +54,7 @@ func (m *MockController) ResetAllConnections(ctx context.Context) (int, error) {
 	return 3, nil
 }
 
-func (m *MockController) HandlePreStopHook(ctx context.Context) error {
+func (m *MockController) HandlePreStopHook(ctx context.Context, podName string) error {
 	// Mock implementation - just return success
 	return nil
 }
@@ -203,5 +203,58 @@ func TestHTTPServerReadinessProbe(t *testing.T) {
 
 	if w.Code != http.StatusServiceUnavailable {
 		t.Errorf("Expected status 503 when controller is not leader, got %d", w.Code)
+	}
+}
+
+func TestPreStopHookAuthentication(t *testing.T) {
+	config := &common.Config{
+		HTTPPort:  "8080",
+		Namespace: "memgraph",
+	}
+
+	controller := &MockController{isRunning: true}
+	httpServer := NewHTTPServer(controller, config)
+
+	tests := []struct {
+		name       string
+		authHeader string
+		wantStatus int
+	}{
+		{
+			name:       "No auth header",
+			authHeader: "",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "Invalid format - not Bearer",
+			authHeader: "Basic dGVzdDp0ZXN0",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "Invalid format - no token",
+			authHeader: "Bearer ",
+			wantStatus: http.StatusUnauthorized,
+		},
+		{
+			name:       "Valid format - token validation skipped in test",
+			authHeader: "Bearer test-token",
+			wantStatus: http.StatusOK, // k8sClient is nil in test, so validation is skipped
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest("POST", "/prestop-hook/test-pod", nil)
+			if tt.authHeader != "" {
+				req.Header.Set("Authorization", tt.authHeader)
+			}
+			w := httptest.NewRecorder()
+
+			httpServer.handlePreStopHook(w, req)
+
+			if w.Code != tt.wantStatus {
+				t.Errorf("Expected status %d, got %d", tt.wantStatus, w.Code)
+			}
+		})
 	}
 }

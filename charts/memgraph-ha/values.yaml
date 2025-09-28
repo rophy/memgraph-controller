@@ -82,15 +82,31 @@ memgraph:
           - /bin/sh
           - -c
           - |
-            # Call controller preStop hook API
+            # Call controller preStop hook API with ServiceAccount token authentication
             # Which will try to wait for the cluster to be in a stable state
             timeout_seconds=${PRESTOP_TIMEOUT_SECONDS:-600}
             python3 -c "
             import os
             import requests
+
+            # Read ServiceAccount token
+            with open('/var/run/secrets/kubernetes.io/serviceaccount/token', 'r') as f:
+                token = f.read().strip()
+
             pod_name = os.getenv('POD_NAME')
             timeout = int(os.getenv('PRESTOP_TIMEOUT_SECONDS', '600'))
-            requests.post('http://memgraph-controller:8080/prestop-hook/' + pod_name, timeout=timeout)
+
+            # Send request with Authorization header
+            headers = {'Authorization': f'Bearer {token}'}
+            try:
+                response = requests.post(
+                    f'http://memgraph-controller:8080/prestop-hook/{pod_name}',
+                    headers=headers,
+                    timeout=timeout
+                )
+                print(f'PreStop hook response: {response.status_code}')
+            except Exception as e:
+                print(f'PreStop hook error: {e}')
             " || true
 
   # Environment variables for memgraph pods

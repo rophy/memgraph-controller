@@ -45,6 +45,8 @@ spec:
           value: {{ .Release.Name | quote }}
         - name: PRESTOP_TIMEOUT_SECONDS
           value: {{ .Values.controller.env.preStopTimeoutSeconds | quote }}
+        - name: MEMGRAPH_SERVICE_ACCOUNT_NAME
+          value: {{ include "memgraph.serviceAccountName" .Subcharts.memgraph | quote }}
         # Leader election environment variables
         - name: POD_NAME
           valueFrom:

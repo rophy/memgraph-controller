@@ -271,6 +271,56 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 			syncMode = "STRICT_SYNC"
 		}
 		replicationAddress := node.GetReplicationFQDN(c.config.StatefulSetName, c.config.Namespace)
+
+		// CRITICAL SAFETY CHECK: Prevent dual-main scenarios before registering this replica
+		// This prevents data divergence by ensuring a replica NEVER receives replication
+		// requests from more than one main node
+
+		// Check 1: Look for any non-target main nodes
+		nonTargetMains := []string{}
+		for checkPodName, checkNode := range c.cluster.MemgraphNodes {
+			if checkPodName == targetMainNode.GetName() {
+				continue // Skip the target main
+			}
+
+			checkRole, err := checkNode.GetReplicationRole(ctx, false) // Use cached role
+			if err != nil {
+				logger.Debug("Could not get role for pod during safety check", "pod_name", checkPodName, "error", err)
+				continue
+			}
+
+			if checkRole == "main" {
+				nonTargetMains = append(nonTargetMains, checkPodName)
+			}
+		}
+
+		// Check 2: Verify pod count matches (detect unreachable pods that might be MAIN)
+		k8sPods := c.cluster.getPodsFromCache() // Get all memgraph pods from K8s
+		k8sPodCount := len(k8sPods)
+		reachablePodCount := len(c.cluster.MemgraphNodes)
+
+		if len(nonTargetMains) > 0 {
+			logger.Error("🚨 DUAL-MAIN DETECTED: Skipping registration for this replica to prevent divergence",
+				"replica_name", replicaName,
+				"target_main", targetMainNode.GetName(),
+				"other_mains", nonTargetMains)
+			continue // Skip this replica registration, but continue processing other replicas
+		}
+
+		if k8sPodCount != reachablePodCount {
+			logger.Warn("⚠️ POD COUNT MISMATCH: Skipping registration for this replica for safety",
+				"replica_name", replicaName,
+				"k8s_pod_count", k8sPodCount,
+				"reachable_pod_count", reachablePodCount,
+				"target_main", targetMainNode.GetName())
+			continue // Skip this replica registration, but continue processing other replicas
+		}
+
+		logger.Debug("✅ Safe to register replica: single main confirmed, all pods reachable",
+			"replica_name", replicaName,
+			"target_main", targetMainNode.GetName(),
+			"pod_count", k8sPodCount)
+
 		// FQDN address with default replication port 10000
 		err = targetMainNode.RegisterReplica(ctx, replicaName, replicationAddress, syncMode)
 		if err == nil {

@@ -25,6 +25,34 @@ The `--username=memgraph` is not a real username but is used to avoid Memgraph s
 
 Reference: https://memgraph.com/docs/clustering/replication
 
+### ⚠️ CARDINAL RULE: Single-Source Replication Protocol
+
+**CRITICAL**: A replica node must NEVER concurrently receive replication requests from different main nodes, even if the data appears synchronized.
+
+**Why This Rule Exists**:
+1. **Data Lineage Protection**: Memgraph tracks which node was "main" at which point in time
+2. **Split-Brain Prevention**: Prevents scenarios where multiple mains could create conflicting data streams
+3. **Consistency Guarantee**: Ensures there's always a single source of truth for replication
+
+**Violation Symptoms**:
+```
+You cannot register Replica X to this Main because at one point
+Replica X acted as the Main instance. Both the Main and Replica
+X now hold unique data.
+```
+
+**Controller Implementation**:
+- **Safety Check Required**: Never register a replica when multiple main nodes exist
+- **Protocol Guardian**: Controller must enforce single-main-per-replica rule during orchestration
+- **Ordering Constraint**: Demotion of old main must complete before registration to new main
+
+**Real-World Impact**:
+- Violation causes "diverged" replication status
+- Results in permanent cluster failure requiring manual intervention
+- Cannot be resolved by simple retry or restart
+
+**Fix Reference**: See `controller_reconcile.go` dual-main safety check implementation (2025-09-28)
+
 ### Error to Ignore
 
 The following error in replica nodes can safely be ignored:

@@ -103,51 +103,74 @@ get_leader_controller_pod() {
     echo "$leader_pod"
 }
 
-dump_controller_logs() {
+dump_pod_logs() {
     local since_time="$1"
 
-    log_info "📋 Dumping controller leader logs since test start..."
+    log_info "📋 Dumping all pod logs since test start..."
 
-    # Create logs directory if it doesn't exist
-    mkdir -p logs
+    # Generate timestamp for log directory
+    local timestamp
+    timestamp=$(date +"%Y%m%d_%H%M%S")
+    local log_dir="logs/${timestamp}"
 
-    # Get leader controller pod
+    # Create timestamped logs directory
+    mkdir -p "$log_dir"
+
+    # Get leader controller pod and echo it clearly
     local leader_pod
-    if ! leader_pod=$(get_leader_controller_pod); then
-        log_warning "⚠️  Skipping log dump - no leader controller found"
+    if leader_pod=$(get_leader_controller_pod); then
+        echo "🎯 Leader controller pod: $leader_pod"
+    else
+        log_warning "⚠️  No leader controller found"
+    fi
+
+    # Get all pods in memgraph namespace
+    local all_pods
+    all_pods=$(kubectl get pods -n memgraph -o jsonpath='{.items[*].metadata.name}')
+
+    if [ -z "$all_pods" ]; then
+        log_warning "⚠️  No pods found in memgraph namespace"
         return 0
     fi
 
-    # Generate timestamp for log file
-    local timestamp
-    timestamp=$(date +"%Y%m%d_%H%M%S")
-    local log_file="logs/controller_${timestamp}.log"
+    log_info "📝 Dumping logs from all pods since $since_time to $log_dir/"
 
-    log_info "📝 Dumping logs from $leader_pod since $since_time to $log_file"
+    local success_count=0
+    local total_count=0
 
-    # Dump logs with timestamps, filtering from test start time
-    if [ -n "$since_time" ]; then
-        kubectl_cmd="kubectl logs -n memgraph $leader_pod --timestamps --since-time=$since_time"
-    else
-        kubectl_cmd="kubectl logs -n memgraph $leader_pod --timestamps"
-    fi
+    for pod in $all_pods; do
+        total_count=$((total_count + 1))
+        local log_file="$log_dir/${pod}.log"
 
-    if eval "$kubectl_cmd" > "$log_file"; then
-        log_success "✅ Controller logs saved to $log_file"
-
-        # Show log file size and line count for reference
-        local lines size
-        lines=$(wc -l < "$log_file")
-        size=$(du -h "$log_file" | cut -f1)
-
-        if [ "$lines" -eq 0 ]; then
-            log_info "📊 Log file is empty - no controller logs since test start"
+        # Dump logs with timestamps, filtering from test start time
+        local kubectl_cmd
+        if [ -n "$since_time" ]; then
+            kubectl_cmd="kubectl logs -n memgraph $pod --timestamps --since-time=$since_time"
         else
-            log_info "📊 Log file contains $lines lines ($size) since test start"
+            kubectl_cmd="kubectl logs -n memgraph $pod --timestamps"
         fi
+
+        if eval "$kubectl_cmd" > "$log_file" 2>/dev/null; then
+            # Show log file size and line count for reference
+            local lines size
+            lines=$(wc -l < "$log_file")
+            size=$(du -h "$log_file" | cut -f1)
+
+            if [ "$lines" -eq 0 ]; then
+                log_info "📊 $pod: empty log (no logs since test start)"
+            else
+                log_info "📊 $pod: $lines lines ($size) saved to ${pod}.log"
+            fi
+            success_count=$((success_count + 1))
+        else
+            log_warning "⚠️  Failed to dump logs for pod: $pod"
+        fi
+    done
+
+    if [ "$success_count" -eq "$total_count" ]; then
+        log_success "✅ All pod logs ($success_count/$total_count) saved to $log_dir/"
     else
-        log_error "❌ Failed to dump controller logs"
-        return 1
+        log_warning "⚠️  Partial success: $success_count/$total_count pod logs saved to $log_dir/"
     fi
 }
 
@@ -183,9 +206,9 @@ run_python_tests() {
         test_result=1
     fi
 
-    # Always dump controller logs after tests finish (regardless of test result)
+    # Always dump pod logs after tests finish (regardless of test result)
     echo
-    dump_controller_logs "$test_start_time"
+    dump_pod_logs "$test_start_time"
 
     return $test_result
 }

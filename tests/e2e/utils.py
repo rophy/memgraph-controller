@@ -14,7 +14,7 @@ import os
 import csv
 from io import StringIO
 import logfmt
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Tuple, Dict, Any, Optional, List
 
 
@@ -115,29 +115,8 @@ def get_pod_logs(pod_name: str,
 
     log_content = result.stdout
 
-    # Persist pod logs to file for debugging
-    output_dir = "logs"
-    os.makedirs(output_dir, exist_ok=True)
-
-    # Generate timestamp for unique filename
-    timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S_%f")[
-        :-3]  # microseconds to milliseconds
-    log_filename = f"{pod_name}_{timestamp}.log"
-    log_filepath = os.path.abspath(os.path.join(output_dir, log_filename))
-
-    # Write logs to file
-    with open(log_filepath, 'w') as f:
-      f.write(f"# Pod logs from: {pod_name} (namespace: {namespace})\n")
-      f.write(
-          f"# Retrieved at: {datetime.now(timezone.utc).isoformat()}\n")
-      if tail_lines:
-        f.write(f"# Tail lines: {tail_lines}\n")
-      if since_time:
-        f.write(f"# Since time: {since_time}\n")
-      f.write(f"# Command: {' '.join(cmd)}\n")
-      f.write("# " + "="*60 + "\n\n")
-      f.write(log_content)
-    print(f"📄 Saved {len(log_content.splitlines())} log lines from {pod_name} to {log_filepath}")
+    # Note: Log persistence is now handled by the shell script wrapper
+    # which collects all pod logs in organized timestamped directories
 
     return log_content
 
@@ -153,7 +132,6 @@ def get_pod_age_seconds(pod_name: str) -> int:
         "-o", "jsonpath={.metadata.creationTimestamp}"
     ], capture_output=True, text=True, check=True)
 
-    from datetime import datetime
     creation_time = datetime.fromisoformat(
         result.stdout.strip().replace('Z', '+00:00'))
     current_time = datetime.now(creation_time.tzinfo)
@@ -637,8 +615,10 @@ def wait_for_cluster_convergence(timeout: int = 60) -> bool:
           elapsed = int(time.time() - start_time)
           log_info(
               f"⏳ Waiting for full convergence... main={main_pod}, "
-              f"strict_sync={sync_count}({ready_sync_count} ready, {sync_behind_zero_count} behind=0), "
-              f"async={async_count}({ready_async_count} ready, {async_behind_zero_count} behind=0) ({elapsed}s/{timeout}s)")
+              f"strict_sync={sync_count}({ready_sync_count} ready, "
+              f"{sync_behind_zero_count} behind=0), "
+              f"async={async_count}({ready_async_count} ready, "
+              f"{async_behind_zero_count} behind=0) ({elapsed}s/{timeout}s)")
 
       except MemgraphQueryError as e:
         elapsed = int(time.time() - start_time)
@@ -694,7 +674,6 @@ def count_nodes() -> int:
 
 def generate_test_id(prefix: str = "test") -> str:
   """Generate unique test ID with timestamp"""
-  import os
   timestamp = int(time.time())
   pid = os.getpid()
   return f"{prefix}_{timestamp}_{pid}"

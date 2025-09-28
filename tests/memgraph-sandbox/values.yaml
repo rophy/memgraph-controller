@@ -10,6 +10,20 @@ memgraph:
   - "--storage-snapshot-on-exit=false"
   serviceAccount:
     create: false
+  container:
+    readinessProbe:
+      exec:
+        command: ["/bin/sh", "-c", "echo 'RETURN 0;' | timeout 10s mgconsole --output-format csv --username=memgraph >/dev/null 2>&1"]
+      failureThreshold: 1
+      timeoutSeconds: 10
+      periodSeconds: 30
+    livenessProbe:
+      exec:
+        command: ["/bin/sh", "-c", "echo 'RETURN 0;' | timeout 10s mgconsole --output-format csv --username=memgraph >/dev/null 2>&1"]
+      failureThreshold: 20
+      timeoutSeconds: 10
+      periodSeconds: 30
+
 
 # Use the unified test-client chart as a dependency
 test-client:

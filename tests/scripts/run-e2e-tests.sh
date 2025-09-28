@@ -88,18 +88,18 @@ setup_python_environment() {
 }
 
 get_leader_controller_pod() {
-    log_info "🔍 Identifying leader controller pod..."
+    log_info "🔍 Identifying leader controller pod..." >&2
 
     # Get controller pods with Ready status
     local leader_pod
     leader_pod=$(kubectl get pods -n memgraph -l app=memgraph-controller -o jsonpath='{range .items[*]}{.metadata.name}{" "}{.status.conditions[?(@.type=="Ready")].status}{"\n"}{end}' | grep "True" | head -1 | cut -d' ' -f1)
 
     if [ -z "$leader_pod" ]; then
-        log_warning "⚠️  No ready controller pod found"
+        log_warning "⚠️  No ready controller pod found" >&2
         return 1
     fi
 
-    log_info "✅ Leader controller pod: $leader_pod"
+    log_info "✅ Leader controller pod: $leader_pod" >&2
     echo "$leader_pod"
 }
 
@@ -126,12 +126,13 @@ dump_controller_logs() {
     log_info "📝 Dumping logs from $leader_pod since $since_time to $log_file"
 
     # Dump logs with timestamps, filtering from test start time
-    local kubectl_cmd="kubectl logs -n memgraph $leader_pod --timestamps"
     if [ -n "$since_time" ]; then
-        kubectl_cmd="$kubectl_cmd --since-time=$since_time"
+        kubectl_cmd="kubectl logs -n memgraph $leader_pod --timestamps --since-time=$since_time"
+    else
+        kubectl_cmd="kubectl logs -n memgraph $leader_pod --timestamps"
     fi
 
-    if $kubectl_cmd > "$log_file"; then
+    if eval "$kubectl_cmd" > "$log_file"; then
         log_success "✅ Controller logs saved to $log_file"
 
         # Show log file size and line count for reference

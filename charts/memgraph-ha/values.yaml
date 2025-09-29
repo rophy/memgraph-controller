@@ -52,6 +52,12 @@ memgraph:
     valueFrom:
       fieldRef:
         fieldPath: metadata.name
+  # PreStop hook authentication
+  - name: PRESTOP_AUTH_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: memgraph-ha
+        key: token
 
   # Container probes
   container:

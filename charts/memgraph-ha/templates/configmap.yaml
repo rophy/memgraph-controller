@@ -26,14 +26,12 @@ data:
 
     log(f'PreStop hook: Starting for pod {pod_name} with timeout {timeout}s')
 
-    # Try to read ServiceAccount token
-    token = ''
-    try:
-        with open('/var/run/secrets/kubernetes.io/serviceaccount/token', 'r') as f:
-            token = f.read().strip()
-        log('PreStop hook: Token read successfully')
-    except Exception as e:
-        log(f'PreStop hook: Could not read token: {e}')
+    # Get shared secret token from environment
+    token = os.getenv('PRESTOP_AUTH_TOKEN', '')
+    if token:
+        log('PreStop hook: Using shared secret token')
+    else:
+        log('PreStop hook: No auth token available')
 
     # Make the API request
     url = f'http://memgraph-controller:8080/prestop-hook/{pod_name}'

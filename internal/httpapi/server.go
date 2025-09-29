@@ -12,10 +12,6 @@ import (
 
 	"memgraph-controller/internal/common"
 	"memgraph-controller/internal/metrics"
-
-	authv1 "k8s.io/api/authentication/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
 )
 
 // HTTPServer manages the status API HTTP server
@@ -23,7 +19,6 @@ type HTTPServer struct {
 	controller ControllerInterface
 	server     *http.Server
 	config     *common.Config
-	k8sClient  kubernetes.Interface
 }
 
 // NewHTTPServer creates a new HTTP server for status API
@@ -337,8 +332,8 @@ func (h *HTTPServer) handlePreStopHook(w http.ResponseWriter, r *http.Request) {
 
 	ctx, logger := common.NewLoggerContext(ctx)
 
-        // Verify ServiceAccount token authentication
-        if !h.verifyServiceAccountToken(ctx, r, podName) {
+        // Verify shared secret authentication
+        if !h.verifySharedSecret(ctx, r, podName) {
                 // CRITICAL: Authentication failed - this is a security event
                 // The preStop hook script should handle 401 by sleeping to prevent data divergence
                 logger.Error("🚨 SECURITY ALERT: PreStop hook authentication FAILED!",
@@ -369,8 +364,8 @@ func (h *HTTPServer) handlePreStopHook(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// verifyServiceAccountToken validates the ServiceAccount token using TokenReview API
-func (h *HTTPServer) verifyServiceAccountToken(ctx context.Context, r *http.Request, podName string) bool {
+// verifySharedSecret validates the shared secret token
+func (h *HTTPServer) verifySharedSecret(ctx context.Context, r *http.Request, podName string) bool {
 	logger := common.GetLoggerFromContext(ctx)
 
 	// Extract token from Authorization header
@@ -394,82 +389,24 @@ func (h *HTTPServer) verifyServiceAccountToken(ctx context.Context, r *http.Requ
 		return false
 	}
 
-	// If k8sClient is not initialized (e.g., in tests), skip validation
-	if h.k8sClient == nil {
-		logger.Warn("PreStop hook authentication skipped: Kubernetes client not initialized")
-		return true // Allow in test environments
-	}
-
-	// Create TokenReview request
-	tr := &authv1.TokenReview{
-		Spec: authv1.TokenReviewSpec{
-			Token: token,
-			// Remove audience specification to debug authentication issues
-			// Audiences: []string{"memgraph-controller"},
-		},
-	}
-
-	// Submit TokenReview to Kubernetes API
-	result, err := h.k8sClient.AuthenticationV1().TokenReviews().Create(ctx, tr, metav1.CreateOptions{})
-	if err != nil {
-		logger.Error("PreStop hook authentication failed: TokenReview API error", "error", err)
+	// Get expected token from environment
+	expectedToken := os.Getenv("PRESTOP_AUTH_TOKEN")
+	if expectedToken == "" {
+		logger.Warn("PreStop hook authentication failed: no expected token configured")
 		return false
 	}
 
-	// Check if token is authenticated
-	if !result.Status.Authenticated {
-		logger.Warn("PreStop hook authentication failed: token not authenticated")
-		return false
-	}
-
-	// Extract ServiceAccount information
-	// Expected format: system:serviceaccount:namespace:serviceaccount-name
-	username := result.Status.User.Username
-	parts := strings.Split(username, ":")
-	if len(parts) != 4 || parts[0] != "system" || parts[1] != "serviceaccount" {
-		logger.Warn("PreStop hook authentication failed: unexpected user format",
-			"username", username)
-		return false
-	}
-
-	namespace := parts[2]
-	saName := parts[3]
-
-	// Verify it's from the expected namespace
-	if namespace != h.config.Namespace {
-		logger.Warn("PreStop hook authentication failed: wrong namespace",
-			"expected", h.config.Namespace,
-			"actual", namespace)
-		return false
-	}
-
-	// Verify it's from the expected memgraph ServiceAccount
-	expectedServiceAccount := os.Getenv("MEMGRAPH_SERVICE_ACCOUNT_NAME")
-	if expectedServiceAccount == "" {
-		// Fallback to legacy behavior for backward compatibility
-		expectedServiceAccount = "memgraph-ha"
-		logger.Debug("MEMGRAPH_SERVICE_ACCOUNT_NAME not set, using fallback", "fallback", expectedServiceAccount)
-	}
-
-	if saName != expectedServiceAccount {
-		logger.Warn("PreStop hook authentication failed: unexpected ServiceAccount",
-			"serviceaccount", saName,
-			"expected", expectedServiceAccount,
-			"namespace", namespace)
+	// Simple string comparison
+	if token != expectedToken {
+		logger.Warn("PreStop hook authentication failed: token mismatch")
 		return false
 	}
 
 	// Log successful authentication
 	logger.Info("PreStop hook authentication successful",
 		"pod_name", podName,
-		"serviceaccount", saName,
-		"namespace", namespace,
 		"source_ip", r.RemoteAddr)
 
 	return true
 }
 
-// SetK8sClient sets the Kubernetes client for the HTTP server
-func (h *HTTPServer) SetK8sClient(client kubernetes.Interface) {
-	h.k8sClient = client
-}

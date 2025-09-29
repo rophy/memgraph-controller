@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -207,6 +208,10 @@ func TestHTTPServerReadinessProbe(t *testing.T) {
 }
 
 func TestPreStopHookAuthentication(t *testing.T) {
+	// Set up environment variable for shared secret authentication
+	os.Setenv("PRESTOP_AUTH_TOKEN", "test-token")
+	defer os.Unsetenv("PRESTOP_AUTH_TOKEN")
+
 	config := &common.Config{
 		HTTPPort:  "8080",
 		Namespace: "memgraph",
@@ -236,9 +241,14 @@ func TestPreStopHookAuthentication(t *testing.T) {
 			wantStatus: http.StatusUnauthorized,
 		},
 		{
-			name:       "Valid format - token validation skipped in test",
+			name:       "Valid shared secret token",
 			authHeader: "Bearer test-token",
-			wantStatus: http.StatusOK, // k8sClient is nil in test, so validation is skipped
+			wantStatus: http.StatusOK, // Should pass with correct shared secret
+		},
+		{
+			name:       "Invalid shared secret token",
+			authHeader: "Bearer wrong-token",
+			wantStatus: http.StatusUnauthorized, // Should fail with wrong token
 		},
 	}
 

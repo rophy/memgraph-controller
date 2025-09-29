@@ -91,8 +91,6 @@ func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, 
 
 	// Initialize HTTP server
 	controller.httpServer = httpapi.NewHTTPServer(controller, config)
-	// Set the Kubernetes client for TokenReview authentication
-	controller.httpServer.SetK8sClient(clientset)
 
 	// Initialize read/write gateway server (port 7687)
 	gatewayConfig := gateway.LoadGatewayConfig()

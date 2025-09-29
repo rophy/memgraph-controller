@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-E2E test for preStop hook ServiceAccount authentication.
+E2E test for preStop hook shared secret authentication.
 
 This test verifies that:
-1. Valid ServiceAccount tokens are accepted by the preStop hook API
+1. Valid shared secret tokens are accepted by the preStop hook API
 2. Invalid tokens are rejected
 3. The authentication logs show proper behavior
 """
@@ -21,7 +21,7 @@ from utils import (
 
 
 class TestPreStopAuthentication:
-    """Test ServiceAccount authentication for preStop hooks."""
+    """Test shared secret authentication for preStop hooks."""
 
     def test_prestop_hook_authentication(self):
         """Test preStop hook authentication with valid and invalid tokens."""
@@ -55,8 +55,8 @@ class TestPreStopAuthentication:
             print(f"❌ Failed to test invalid token: {e}")
             raise
 
-        # Step 5: Test with valid ServiceAccount token (should succeed)
-        print("🔒 Testing request with valid ServiceAccount token...")
+        # Step 5: Test with valid shared secret token (should succeed)
+        print("🔒 Testing request with valid shared secret token...")
         try:
             response = self._run_prestop_script_from_pod("valid")
             # Note: This might timeout because preStop hook waits for cluster stability
@@ -85,7 +85,7 @@ class TestPreStopAuthentication:
     def _run_prestop_script_from_pod(self, test_type="valid", timeout=10):
         """Run the actual preStop script from a memgraph pod with different authentication scenarios."""
 
-        # Choose a memgraph pod to execute from (these have the correct ServiceAccount)
+        # Choose a memgraph pod to execute from (these have the shared secret)
         test_pod = "memgraph-ha-1"  # Use memgraph-ha-1 (not main pod to avoid disrupting main)
 
         if test_type == "no_auth":
@@ -131,20 +131,19 @@ except Exception as e:
     print(f'ERROR:{{e}}')
 '''
         else:  # test_type == "valid"
-            # Test with valid ServiceAccount token (actual preStop script)
+            # Test with valid shared secret token (actual preStop script)
             python_script = f'''
 import os
 import requests
 
-# Read ServiceAccount token
-with open('/var/run/secrets/kubernetes.io/serviceaccount/token', 'r') as f:
-    token = f.read().strip()
+# Get shared secret token from environment
+token = os.getenv('PRESTOP_AUTH_TOKEN', '')
 
 pod_name = os.getenv('POD_NAME', '{test_pod}')
 timeout = {timeout}
 
 # Send request with Authorization header
-headers = {{'Authorization': f'Bearer {{token}}'}}
+headers = {{'Authorization': f'Bearer {{token}}'}} if token else {{}}
 try:
     response = requests.post(
         f'http://memgraph-controller:8080/prestop-hook/{{pod_name}}',

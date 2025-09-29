@@ -45,8 +45,7 @@ check: ## Run project checks and validations
 	scripts/check.sh
 
 wait: ## Wait for cluster convergence using enhanced wait function
-	@echo "Waiting for cluster convergence..."
-	@python3 -c "import sys; sys.path.append('tests/e2e'); from utils import wait_for_cluster_convergence; import time; print('🔄 Testing cluster convergence...'); start = time.time(); result = wait_for_cluster_convergence(timeout=120); elapsed = time.time() - start; print(f'✅ Cluster converged in {elapsed:.1f}s: {result}')"
+	scripts/wait.sh
 
 # Docker targets
 docker-build: ## Build Docker image locally

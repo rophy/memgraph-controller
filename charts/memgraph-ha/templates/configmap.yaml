@@ -1,0 +1,94 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: memgraph-ha-scripts
+  labels:
+    {{- toYaml .Values.controller.labels | nindent 4 }}
+  {{- with .Values.controller.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+data:
+  prestop-hook.py: |
+    #!/usr/bin/env python3
+    import os
+    import requests
+    import sys
+    import time
+    from datetime import datetime
+
+    def log(msg):
+        timestamp = datetime.now().isoformat()
+        print(f'[{timestamp}] {msg}')
+
+    pod_name = os.getenv('POD_NAME')
+    timeout = int(os.getenv('PRESTOP_TIMEOUT_SECONDS', '600'))
+
+    log(f'PreStop hook: Starting for pod {pod_name} with timeout {timeout}s')
+
+    # Try to read ServiceAccount token
+    token = ''
+    try:
+        with open('/var/run/secrets/kubernetes.io/serviceaccount/token', 'r') as f:
+            token = f.read().strip()
+        log('PreStop hook: Token read successfully')
+    except Exception as e:
+        log(f'PreStop hook: Could not read token: {e}')
+
+    # Make the API request
+    url = f'http://memgraph-controller:8080/prestop-hook/{pod_name}'
+    headers = {'Authorization': f'Bearer {token}'} if token else {}
+
+    # Decision logic based on status code
+    # - 200: Exit immediately (success)
+    # - 504: Exit immediately (gateway timeout)
+    # - 401: Sleep until timeout (auth failure)
+    # - All others: Retry until timeout
+
+    start_time = time.time()
+    retry_interval = 5  # Retry every 5 seconds
+    attempt = 0
+
+    while time.time() - start_time < timeout:
+        remaining = timeout - (time.time() - start_time)
+        attempt += 1
+
+        log(f'PreStop hook: Attempt {attempt} - Calling {url}')
+
+        try:
+            response = requests.post(url, headers=headers, timeout=max(60, remaining))
+            status_code = response.status_code
+            log(f'PreStop hook: Received response status {status_code}')
+
+            if status_code == 200:
+                log('PreStop hook: SUCCESS (200)')
+                sys.exit(0)
+
+            elif status_code == 504:
+                log('PreStop hook: Gateway timeout (504)')
+                sys.exit(1)
+
+            elif status_code == 401:
+                log(f'🚨 PreStop hook: Authentication failed (401) - Sleeping {remaining:.0f}s for safety')
+                time.sleep(remaining)
+                log('PreStop hook: Safety sleep completed after auth failure')
+                sys.exit(1)
+
+            else:
+                log(f'PreStop hook: Status {status_code} - Will retry')
+
+        except requests.exceptions.Timeout:
+            log(f'PreStop hook: Request timed out')
+            sys.exit(1)
+        
+        except requests.exceptions.ConnectionError as e:
+            log(f'PreStop hook: Network error: {e}')
+            sys.exit(1)
+
+        except Exception as e:
+            log(f'PreStop hook: Request failed: {e} - Will retry')
+        
+        remaining = timeout - (time.time() - start_time)
+        log(f'PreStop hook: Waiting {retry_interval:.0f}s before retry, {remaining:.0f}s total remaining')
+        time.sleep(retry_interval)
+

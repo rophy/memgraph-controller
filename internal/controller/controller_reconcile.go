@@ -224,24 +224,35 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		}
 
 		pod, err := c.getPodFromCache(podName)
-		if err != nil || !isPodReady(pod) {
-			logger.Info("Replica pod is not ready", "pod_name", podName)
+		if err != nil {
+			logger.Info("Failed to get pod from cache", "pod_name", podName, "error", err)
 			isAllPodsReady = false
-			continue // Skip if pod not ready
+			continue // Skip if cannot get pod info
 		}
 
-		// All replica nodes should have role "replica"
+		// STEP 1: Always attempt to fix roles first, even for terminating pods
+		// This prevents dual-main scenarios during graceful termination
 		role, err := node.GetReplicationRole(ctx, true)
 		if err != nil {
 			logger.Info("Failed to get role for pod", "pod_name", podName, "error", err)
-			continue // Skip if cannot get role
-		}
-		if role != "replica" {
+			// Don't continue here - we still need to check pod readiness below
+		} else if role != "replica" {
 			logger.Info("Pod has wrong role, demoting to replica", "pod_name", podName, "current_role", role)
 			if err := node.SetToReplicaRole(ctx); err != nil {
 				logger.Info("Failed to demote pod to replica", "pod_name", podName, "error", err)
-				continue // Skip if cannot demote
+				// Continue to readiness check - pod is still problematic but we tried to fix role
 			}
+		}
+
+		// STEP 2: Check if pod is ready for replica registration operations
+		if !isPodReady(pod) {
+			if isPodTerminating(pod) {
+				logger.Info("Replica pod is terminating, skipping registration", "pod_name", podName)
+			} else {
+				logger.Info("Replica pod is not ready", "pod_name", podName)
+			}
+			isAllPodsReady = false
+			continue // Skip replica registration, but role demotion was already attempted above
 		}
 
 		replicaName := node.GetReplicaName()

@@ -78,41 +78,25 @@ memgraph:
   lifecycleHooks:
     preStop:
       exec:
-        command:
-          - /bin/sh
-          - -c
-          - |
-            # Call controller preStop hook API with ServiceAccount token authentication
-            # Which will try to wait for the cluster to be in a stable state
-            timeout_seconds=${PRESTOP_TIMEOUT_SECONDS:-600}
-            python3 -c "
-            import os
-            import requests
-
-            # Read ServiceAccount token
-            with open('/var/run/secrets/kubernetes.io/serviceaccount/token', 'r') as f:
-                token = f.read().strip()
-
-            pod_name = os.getenv('POD_NAME')
-            timeout = int(os.getenv('PRESTOP_TIMEOUT_SECONDS', '600'))
-
-            # Send request with Authorization header
-            headers = {'Authorization': f'Bearer {token}'}
-            try:
-                response = requests.post(
-                    f'http://memgraph-controller:8080/prestop-hook/{pod_name}',
-                    headers=headers,
-                    timeout=timeout
-                )
-                print(f'PreStop hook response: {response.status_code}')
-            except Exception as e:
-                print(f'PreStop hook error: {e}')
-            " || true
+        command: ["/bin/sh", "-c", "/usr/bin/python3 -u /scripts/prestop-hook.py >> /tmp/prestop-hook.log 2>&1"]
 
   # Environment variables for memgraph pods
   env:
     - name: PRESTOP_TIMEOUT_SECONDS
       value: "{{ .Values.controller.env.preStopTimeoutSeconds }}"
+
+  # Extra volumes for preStop hook script
+  extraVolumes:
+    - name: scripts
+      configMap:
+        name: memgraph-ha-scripts
+        defaultMode: 0755
+
+  # Extra volume mounts for preStop hook script
+  extraVolumeMounts:
+    - name: scripts
+      mountPath: /scripts
+      readOnly: true
 
   # Init container for system configuration
   sysctlInitContainer:

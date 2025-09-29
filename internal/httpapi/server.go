@@ -323,13 +323,6 @@ func (h *HTTPServer) handlePreStopHook(w http.ResponseWriter, r *http.Request) {
 
 	podName := r.PathValue("pod_name")
 
-	// Verify ServiceAccount token authentication
-	ctx := r.Context()
-	if !h.verifyServiceAccountToken(ctx, r, podName) {
-		http.Error(w, "Unauthorized", http.StatusUnauthorized)
-		return
-	}
-
 	// Get timeout from environment variable, default to 600 seconds
 	timeoutSeconds := 600
 	if envTimeout := os.Getenv("PRESTOP_TIMEOUT_SECONDS"); envTimeout != "" {
@@ -344,12 +337,31 @@ func (h *HTTPServer) handlePreStopHook(w http.ResponseWriter, r *http.Request) {
 
 	ctx, logger := common.NewLoggerContext(ctx)
 
+        // Verify ServiceAccount token authentication
+        if !h.verifyServiceAccountToken(ctx, r, podName) {
+                // CRITICAL: Authentication failed - this is a security event
+                // The preStop hook script should handle 401 by sleeping to prevent data divergence
+                logger.Error("🚨 SECURITY ALERT: PreStop hook authentication FAILED!",
+                        "pod_name", podName,
+                        "source_ip", r.RemoteAddr,
+                        "user_agent", r.Header.Get("User-Agent"),
+                        "action", "Returning 401 - client MUST sleep for safety")
+                http.Error(w, "Unauthorized", http.StatusUnauthorized)
+                return
+        }
+
 	logger.Info("handlePreStopHook started", "pod_name", podName)
 	// Clear gateway upstreams
 	err := h.controller.HandlePreStopHook(ctx, podName)
 	if err != nil {
-		http.Error(w, fmt.Sprintf("Failed to handle preStop hook: %v", err), http.StatusInternalServerError)
-		logger.Info("handlePreStopHook failed", "error", err, "pod_name", podName)
+		if err == context.DeadlineExceeded {
+			// Timeout waiting for cluster health - return 504 Gateway Timeout
+			http.Error(w, "Timeout waiting for cluster health", http.StatusGatewayTimeout)
+			logger.Info("handlePreStopHook timeout waiting for cluster health", "pod_name", podName)
+		} else {
+			http.Error(w, fmt.Sprintf("Failed to handle preStop hook: %v", err), http.StatusInternalServerError)
+			logger.Info("handlePreStopHook failed", "error", err, "pod_name", podName)
+		}
 	} else {
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(""))

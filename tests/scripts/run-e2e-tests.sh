@@ -198,7 +198,7 @@ run_python_tests() {
 
     log_info "Running: python -m pytest $pytest_args $test_dir"
 
-    if python -m pytest $pytest_args "$test_dir"; then
+    if python -u -m pytest $pytest_args "$test_dir"; then
         log_success "🎉 All Python E2E tests passed!"
         test_result=0
     else

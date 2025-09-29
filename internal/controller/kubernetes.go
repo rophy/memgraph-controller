@@ -73,3 +73,8 @@ func isPodReady(pod *v1.Pod) bool {
 	}
 	return false
 }
+
+// isPodTerminating returns true if the pod is being terminated but might still be reachable
+func isPodTerminating(pod *v1.Pod) bool {
+	return pod.ObjectMeta.DeletionTimestamp != nil && pod.Status.Phase == "Running"
+}

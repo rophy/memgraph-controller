@@ -26,9 +26,9 @@ run_memgraph_query() {
     
     echo -e "\n${BLUE}📊 ${description} for ${pod_name}:${NC}"
     if [[ "$format" == "csv" ]]; then
-        kubectl exec "$pod_name" -n "$NAMESPACE" -c memgraph -- bash -c "echo \"$query\" | mgconsole --username=memgraph --output-format csv" 2>/dev/null || echo "❌ Failed to query $pod_name"
+        kubectl exec "$pod_name" -n "$NAMESPACE" -c memgraph -- bash -c "echo \"$query\" | mgconsole --username=mguser --password=mgpasswd --output-format csv" 2>/dev/null || echo "❌ Failed to query $pod_name"
     else
-        kubectl exec "$pod_name" -n "$NAMESPACE" -c memgraph -- bash -c "echo \"$query\" | mgconsole --username=memgraph" 2>/dev/null || echo "❌ Failed to query $pod_name"
+        kubectl exec "$pod_name" -n "$NAMESPACE" -c memgraph -- bash -c "echo \"$query\" | mgconsole --username=mguser --password=mgpasswd" 2>/dev/null || echo "❌ Failed to query $pod_name"
     fi
 }
 
@@ -71,7 +71,7 @@ for pod in "${pods[@]}"; do
     run_memgraph_query "$pod" "SHOW REPLICATION ROLE;" "Replication Role"
     
     # Get the role to determine if we should show replicas
-    role=$(kubectl exec "$pod" -n "$NAMESPACE" -c memgraph -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --username=memgraph --output-format csv' 2>/dev/null | tail -n +2 | tr -d '"' | tr -d '\r')
+    role=$(kubectl exec "$pod" -n "$NAMESPACE" -c memgraph -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --username=mguser --password=mgpasswd --output-format csv' 2>/dev/null | tail -n +2 | tr -d '"' | tr -d '\r')
     
     if [[ "$role" == "main" ]]; then
         run_memgraph_query "$pod" "SHOW REPLICAS;" "Registered Replicas" "csv"

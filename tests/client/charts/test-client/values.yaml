@@ -9,9 +9,6 @@ image:
 
 # Environment variables (shared by both clients)
 env:
-  # Neo4j/Memgraph connection settings
-  NEO4J_USERNAME: "memgraph"
-  NEO4J_PASSWORD: ""
   LOOP_INTERVAL: "1000"  # Write interval in milliseconds
 
 # Resource limits (shared by both clients)
@@ -28,3 +25,8 @@ replicaCount: 1
 # Leave empty for default behavior
 command: ["python", "/app/client.py"]
 args: ["idle"]
+
+secrets:
+  enabled: false
+  username: "mguser"
+  password: "mgpasswd"

@@ -11,9 +11,11 @@ import (
 // Config holds all application configuration
 type Config struct {
 	// Application
-	AppName         string
-	Namespace       string
-	StatefulSetName string
+	AppName          string
+	Namespace        string
+	StatefulSetName  string
+	MemgraphUser     string
+	MemgraphPassword string
 
 	// Controller
 	ReconcileInterval time.Duration
@@ -39,9 +41,11 @@ func Load() (*Config, error) {
 
 	config := &Config{
 		// Application
-		AppName:         os.Getenv("APP_NAME"),
-		Namespace:       os.Getenv("NAMESPACE"),
-		StatefulSetName: os.Getenv("STATEFULSET_NAME"),
+		AppName:          os.Getenv("APP_NAME"),
+		Namespace:        os.Getenv("NAMESPACE"),
+		StatefulSetName:  os.Getenv("STATEFULSET_NAME"),
+		MemgraphUser:     getEnvOrDefault("MEMGRAPH_USER", "memgraph"),
+		MemgraphPassword: getEnvOrDefault("MEMGRAPH_PASSWORD", ""),
 
 		// Controller
 		ReconcileInterval: reconcileInterval,

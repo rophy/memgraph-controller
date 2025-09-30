@@ -31,6 +31,10 @@ deploy:
       setValues:
         controller.env.enableAdminAPI: "true"
         controller.env.enableReadGateway: "true"
+        memgraph.secrets.enabled: "true"
+        memgraph.secrets.name: "test-client"
+        memgraph.secrets.userKey: "MEMGRAPH_USER"
+        memgraph.secrets.passwordKey: "MEMGRAPH_PASSWORD"
     - name: test-client
       chartPath: tests/client/charts/test-client
       namespace: memgraph
@@ -38,6 +42,7 @@ deploy:
       wait: false
       setValues:
         args: ["write", "bolt://memgraph-gateway:7687"]
+        secrets.enabled: "true"
     - name: read-client
       chartPath: tests/client/charts/test-client
       namespace: memgraph

@@ -317,7 +317,7 @@ def memgraph_query_direct(pod: str, query: str) -> List[Dict[str, str]]:
       Parsed CSV data as list of dictionaries (each row as a dict with column names as keys)
   """
   command = ["bash", "-c",
-             f"echo '{query}' | mgconsole --output-format csv --username=memgraph"]
+             f"echo '{query}' | mgconsole --output-format csv --username=mguser --password=mgpasswd"]
   stdout, stderr, code = kubectl_exec(
       pod, MEMGRAPH_NS, command, container="memgraph")
 

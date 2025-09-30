@@ -26,9 +26,9 @@ spec:
         {{- end }}
         env:
         - name: NEO4J_USERNAME
-          value: {{ .Values.env.NEO4J_USERNAME | quote }}
+          value: {{ .Values.secrets.username | quote }}
         - name: NEO4J_PASSWORD
-          value: {{ .Values.env.NEO4J_PASSWORD | quote }}
+          value: {{ .Values.secrets.password | quote }}
         - name: LOOP_INTERVAL
           value: {{ .Values.env.LOOP_INTERVAL | quote }}
         resources:

@@ -63,7 +63,7 @@ func (cp *ConnectionPool) createDriver(ctx context.Context, boltAddress string) 
 
 	driver, err := neo4j.NewDriverWithContext(
 		fmt.Sprintf("bolt://%s", boltAddress),
-		neo4j.BasicAuth("memgraph", "", ""),
+		neo4j.BasicAuth(cp.config.MemgraphUser, cp.config.MemgraphPassword, ""),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create driver for %s: %w", boltAddress, err)

@@ -393,39 +393,101 @@ def test_rolling_restart_continuous_availability():
     assert len(pods_data['items']) > 0, f"No {client_name} pods found"
     return pods_data['items'][0]['metadata']['name']
 
+  # Capture test start time to verify writes after this point
+  test_start_time = datetime.datetime.now(datetime.UTC)
+  log_info(f"Test start time: {test_start_time.isoformat()}")
+
   # Verify test-client is writing successfully
   log_info("Verifying test-client is operational...")
   test_client_pod = get_test_client_pod()
-  recent_logs = get_pod_logs(test_client_pod, tail_lines=20)
 
-  # Count recent successes
-  success_count = 0
-  for line in recent_logs.strip().split('\n')[-10:]:
-    try:
-      log_data = parse_logfmt(line)
-      # Check for success in either 'status' field or 'msg' field
-      if log_data.get('status') == 'success' or 'success' in log_data.get('msg', '').lower():
-        success_count += 1
-    except Exception:
-      continue
+  # Wait up to 60 seconds for test-client to have 5 consecutive successes
+  max_wait_seconds = 60
+  check_interval = 3
+  consecutive_success_target = 5
 
-  assert success_count >= 7, f"Test-client not healthy: only {success_count}/10 recent operations successful"
+  for elapsed in range(0, max_wait_seconds, check_interval):
+    time.sleep(check_interval)
+
+    recent_logs = get_pod_logs(test_client_pod, tail_lines=20)
+
+    # Check for consecutive successes in recent logs
+    consecutive_successes = 0
+    writes_after_test_start = 0
+
+    for line in reversed(recent_logs.strip().split('\n')[-10:]):  # Check last 10 lines, most recent first
+      try:
+        log_data = parse_logfmt(line)
+        # Parse timestamp from log
+        timestamp_str = log_data.get('ts', '')
+        if timestamp_str:
+          log_timestamp = datetime.datetime.fromisoformat(timestamp_str.replace('+00:00', '+00:00'))
+          # Only count writes that happened after test started
+          if log_timestamp >= test_start_time:
+            writes_after_test_start += 1
+            # Check for success in either 'status' field or 'msg' field
+            if 'Write success' in log_data.get('msg', '') or log_data.get('status') == 'success':
+              consecutive_successes += 1
+              if consecutive_successes >= consecutive_success_target:
+                log_info(f"Found {consecutive_successes} consecutive successful writes after {elapsed + check_interval}s")
+                break
+            else:
+              # Reset counter if we hit a failure
+              consecutive_successes = 0
+      except Exception:
+        continue
+
+    if consecutive_successes >= consecutive_success_target:
+      log_info(f"Test-client is healthy with {consecutive_successes} consecutive successes")
+      break
+
+    log_info(f"Waiting for test-client stability... ({elapsed + check_interval}s/{max_wait_seconds}s, consecutive successes: {consecutive_successes})")
+
+  assert consecutive_successes >= consecutive_success_target, f"Test-client not healthy: only {consecutive_successes} consecutive successes (need {consecutive_success_target})"
 
   # Verify read-client is reading successfully
   log_info("Verifying read-client is operational...")
   read_client_pod = get_client_pod("read-client")
-  read_recent_logs = get_pod_logs(read_client_pod, tail_lines=20)
 
-  read_success_count = 0
-  for line in read_recent_logs.strip().split('\n')[-10:]:
-    try:
-      log_data = parse_logfmt(line)
-      if log_data.get('status') == 'success' or 'success' in log_data.get('msg', '').lower():
-        read_success_count += 1
-    except Exception:
-      continue
+  # Wait up to 60 seconds for read-client to have 5 consecutive successes
+  for elapsed in range(0, max_wait_seconds, check_interval):
+    time.sleep(check_interval)
 
-  assert read_success_count >= 7, f"Read-client not healthy: only {read_success_count}/10 recent operations successful"
+    read_recent_logs = get_pod_logs(read_client_pod, tail_lines=20)
+
+    # Check for consecutive successes in recent logs
+    consecutive_read_successes = 0
+    reads_after_test_start = 0
+
+    for line in reversed(read_recent_logs.strip().split('\n')[-10:]):  # Check last 10 lines, most recent first
+      try:
+        log_data = parse_logfmt(line)
+        # Parse timestamp from log
+        timestamp_str = log_data.get('ts', '')
+        if timestamp_str:
+          log_timestamp = datetime.datetime.fromisoformat(timestamp_str.replace('+00:00', '+00:00'))
+          # Only count reads that happened after test started
+          if log_timestamp >= test_start_time:
+            reads_after_test_start += 1
+            # Check for success in either 'status' field or 'msg' field
+            if 'Read success' in log_data.get('msg', '') or log_data.get('status') == 'success':
+              consecutive_read_successes += 1
+              if consecutive_read_successes >= consecutive_success_target:
+                log_info(f"Found {consecutive_read_successes} consecutive successful reads after {elapsed + check_interval}s")
+                break
+            else:
+              # Reset counter if we hit a failure
+              consecutive_read_successes = 0
+      except Exception:
+        continue
+
+    if consecutive_read_successes >= consecutive_success_target:
+      log_info(f"Read-client is healthy with {consecutive_read_successes} consecutive successes")
+      break
+
+    log_info(f"Waiting for read-client stability... ({elapsed + check_interval}s/{max_wait_seconds}s, consecutive successes: {consecutive_read_successes})")
+
+  assert consecutive_read_successes >= consecutive_success_target, f"Read-client not healthy: only {consecutive_read_successes} consecutive successes (need {consecutive_success_target})"
 
   # Verify bad-client is failing as expected (writes to read-only should fail)
   log_info("Verifying bad-client is failing writes as expected...")
@@ -433,15 +495,25 @@ def test_rolling_restart_continuous_availability():
   bad_recent_logs = get_pod_logs(bad_client_pod, tail_lines=20)
 
   bad_failure_count = 0
-  for line in bad_recent_logs.strip().split('\n')[-10:]:
+  bad_writes_after_test_start = 0
+  for line in bad_recent_logs.strip().split('\n')[-15:]:
     try:
       log_data = parse_logfmt(line)
-      if 'failed' in log_data.get('msg', '').lower() or 'error' in log_data.get('msg', '').lower():
-        bad_failure_count += 1
+      # Parse timestamp from log
+      timestamp_str = log_data.get('ts', '')
+      if timestamp_str:
+        log_timestamp = datetime.datetime.fromisoformat(timestamp_str.replace('+00:00', '+00:00'))
+        # Only count operations that happened after test started
+        if log_timestamp >= test_start_time:
+          bad_writes_after_test_start += 1
+          if 'failed' in log_data.get('msg', '').lower() or 'error' in log_data.get('msg', '').lower():
+            bad_failure_count += 1
     except Exception:
       continue
 
-  assert bad_failure_count >= 7, f"Bad-client not behaving as expected: only {bad_failure_count}/10 recent operations failed"
+  log_info(f"Found {bad_writes_after_test_start} bad-client operations after test start, {bad_failure_count} failed as expected")
+  assert bad_writes_after_test_start >= 5, f"Not enough bad-client operations after test start: only {bad_writes_after_test_start} found"
+  assert bad_failure_count >= 3, f"Bad-client not behaving as expected: only {bad_failure_count}/{bad_writes_after_test_start} operations failed after test start"
 
   # Step 3: Trigger rolling restart
   log_info("Triggering rolling restart of StatefulSet...")

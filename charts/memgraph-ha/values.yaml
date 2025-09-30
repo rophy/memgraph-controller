@@ -84,14 +84,15 @@ memgraph:
           - |
             # Call controller preStop hook API
             # Which will try to wait for the cluster to be in a stable state
-            timeout_seconds=${PRESTOP_TIMEOUT_SECONDS:-600}
             python3 -c "
             import os
             import requests
             pod_name = os.getenv('POD_NAME')
             timeout = int(os.getenv('PRESTOP_TIMEOUT_SECONDS', '600'))
-            requests.post('http://memgraph-controller:8080/prestop-hook/' + pod_name, timeout=timeout)
-            " || true
+            username = os.getenv('MEMGRAPH_USER', 'memgraph')
+            password = os.getenv('MEMGRAPH_PASSWORD', '')
+            requests.post('http://memgraph-controller:8080/prestop-hook/' + pod_name, timeout=timeout, auth=(username, password))
+            "
 
   # Environment variables for memgraph pods
   env:

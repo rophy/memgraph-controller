@@ -315,8 +315,6 @@ func (h *HTTPServer) handlePreStopHook(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	podName := r.PathValue("pod_name")
-
 	// Get timeout from environment variable, default to 600 seconds
 	timeoutSeconds := 600
 	if envTimeout := os.Getenv("PRESTOP_TIMEOUT_SECONDS"); envTimeout != "" {
@@ -330,6 +328,17 @@ func (h *HTTPServer) handlePreStopHook(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 
 	ctx, logger := common.NewLoggerContext(ctx)
+
+	// Protect the request with HTTP Basic Authentication
+	// Using the same username / password as memgraph.
+	username, password, ok := r.BasicAuth()
+	if !ok || username != h.config.MemgraphUser || password != h.config.MemgraphPassword {
+		logger.Warn("Unauthorized request", "username", username)
+		http.Error(w, "Unauthorized", http.StatusUnauthorized)
+		return
+	}
+
+	podName := r.PathValue("pod_name")
 
 	logger.Info("handlePreStopHook started", "pod_name", podName)
 	// Clear gateway upstreams

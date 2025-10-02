@@ -299,6 +299,13 @@ func assessReplicationHealth(status string, behind int) (bool, string) {
 		return true, ""
 	case status == "invalid":
 		return false, "Replication status marked as invalid"
+	case status == "replicating":
+		// Replicating is a normal transitional state during data synchronization
+		if behind < 0 {
+			return false, fmt.Sprintf("Replication in progress but behind is negative: %d", behind)
+		}
+		// Don't mark as healthy (IsHealthy=false) but provide informative message
+		return false, "Replication in progress (transitional state)"
 	case behind < 0:
 		return false, fmt.Sprintf("Negative replication lag detected: %d", behind)
 	case status == "empty":

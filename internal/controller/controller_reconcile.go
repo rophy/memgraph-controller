@@ -234,10 +234,15 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 		}
 
 		pod, err := c.getPodFromCache(podName)
-		if err != nil || !isPodReady(pod) {
-			logger.Info("Replica pod is not ready", "pod_name", podName)
+		if err != nil || (!isPodReady(pod) && !isPodTerminating(pod)) {
+			logger.Info("Replica pod is not ready and not terminating", "pod_name", podName)
 			isAllPodsReady = false
-			continue // Skip if pod not ready
+			continue // Skip if pod not ready AND not terminating
+		}
+
+		// Log if we're processing a terminating pod
+		if isPodTerminating(pod) {
+			logger.Info("Processing terminating pod for demotion check", "pod_name", podName)
 		}
 
 		// All replica nodes should have role "replica"
@@ -247,11 +252,18 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 			continue // Skip if cannot get role
 		}
 		if role != "replica" {
-			logger.Info("Pod has wrong role, demoting to replica", "pod_name", podName, "current_role", role)
+			isTerminating := isPodTerminating(pod)
+			logger.Info("Pod has wrong role, demoting to replica",
+				"pod_name", podName,
+				"current_role", role,
+				"terminating", isTerminating)
 			if err := node.SetToReplicaRole(ctx); err != nil {
 				logger.Info("Failed to demote pod to replica", "pod_name", podName, "error", err)
 				continue // Skip if cannot demote
 			}
+			logger.Info("Successfully demoted pod to replica",
+				"pod_name", podName,
+				"was_terminating", isTerminating)
 		}
 
 		replicaName := node.GetReplicaName()

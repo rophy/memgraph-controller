@@ -73,3 +73,8 @@ func isPodReady(pod *v1.Pod) bool {
 	}
 	return false
 }
+
+// isPodTerminating checks if a pod has a deletion timestamp set
+func isPodTerminating(pod *v1.Pod) bool {
+	return pod != nil && pod.ObjectMeta.DeletionTimestamp != nil
+}

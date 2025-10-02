@@ -54,7 +54,7 @@ func (m *MockController) ResetAllConnections(ctx context.Context) (int, error) {
 	return 3, nil
 }
 
-func (m *MockController) HandlePreStopHook(ctx context.Context) error {
+func (m *MockController) HandlePreStopHook(ctx context.Context, podName string) error {
 	// Mock implementation - just return success
 	return nil
 }

@@ -707,34 +707,13 @@ func (c *MemgraphController) HandlePreStopHook(ctx context.Context, podName stri
 		c.gatewayServer.SetUpstreamAddress(ctx, "")
 	}
 
-	// Check if the terminating pod is/was a replica - if so, we expect 1 less replica
-	// During rolling restart, if a replica pod is terminating, the prestop hook should
-	// accept having only 1 replica registered instead of 2
-	isTerminatingPodReplica := false
-
-	// Try to determine if the terminating pod is a replica (not the main)
-	if targetMainPod, err := c.getTargetMainNode(ctx); err == nil {
-		// Get the name of the main pod from the target main node
-		targetMainPodName := ""
-		if targetMainPod != nil {
-			targetMainPodName = targetMainPod.GetName()
-		}
-
-		// If the terminating pod is not the main pod, it's a replica
-		if targetMainPodName != "" && targetMainPodName != podName {
-			isTerminatingPodReplica = true
-			logger.Info("HandlePreStopHook: Terminating pod is a replica, expecting 1 less replica",
-				"pod_name", podName, "main_pod", targetMainPodName)
-		}
-	}
-
 	for {
 		select {
 		case <-ctx.Done():
 			logger.Info("HandlePreStopHook: Context done", "pod_name", podName)
 			return ctx.Err()
 		case <-ticker.C:
-			err := c.isHealthyWithContext(ctx, isTerminatingPodReplica)
+			err := c.isHealthy(ctx)
 			if err == nil {
 				logger.Info("HandlePreStopHook: Cluster is healthy", "pod_name", podName)
 				return nil
@@ -746,11 +725,6 @@ func (c *MemgraphController) HandlePreStopHook(ctx context.Context, podName stri
 
 // isHealthy checks if the cluster is healthy with cached status.
 func (c *MemgraphController) isHealthy(ctx context.Context) error {
-	return c.isHealthyWithContext(ctx, false)
-}
-
-// isHealthyWithContext checks if the cluster is healthy, optionally accounting for a terminating replica
-func (c *MemgraphController) isHealthyWithContext(ctx context.Context, hasTerminatingReplica bool) error {
 	targetMainPod, err := c.getTargetMainNode(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to get target main pod: %w", err)
@@ -759,15 +733,8 @@ func (c *MemgraphController) isHealthyWithContext(ctx context.Context, hasTermin
 	if err != nil {
 		return fmt.Errorf("failed to get replicas: %w", err)
 	}
-
-	// During rolling restart, if a replica pod is terminating, we expect 1 less replica
-	expectedReplicas := 2
-	if hasTerminatingReplica {
-		expectedReplicas = 1
-	}
-
-	if len(replicas) != expectedReplicas {
-		return fmt.Errorf("expected %d replicas, got %d", expectedReplicas, len(replicas))
+	if len(replicas) != 2 {
+		return fmt.Errorf("expected 2 replicas, got %d", len(replicas))
 	}
 	for _, replica := range replicas {
 		if !replica.IsHealthy() {
@@ -775,6 +742,7 @@ func (c *MemgraphController) isHealthyWithContext(ctx context.Context, hasTermin
 		}
 	}
 	return nil
+
 }
 
 // handleReadGatewayUpstreamFailure handles upstream failures reported by the read gateway

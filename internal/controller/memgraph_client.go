@@ -37,6 +37,7 @@ type DataInfoStatus struct {
 	Timestamp   int    `json:"ts"`                     // Sequence timestamp
 	IsHealthy   bool   `json:"is_healthy"`             // Computed health status
 	ErrorReason string `json:"error_reason,omitempty"` // Human-readable error description
+	StateChangedAt time.Time `json:"state_changed_at"`   // When this status was first observed
 }
 
 type ReplicasResponse struct {
@@ -316,6 +317,26 @@ func assessReplicationHealth(status string, behind int) (bool, string) {
 		// Unknown status but non-negative lag - treat as degraded
 		return false, fmt.Sprintf("Unknown replication status: %s", status)
 	}
+}
+
+// assessReplicationHealthWithTimeTracking determines if replica is healthy with time-based rules
+// Safety Rule: Async replica in "replicating" status with behind=0 for 20+ seconds = treat as healthy
+func assessReplicationHealthWithTimeTracking(status string, behind int, syncMode string, timeInState time.Duration) (bool, string) {
+	// Apply standard health assessment first
+	isHealthy, reason := assessReplicationHealth(status, behind)
+
+	// If already healthy, return as-is
+	if isHealthy {
+		return isHealthy, reason
+	}
+
+	// Apply 20-second rule for async replicas in "replicating" state
+	if status == "replicating" && behind == 0 && syncMode == "async" && timeInState >= 20*time.Second {
+		return true, fmt.Sprintf("Async replica stable in replicating state (%.0fs, behind=0)", timeInState.Seconds())
+	}
+
+	// Return original assessment
+	return isHealthy, reason
 }
 
 func NewMemgraphClient(config *common.Config) *MemgraphClient {

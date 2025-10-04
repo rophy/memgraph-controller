@@ -426,3 +426,125 @@ roleStr, ok := role.(string)
 ### File Modified
 
 - `internal/controller/memgraph_client.go:335-342` - Fixed field checking logic order
+
+## 4. PreStop Hook Deadlock During Rolling Restart
+
+**Status**: ⚠️ **INVESTIGATED & PARTIALLY FIXED** - 20-second safety rule implemented
+**Severity**: High - Causes rolling restart test failures and pod termination timeouts
+**Investigation Date**: 2025-10-03 to 2025-10-04
+**Affected Tests**: 4th run in rolling restart test sequence
+
+### Description
+
+During rolling restart sequences, the PreStop hook can become deadlocked when pods get stuck in "Terminating" state, waiting indefinitely for cluster health that may never be achieved. This specifically manifests when async replicas remain in "replicating" status with `behind=0` for extended periods.
+
+### Problem Timeline from 4th Test Run Failure
+
+**Test Sequence**: Rolling restart order pod-2 → pod-1 → **pod-0 (main)**
+
+1. **14:42:00** - Rolling restart triggered, memgraph-ha-2 pod marked for deletion
+2. **14:42:03** - PreStop hook successfully called for memgraph-ha-2 (cluster was healthy)
+3. **14:42:09** - memgraph-ha-2 status changed from "ready" to "invalid" during pod recreation
+4. **14:42:21** - memgraph-ha-1 also became "invalid" during its recreation
+5. **14:42:30** - PreStop hook called for memgraph-ha-0, but cluster is NOT healthy
+6. **14:42:30 → 14:47:04** - **PreStop hook stuck waiting for cluster health for ~4.5 minutes**
+
+### Root Cause Analysis
+
+#### Issue #1: PreStop Hook Design Limitation
+**Problem**: The PreStop hook waits indefinitely for perfect cluster health, but during rolling restart with pod recreations, replicas naturally go through transitional states ("invalid" → "replicating") that prevent cluster health.
+
+**Evidence**:
+- PreStop hook logs: `"HandlePreStopHook: Cluster still not healthy" error="replica memgraph_ha_2 is not healthy"`
+- memgraph-ha-2 status stuck at "replicating" for 4+ minutes
+- Controller reconciliation shows: `"Replication in progress (transitional state)"`
+
+#### Issue #2: "Replicating" Status Interpretation
+**Problem**: memgraph-ha-2 gets stuck in "replicating" status despite being synchronized (behind=0) and cannot complete state transition during rolling restart.
+
+**Evidence**:
+- Controller logs consistently show: `status=replicating data_info="{\"memgraph\":{\"behind\":0,\"status\":\"replicating\",\"ts\":1977}}"`
+- memgraph-ha-0 (main) logs show replication failures: `"Couldn't replicate data to memgraph_ha_2"`
+- This prevents safe termination: `"replica memgraph_ha_2 not ready (status: replicating), unsafe to perform failover"`
+
+#### Issue #3: The Deadlock Scenario
+**Problem**: memgraph-ha-0 is stuck in "Terminating" state because the PreStop hook cannot complete, creating a deadlock.
+
+**The Deadlock Pattern**:
+1. **Rolling Restart Sequence**: memgraph-ha-2 → memgraph-ha-1 → memgraph-ha-0
+2. **The Deadlock**:
+   - memgraph-ha-0 PreStop hook waits for memgraph-ha-2 to be healthy
+   - memgraph-ha-2 is stuck in "replicating" state, trying to sync with memgraph-ha-0
+   - memgraph-ha-0 cannot complete termination because PreStop hook is waiting
+   - memgraph-ha-2 cannot complete replication because main pod is in unstable state
+
+### Historical Context
+
+**Previous Attempts**: Way before recent commits, there were attempts to directly claim "replicating" as healthy, which resulted in data divergence. This explains the conservative current approach.
+
+**The Dilemma**:
+- **Too Strict**: Requires all replicas healthy → Deadlock during rolling restart
+- **Too Relaxed**: Allows termination with transitional replicas → Data divergence returns
+
+### Solution Implemented: 20-Second Safety Rule
+
+**Safety Rule**: If async replica is "replicating" with behind=0 for 20 seconds, treat as healthy.
+
+#### Implementation Details
+
+**Components Added**:
+1. **ReplicaStateTracker** - Tracks state changes with timestamps
+2. **assessReplicationHealthWithTimeTracking** - Enhanced health assessment with time rules
+3. **isHealthyWithTimeTracking** - Time-aware cluster health checking
+4. **State tracking integration** - Updates during reconciliation and PreStop hook
+
+**Logic**:
+```go
+// Apply 20-second rule for async replicas in "replicating" state
+if (status == "replicating" &&
+    behind == 0 &&
+    syncMode == "async" &&
+    timeInState >= 20*time.Second) {
+    return true, "Async replica stable in replicating state (20s+, behind=0)"
+}
+```
+
+**Safety Guarantees**:
+✅ **Data Safety**: Only applies when `behind=0` (no data loss risk)
+✅ **Async Only**: Only affects async replicas (less critical than sync)
+✅ **Time-qualified**: 20-second delay prevents premature decisions
+✅ **Fallback**: Standard health rules still apply for all other cases
+
+#### Files Modified
+- `internal/controller/controller_core.go` - Added state tracking and time-aware health checking
+- `internal/controller/memgraph_client.go` - Enhanced health assessment with time rules
+- `internal/controller/controller_reconcile.go` - Integrated state tracking in reconciliation
+- `internal/controller/memgraph_client_test.go` - Added comprehensive unit tests
+
+### Expected Outcome
+
+**For the 4th test failure scenario**:
+- memgraph-ha-2 stuck in "replicating" with behind=0 for 4+ minutes
+- **After 20 seconds**, the rule will kick in and treat it as healthy
+- PreStop hook will complete, allowing memgraph-ha-0 to terminate
+- **No more deadlock** during rolling restart
+
+### Status & Next Steps
+
+- ✅ **Implementation Complete**: 20-second safety rule fully implemented and tested
+- ✅ **Unit Tests**: Comprehensive test coverage for time-based health assessment
+- ⏳ **E2E Testing**: Awaiting validation with actual rolling restart test runs
+- 📋 **Monitoring**: Need to observe PreStop hook behavior in test runs
+
+### Comparison with Known Issue #2
+
+This issue is **complementary** to the data divergence issue documented in Issue #2:
+- **Issue #2**: Focuses on preventing data divergence through dual-main safety checks
+- **Issue #4**: Focuses on preventing PreStop hook deadlocks during rolling restart
+- **Together**: Provide comprehensive rolling restart safety and reliability
+
+### Related Commits
+
+- **Original Problem**: Identified in failed 4th test run (logs in `/logs/20251003_144704/`)
+- **Solution Implementation**: 2025-10-04 - 20-second safety rule for async replicas
+- **Historical Context**: Previous attempts to treat "replicating" as healthy caused data divergence

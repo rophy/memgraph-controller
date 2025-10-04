@@ -22,6 +22,35 @@ import (
 	"memgraph-controller/internal/metrics"
 )
 
+// ReplicaStateTracker tracks the state history of a replica for time-based health assessment
+type ReplicaStateTracker struct {
+	CurrentStatus     string
+	CurrentBehind     int
+	StatusChangedAt   time.Time
+	SyncMode          string
+	LastSeenAt        time.Time
+}
+
+// HasBeenInStateFor returns true if the replica has been in the current state for at least the specified duration
+func (rst *ReplicaStateTracker) HasBeenInStateFor(duration time.Duration) bool {
+	return time.Since(rst.StatusChangedAt) >= duration
+}
+
+// UpdateState updates the tracker with new state, recording when the state changed
+func (rst *ReplicaStateTracker) UpdateState(status string, behind int, syncMode string) {
+	now := time.Now()
+
+	// If status or behind changed, record the change time
+	if rst.CurrentStatus != status || rst.CurrentBehind != behind {
+		rst.StatusChangedAt = now
+	}
+
+	rst.CurrentStatus = status
+	rst.CurrentBehind = behind
+	rst.SyncMode = syncMode
+	rst.LastSeenAt = now
+}
+
 type MemgraphController struct {
 	ctx               context.Context // Base context for the controller
 	clientset         kubernetes.Interface
@@ -42,6 +71,10 @@ type MemgraphController struct {
 	// Event-driven reconciliation
 	reconcileQueue      *ReconcileQueue
 	failoverCheckQueue  *FailoverCheckQueue
+
+	// Replica state tracking for time-based health assessment
+	replicaStateHistory map[string]*ReplicaStateTracker
+	stateHistoryMutex   sync.RWMutex
 	failoverCheckNeeded atomic.Bool
 
 	// Shared mutex for reconciliation and failover operations
@@ -85,6 +118,7 @@ func NewMemgraphController(ctx context.Context, clientset kubernetes.Interface, 
 		config:              config,
 		memgraphClient:      memgraphClient, // Singleton instance
 		failoverCheckNeeded: atomic.Bool{},
+		replicaStateHistory: make(map[string]*ReplicaStateTracker),
 	}
 
 	controller.failoverCheckNeeded.Store(false)
@@ -713,7 +747,8 @@ func (c *MemgraphController) HandlePreStopHook(ctx context.Context, podName stri
 			logger.Info("HandlePreStopHook: Context done", "pod_name", podName)
 			return ctx.Err()
 		case <-ticker.C:
-			err := c.isHealthy(ctx)
+			// Use time-aware health checking with 20-second rule for "replicating" async replicas
+			err := c.isHealthyWithTimeTracking(ctx)
 			if err == nil {
 				logger.Info("HandlePreStopHook: Cluster is healthy", "pod_name", podName)
 				return nil
@@ -721,6 +756,86 @@ func (c *MemgraphController) HandlePreStopHook(ctx context.Context, podName stri
 			logger.Info("HandlePreStopHook: Cluster still not healthy", "error", err, "pod_name", podName)
 		}
 	}
+}
+
+// updateReplicaStateTracking updates the state tracking for all replicas
+func (c *MemgraphController) updateReplicaStateTracking(replicas []ReplicaInfo) {
+	c.stateHistoryMutex.Lock()
+	defer c.stateHistoryMutex.Unlock()
+
+	// Track current replica names to clean up old ones
+	currentReplicas := make(map[string]bool)
+
+	for _, replica := range replicas {
+		currentReplicas[replica.Name] = true
+
+		// Get or create tracker for this replica
+		tracker, exists := c.replicaStateHistory[replica.Name]
+		if !exists {
+			tracker = &ReplicaStateTracker{}
+			c.replicaStateHistory[replica.Name] = tracker
+		}
+
+		// Update state
+		if replica.ParsedDataInfo != nil {
+			tracker.UpdateState(replica.ParsedDataInfo.Status, replica.ParsedDataInfo.Behind, replica.SyncMode)
+		}
+	}
+
+	// Clean up trackers for replicas that no longer exist
+	for replicaName := range c.replicaStateHistory {
+		if !currentReplicas[replicaName] {
+			delete(c.replicaStateHistory, replicaName)
+		}
+	}
+}
+
+// isHealthyWithTimeTracking checks if the cluster is healthy using time-based rules
+func (c *MemgraphController) isHealthyWithTimeTracking(ctx context.Context) error {
+	targetMainPod, err := c.getTargetMainNode(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get target main pod: %w", err)
+	}
+	replicas, err := targetMainPod.GetReplicas(ctx, false)
+	if err != nil {
+		return fmt.Errorf("failed to get replicas: %w", err)
+	}
+
+	// Update state tracking
+	c.updateReplicaStateTracking(replicas)
+
+	if len(replicas) != 2 {
+		return fmt.Errorf("expected 2 replicas, got %d", len(replicas))
+	}
+
+	c.stateHistoryMutex.RLock()
+	defer c.stateHistoryMutex.RUnlock()
+
+	for _, replica := range replicas {
+		if replica.ParsedDataInfo == nil {
+			return fmt.Errorf("replica %s has no health information", replica.Name)
+		}
+
+		// Get time tracking information
+		tracker, exists := c.replicaStateHistory[replica.Name]
+		var timeInState time.Duration
+		if exists {
+			timeInState = tracker.LastSeenAt.Sub(tracker.StatusChangedAt)
+		}
+
+		// Use time-aware health assessment
+		isHealthy, reason := assessReplicationHealthWithTimeTracking(
+			replica.ParsedDataInfo.Status,
+			replica.ParsedDataInfo.Behind,
+			replica.SyncMode,
+			timeInState,
+		)
+
+		if !isHealthy {
+			return fmt.Errorf("replica %s is not healthy: %s", replica.Name, reason)
+		}
+	}
+	return nil
 }
 
 // isHealthy checks if the cluster is healthy with cached status.

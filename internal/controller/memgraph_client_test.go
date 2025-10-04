@@ -430,3 +430,75 @@ func TestReplicaInfo_GetRecoveryAction_Variations(t *testing.T) {
 		})
 	}
 }
+
+func TestAssessReplicationHealthWithTimeTracking(t *testing.T) {
+	tests := []struct {
+		name          string
+		status        string
+		behind        int
+		syncMode      string
+		timeInState   time.Duration
+		expectHealthy bool
+		expectReason  string
+	}{
+		{
+			name:          "async replicating with behind=0 for 20+ seconds - should be healthy",
+			status:        "replicating",
+			behind:        0,
+			syncMode:      "async",
+			timeInState:   25 * time.Second,
+			expectHealthy: true,
+			expectReason:  "Async replica stable in replicating state (25s, behind=0)",
+		},
+		{
+			name:          "async replicating with behind=0 for 15 seconds - should not be healthy",
+			status:        "replicating",
+			behind:        0,
+			syncMode:      "async",
+			timeInState:   15 * time.Second,
+			expectHealthy: false,
+			expectReason:  "Replication in progress (transitional state)",
+		},
+		{
+			name:          "sync replicating with behind=0 for 20+ seconds - should not be healthy",
+			status:        "replicating",
+			behind:        0,
+			syncMode:      "strict_sync",
+			timeInState:   25 * time.Second,
+			expectHealthy: false,
+			expectReason:  "Replication in progress (transitional state)",
+		},
+		{
+			name:          "async replicating with behind>0 for 20+ seconds - should not be healthy",
+			status:        "replicating",
+			behind:        5,
+			syncMode:      "async",
+			timeInState:   25 * time.Second,
+			expectHealthy: false,
+			expectReason:  "Replication in progress (transitional state)",
+		},
+		{
+			name:          "ready status should always be healthy regardless of time",
+			status:        "ready",
+			behind:        0,
+			syncMode:      "async",
+			timeInState:   5 * time.Second,
+			expectHealthy: true,
+			expectReason:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			healthy, reason := assessReplicationHealthWithTimeTracking(tt.status, tt.behind, tt.syncMode, tt.timeInState)
+
+			if healthy != tt.expectHealthy {
+				t.Errorf("Expected healthy=%v, got %v", tt.expectHealthy, healthy)
+			}
+
+			if reason != tt.expectReason {
+				t.Errorf("Expected reason=%q, got %q", tt.expectReason, reason)
+			}
+		})
+	}
+}

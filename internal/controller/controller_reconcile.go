@@ -184,6 +184,9 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 	}
 	logger.Info("Main pod has registered replicas", "pod", targetMainNode.GetName(), "replica_count", len(replicas))
 
+	// Update replica state tracking for time-based health assessment
+	c.updateReplicaStateTracking(replicas)
+
 	// Create a map of replica names for easy lookup
 	replicaMap := make(map[string]ReplicaInfo)
 	for _, replica := range replicas {

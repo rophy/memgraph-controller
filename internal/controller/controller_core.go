@@ -820,7 +820,7 @@ func (c *MemgraphController) isHealthyWithTimeTracking(ctx context.Context) erro
 		tracker, exists := c.replicaStateHistory[replica.Name]
 		var timeInState time.Duration
 		if exists {
-			timeInState = tracker.LastSeenAt.Sub(tracker.StatusChangedAt)
+			timeInState = time.Since(tracker.StatusChangedAt)
 		}
 
 		// Use time-aware health assessment

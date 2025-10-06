@@ -65,14 +65,19 @@ kubectl exec -n memgraph <test-client-pod> -- sh -c "curl -s http://memgraph-con
 **For debugging replication issues, always query Memgraph directly using mgconsole in the pods:**
 
 ```bash
+# Find out configured credentials of memgraph.
+$ kubectl exec -c memgraph memgraph-ha-0 -- bash -c "env | grep -e 'MEMGRAPH_[USER|PASSWORD]'"
+MEMGRAPH_PASSWORD=***
+MEMGRAPH_USER=mguser
+
 # Check replication role of a pod
-kubectl exec <pod-name> -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=memgraph'
+$ kubectl exec -c memgraph <pod-name> -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=mguser --password=***'
 
 # Check registered replicas from main pod
-kubectl exec <main-pod-name> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=memgraph'
+$ kubectl exec -c memgraph <main-pod-name> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=mguser --password=***'
 
 # Check storage info
-kubectl exec <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --output-format csv --username=memgraph'
+$ kubectl exec -c memgraph <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --output-format csv --username=mguser --password=***'
 ```
 
 **Do NOT rely on the memgraph-controller status API for debugging** - always verify the actual Memgraph state directly using the above commands.

@@ -272,6 +272,15 @@ func (c *MemgraphController) performReconciliationActions(ctx context.Context) e
 			continue // Already registered
 		}
 
+		// Skip replica registration for terminating pods to prevent prestop hook deadlocks
+		// During pod termination, DNS resolution fails causing registration failures
+		if isPodTerminating(pod) {
+			logger.Info("Skipping replica registration for terminating pod",
+				"pod_name", podName,
+				"replica_name", replicaName)
+			continue
+		}
+
 		// Missing replication - try to register
 		syncReplicaNode, err := c.getTargetSyncReplicaNode(ctx)
 		if err != nil {

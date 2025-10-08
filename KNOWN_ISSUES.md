@@ -365,9 +365,132 @@ This is a fundamental protocol constraint of Memgraph's replication system:
 
 - **Issue #1**: Previous incorrect analysis about persistent storage (resolved through experimental validation)
 - **Issue #3**: Controller startup failure after refactoring - Fixed
+- **Issue #4**: PreStop Hook Deadlock due to Kubernetes DNS behavior during termination - Confirmed
 - **WARNING**: Rolling restart data divergence is NOT resolved despite claims in previous updates
 
-## 3. Controller Startup Failure After Refactoring - Fixed
+## 3. PreStop Hook Deadlock - Kubernetes DNS Behavior During Termination
+
+**Status**: CONFIRMED - Root Cause Identified
+**Severity**: Critical - Affects rolling restart reliability
+**Investigation Date**: 2025-10-06
+**Root Cause**: Kubernetes DNS behavior, not memgraph or controller issue
+
+### Description
+
+During rolling restarts, pods get stuck in "Terminating" state for extended periods (4-7+ minutes) due to prestop hook deadlocks. The issue was identified as **fundamental Kubernetes behavior** where pod-specific FQDNs become unavailable during pod termination.
+
+### Root Cause Analysis
+
+**Kubernetes DNS Behavior**:
+- **Pod-specific FQDNs** (e.g., `memgraph-ha-0.memgraph-ha.memgraph.svc.cluster.local`) are **removed from DNS** when `deletionTimestamp` is set
+- **DNS resolution fails** with `NXDOMAIN` for terminating pods
+- This happens **before** the pod actually terminates to prevent routing to shutting down pods
+- **Both ports 7687 and 10000** become unreachable via FQDN during termination
+
+### PreStop Hook Design Flaw
+
+**The Fundamental Problem**:
+1. **PreStop hook waits** for cluster health (replica registration)
+2. **Replica registration requires** FQDN-based communication on port 10000
+3. **DNS resolution fails** for terminating pods
+4. **Deadlock occurs**: Controller waits for health that can never be achieved
+
+### Evidence from Investigation (2025-10-06)
+
+**Test Results**:
+- **Test Run 1**: ✅ PASSED (20-second delays resolved naturally)
+- **Test Run 2**: ❌ FAILED after 180s timeout (`Cluster failed to converge within 180s`)
+
+**Observed Deadlock Timeline**:
+- **Duration**: 4-7+ minutes of continuous prestop hook activity
+- **Error Pattern**: `HandlePreStopHook: Cluster still not healthy`
+- **Specific Errors**:
+  - `"replica memgraph_ha_X is not healthy"` (registration failures)
+  - `"expected 2 replicas, got 1"` (count mismatches)
+  - `"Couldn't register replica memgraph_ha_X. Error: 5"` (RPC failures)
+
+**DNS Test Results**:
+```bash
+# DNS resolution for terminating pod fails
+$ kubectl exec test-client -- nslookup memgraph-ha-0.memgraph-ha.memgraph.svc.cluster.local
+** server can't find memgraph-ha-0.memgraph-ha.memgraph.svc.cluster.local: NXDOMAIN
+```
+
+**Controller Logs During Deadlock**:
+```
+time=2025-10-06T06:41:02.178Z level=INFO msg="HandlePreStopHook: Cluster still not healthy" error="expected 2 replicas, got 1" pod_name=memgraph-ha-1
+time=2025-10-06T06:44:00.248Z level=WARN msg="Failed to register replication" replica_name=memgraph_ha_1 error="Neo4jError: Memgraph.ClientError.MemgraphError.MemgraphError (Couldn't register replica memgraph_ha_1. Error: 5)"
+```
+
+### Impact Assessment
+
+**Test Reliability**:
+- ~50% failure rate for rolling restart tests
+- Test failures after 180-second timeout
+- Pods remain stuck in "Terminating" state for 7+ minutes
+
+**Production Risk**:
+- Rolling updates would experience extended downtime
+- Prestop hook timeout: 1800s (30 minutes) before force termination
+- Cluster availability impact during updates
+
+### 20-Second Rule Ineffectiveness
+
+**ISSUE_14627d5.md claims**: "20-second safety rule resolves deadlocks"
+**Investigation reality**: Rule is inconsistent and ineffective for severe cases
+
+**Evidence**:
+- Some deadlocks resolve in ~20 seconds (working cases)
+- Other deadlocks persist for 4-7+ minutes (failing cases)
+- No clear pattern for when the rule works vs fails
+
+### Proposed Solutions
+
+**Option 1: Skip Terminating Pods**
+```go
+if pod.DeletionTimestamp != nil {
+    logger.Info("Skipping replica registration for terminating pod")
+    continue  // Don't try to register terminating pods
+}
+```
+
+**Option 2: Accept Degraded State During Rolling Restart**
+```go
+if isRollingRestart && replicaCount < expected {
+    logger.Warn("Allowing prestop progression with degraded cluster during rolling restart")
+    return true // Allow termination
+}
+```
+
+**Option 3: Prestop Hook Timeout**
+```go
+if deadlockDuration > 2*time.Minute {
+    logger.Warn("PreStop hook timeout - forcing termination")
+    return true
+}
+```
+
+### Key Insight: Not a Bug, It's Kubernetes
+
+**This is NOT a bug** in memgraph or memgraph-controller. It's a **fundamental architectural incompatibility** between:
+- **Kubernetes DNS behavior**: Pod FQDNs removed during termination
+- **Memgraph replication**: Requires FQDN-based communication
+- **PreStop hook design**: Waits for cluster health that can't be achieved
+
+### Recommendations
+
+1. **Immediate**: Implement terminating pod detection to skip registration attempts
+2. **Short-term**: Add prestop hook timeout with forced progression
+3. **Long-term**: Redesign prestop approach to work with Kubernetes termination semantics
+4. **Testing**: Update rolling restart tests to expect and handle these scenarios
+
+### Files Involved
+
+- `internal/httpapi/server.go` - PreStop hook API endpoint
+- `internal/controller/controller_reconcile.go` - Replica registration logic
+- `internal/controller/controller_core.go` - PreStop hook logic and cluster health checks
+
+## 4. Controller Startup Failure After Refactoring - Fixed
 
 **Status**: Fixed
 **Severity**: High - Controller cannot start

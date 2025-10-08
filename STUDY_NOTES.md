@@ -21,6 +21,12 @@ The `--username=memgraph` is not a real username but is used to avoid Memgraph s
 [memgraph_log] [warning] The client didn't supply the credentials field! Trying with ""...
 ```
 
+In case mgconsole command failed with invalid authentication, find the credentials with:
+
+```bash
+kubectl exec -c memgraph <pod-name> -- bash -c "env | grep -e 'MEMGRAPH_[USER|PASSWORD]'"
+```
+
 ## Replication
 
 Reference: https://memgraph.com/docs/clustering/replication

@@ -21,8 +21,8 @@ make test
 3. Wait for the memgraph-ha cluster to stablize. Docker build takes around 120s, other parts around 30s.
    Can check memgraph-controller pod logs to assist.
 4. Run `make test-e2e` as a background job using run_in_background parameter (E2E tests take >2 minutes to complete).
-5. For single test execution: `make test-e2e ARGS="test_file.py"` or `make test-e2e ARGS="test_file.py::test_function"`
-6. If asked to run e2e tests repeatly, use `tests/scripts/repeat-e2e-tests.sh`
+5. For single test execution: `make test-e2e ARGS="tests/e2e/test_file.py"` or `make test-e2e ARGS="tests/e2e/test_file.py::test_function"`
+6. If asked to run e2e tests repeatly, use `tests/scripts/repeat-e2e-tests.sh
 
 
 ## Standard Development Process
@@ -71,13 +71,13 @@ MEMGRAPH_PASSWORD=***
 MEMGRAPH_USER=mguser
 
 # Check replication role of a pod
-$ kubectl exec -c memgraph <pod-name> -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=mguser --password=***'
+$ kubectl exec -c memgraph <pod-name> -- bash -c 'echo "SHOW REPLICATION ROLE;" | mgconsole --output-format csv --username=$MEMGRAPH_USERNAME --password=$MEMGRAPH_PASSWORD'
 
 # Check registered replicas from main pod
-$ kubectl exec -c memgraph <main-pod-name> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=mguser --password=***'
+$ kubectl exec -c memgraph <main-pod-name> -- bash -c 'echo "SHOW REPLICAS;" | mgconsole --output-format csv --username=$MEMGRAPH_USERNAME --password=$MEMGRAPH_PASSWORD'
 
 # Check storage info
-$ kubectl exec -c memgraph <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --output-format csv --username=mguser --password=***'
+$ kubectl exec -c memgraph <pod-name> -- bash -c 'echo "SHOW STORAGE INFO;" | mgconsole --output-format csv --username=$MEMGRAPH_USERNAME --password=$MEMGRAPH_PASSWORD'
 ```
 
 **Do NOT rely on the memgraph-controller status API for debugging** - always verify the actual Memgraph state directly using the above commands.

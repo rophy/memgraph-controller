@@ -3,6 +3,7 @@ package controller
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"sort"
 	"sync"
@@ -718,12 +719,14 @@ func (c *MemgraphController) HandlePreStopHook(ctx context.Context, podName stri
 				logger.Info("HandlePreStopHook: Cluster is healthy", "pod_name", podName)
 				return nil
 			}
-			logger.Info("HandlePreStopHook: Cluster still not healthy", "error", err, "pod_name", podName)
+			// Log detailed cluster status for better debugging
+			c.logDetailedClusterStatus(ctx, logger, podName, err)
 		}
 	}
 }
 
 // isHealthy checks if the cluster is healthy with cached status.
+// Enhanced to treat 'replicating' as healthy when timestamps match between replicas.
 func (c *MemgraphController) isHealthy(ctx context.Context) error {
 	targetMainPod, err := c.getTargetMainNode(ctx)
 	if err != nil {
@@ -736,13 +739,91 @@ func (c *MemgraphController) isHealthy(ctx context.Context) error {
 	if len(replicas) != 2 {
 		return fmt.Errorf("expected 2 replicas, got %d", len(replicas))
 	}
+
+	// Enhanced health check with timestamp-based replicating status handling
+	var syncReplica, asyncReplica *ReplicaInfo
+
+	// Identify sync and async replicas
 	for _, replica := range replicas {
-		if !replica.IsHealthy() {
-			return fmt.Errorf("replica %s is not healthy", replica.Name)
+		if replica.SyncMode == "strict_sync" {
+			syncReplica = &replica
+		} else if replica.SyncMode == "async" {
+			asyncReplica = &replica
 		}
 	}
-	return nil
 
+	if syncReplica == nil || asyncReplica == nil {
+		return fmt.Errorf("could not identify sync and async replicas")
+	}
+
+	// Check sync replica health (must be ready)
+	if !syncReplica.IsHealthy() {
+		if syncReplica.ParsedDataInfo != nil && syncReplica.ParsedDataInfo.Status != "ready" {
+			return fmt.Errorf("sync replica %s is not ready (status: %s, behind: %d, ts: %d)",
+				syncReplica.Name, syncReplica.ParsedDataInfo.Status, syncReplica.ParsedDataInfo.Behind, syncReplica.ParsedDataInfo.Timestamp)
+		}
+		return fmt.Errorf("sync replica %s is not healthy", syncReplica.Name)
+	}
+
+	// Check async replica health with enhanced replicating logic
+	if !asyncReplica.IsHealthy() {
+		// If async replica is in 'replicating' state, check if timestamps match
+		if asyncReplica.ParsedDataInfo != nil &&
+		   asyncReplica.ParsedDataInfo.Status == "replicating" &&
+		   syncReplica.ParsedDataInfo != nil &&
+		   syncReplica.ParsedDataInfo.Status == "ready" &&
+		   asyncReplica.ParsedDataInfo.Timestamp == syncReplica.ParsedDataInfo.Timestamp &&
+		   asyncReplica.ParsedDataInfo.Behind >= 0 {
+			// Treat as healthy: async replica is replicating but synchronized (same timestamp)
+			return nil
+		}
+		if asyncReplica.ParsedDataInfo != nil {
+			return fmt.Errorf("async replica %s is not healthy (status: %s, behind: %d, ts: %d)",
+				asyncReplica.Name, asyncReplica.ParsedDataInfo.Status, asyncReplica.ParsedDataInfo.Behind, asyncReplica.ParsedDataInfo.Timestamp)
+		}
+		return fmt.Errorf("async replica %s is not healthy (no replication data available)", asyncReplica.Name)
+	}
+
+	return nil
+}
+
+// logDetailedClusterStatus logs comprehensive cluster replication status for prestop hook debugging
+func (c *MemgraphController) logDetailedClusterStatus(ctx context.Context, logger *slog.Logger, podName string, healthErr error) {
+	logger.Info("HandlePreStopHook: Cluster still not healthy", "error", healthErr, "pod_name", podName)
+
+	// Try to get detailed replication status for enhanced debugging
+	targetMainPod, err := c.getTargetMainNode(ctx)
+	if err != nil {
+		logger.Warn("HandlePreStopHook: Could not get main pod for detailed status", "error", err, "pod_name", podName)
+		return
+	}
+
+	replicas, err := targetMainPod.GetReplicas(ctx, false)
+	if err != nil {
+		logger.Warn("HandlePreStopHook: Could not get replicas for detailed status", "error", err, "pod_name", podName)
+		return
+	}
+
+	// Log detailed status for each replica
+	for _, replica := range replicas {
+		if replica.ParsedDataInfo != nil {
+			logger.Info("HandlePreStopHook: Replica status details",
+				"pod_name", podName,
+				"replica", replica.Name,
+				"sync_mode", replica.SyncMode,
+				"status", replica.ParsedDataInfo.Status,
+				"behind", replica.ParsedDataInfo.Behind,
+				"ts", replica.ParsedDataInfo.Timestamp,
+				"is_healthy", replica.ParsedDataInfo.IsHealthy,
+				"error_reason", replica.ParsedDataInfo.ErrorReason)
+		} else {
+			logger.Warn("HandlePreStopHook: Replica missing data_info",
+				"pod_name", podName,
+				"replica", replica.Name,
+				"sync_mode", replica.SyncMode,
+				"raw_data_info", replica.DataInfo)
+		}
+	}
 }
 
 // handleReadGatewayUpstreamFailure handles upstream failures reported by the read gateway

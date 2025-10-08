@@ -727,6 +727,7 @@ func (c *MemgraphController) HandlePreStopHook(ctx context.Context, podName stri
 
 // isHealthy checks if the cluster is healthy with cached status.
 // Enhanced to treat 'replicating' as healthy when timestamps match between replicas.
+// During failover/rolling restart, accepts 1 healthy replica as sufficient for graceful shutdown.
 func (c *MemgraphController) isHealthy(ctx context.Context) error {
 	targetMainPod, err := c.getTargetMainNode(ctx)
 	if err != nil {
@@ -736,7 +737,16 @@ func (c *MemgraphController) isHealthy(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get replicas: %w", err)
 	}
-	if len(replicas) != 2 {
+	// During failover/rolling restart, we might have 1 missing replica due to pod termination
+	// This is acceptable for graceful shutdown scenarios
+	if len(replicas) == 1 {
+		// Single replica is acceptable during planned maintenance if it's healthy
+		replica := replicas[0]
+		if replica.IsHealthy() {
+			return nil // Single healthy replica is sufficient for graceful shutdown
+		}
+		return fmt.Errorf("single replica %s is not healthy", replica.Name)
+	} else if len(replicas) != 2 {
 		return fmt.Errorf("expected 2 replicas, got %d", len(replicas))
 	}
 

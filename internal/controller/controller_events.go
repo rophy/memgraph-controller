@@ -177,8 +177,10 @@ func (c *MemgraphController) onPodDelete(obj interface{}) {
 	logger.Debug("onPodDelete", "pod_name", pod.Name, "current_main", currentMain, "target_main_index", targetMainIndex)
 
 	if currentMain != "" && pod.Name == currentMain {
-		logger.Warn("🚨 onPodDelete: main pod deleted, triggering failover check", "pod_name", pod.Name)
-		c.enqueueFailoverCheckEvent(ctx, "pod-delete", "main-pod-deleted", pod.Name)
+		logger.Info("Main pod deletion detected - NOT triggering failover (prestop hook will manage transition)",
+			"pod_name", pod.Name)
+		// Don't trigger failover - prestop hook manages planned shutdown
+		// Failover only for unplanned failures via onPodUpdate
 	} else {
 		// Check if the deleted pod was the read gateway upstream
 		c.handleReplicaDeleted(ctx, pod)

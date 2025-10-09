@@ -417,11 +417,21 @@ func (c *MemgraphController) getHealthyRole(ctx context.Context, podName string)
 		logger.Warn("getHealthyRole: pod %s exists but has no IP", "pod_name", podName)
 		return "", false
 	}
-	if !isPodReady(pod) {
-		logger.Warn("getHealthyRole: pod %s is not ready", "pod_name", podName)
-		return "", false
+
+	// Use HealthProber status instead of Kubernetes readiness for failover decisions
+	// This avoids false positives during planned operations (rolling restarts, prestop hooks)
+	if c.healthProber != nil {
+		healthy, consecutiveFailures := c.healthProber.GetHealthStatus()
+		if !healthy {
+			logger.Warn("getHealthyRole: HealthProber reports pod unhealthy",
+				"pod_name", podName,
+				"consecutive_failures", consecutiveFailures,
+				"failure_threshold", c.healthProber.config.FailureThreshold)
+			return "", false
+		}
 	}
-	// Pod is ready in Kubernetes, now check if Memgraph is functioning as main
+
+	// Check if Memgraph is functioning and get its role
 	node, exists := c.cluster.MemgraphNodes[podName]
 	if !exists {
 		logger.Warn("getHealthyRole: pod %s is not in MemgraphNodes map", "pod_name", podName)

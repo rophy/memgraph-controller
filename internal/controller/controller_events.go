@@ -131,8 +131,15 @@ func (c *MemgraphController) onPodUpdate(oldObj, newObj interface{}) {
 	if currentMain == newPod.Name {
 		// This is the current main pod - check for immediate health issues
 		if isPodBecomeUnhealthy(ctx, oldPod, newPod) {
-			logger.Info("onPodUpdate: main pod became unhealthy, triggering failover check", "pod_name", newPod.Name)
-			c.enqueueFailoverCheckEvent(ctx, "pod-update", "main-pod-unhealthy", newPod.Name)
+			// Check if pod became unhealthy due to deletion timestamp (planned shutdown)
+			isDeletionTimestampAdded := oldPod.ObjectMeta.DeletionTimestamp == nil && newPod.ObjectMeta.DeletionTimestamp != nil
+			if isDeletionTimestampAdded {
+				logger.Info("onPodUpdate: main pod marked for deletion - NOT triggering failover (prestop hook will manage transition)", "pod_name", newPod.Name)
+				// Don't trigger failover for planned shutdown - prestop hook manages transition
+			} else {
+				logger.Info("onPodUpdate: main pod became unhealthy, triggering failover check", "pod_name", newPod.Name)
+				c.enqueueFailoverCheckEvent(ctx, "pod-update", "main-pod-unhealthy", newPod.Name)
+			}
 		}
 	} else {
 		// This is not the main pod - check if it's a replica affecting read gateway

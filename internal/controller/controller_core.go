@@ -728,6 +728,7 @@ func (c *MemgraphController) HandlePreStopHook(ctx context.Context, podName stri
 // isHealthy checks if the cluster is healthy with cached status.
 // Enhanced to treat 'replicating' as healthy when timestamps match between replicas.
 // During failover/rolling restart, accepts 1 healthy replica as sufficient for graceful shutdown.
+// Skips unhealable replica states (diverged, malformed, empty data_info) to prevent prestop deadlock.
 func (c *MemgraphController) isHealthy(ctx context.Context) error {
 	targetMainPod, err := c.getTargetMainNode(ctx)
 	if err != nil {
@@ -737,61 +738,76 @@ func (c *MemgraphController) isHealthy(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to get replicas: %w", err)
 	}
-	// During failover/rolling restart, we might have 1 missing replica due to pod termination
-	// This is acceptable for graceful shutdown scenarios
-	if len(replicas) == 1 {
-		// Single replica is acceptable during planned maintenance if it's healthy
-		replica := replicas[0]
-		if replica.IsHealthy() {
-			return nil // Single healthy replica is sufficient for graceful shutdown
-		}
-		return fmt.Errorf("single replica %s is not healthy", replica.Name)
-	} else if len(replicas) != 2 {
-		return fmt.Errorf("expected 2 replicas, got %d", len(replicas))
-	}
 
-	// Enhanced health check with timestamp-based replicating status handling
-	var syncReplica, asyncReplica *ReplicaInfo
+	// Filter out unhealable replicas that can never recover without manual intervention
+	var healthyReplicas []ReplicaInfo
+	var unhealableReplicas []string
 
-	// Identify sync and async replicas
 	for _, replica := range replicas {
-		if replica.SyncMode == "strict_sync" {
-			syncReplica = &replica
-		} else if replica.SyncMode == "async" {
-			asyncReplica = &replica
+		// Skip unhealable states: diverged, malformed, or empty data_info
+		if replica.ParsedDataInfo != nil {
+			status := replica.ParsedDataInfo.Status
+			// Unhealable states that require manual intervention (WAL cleanup, DROP REPLICA, etc)
+			if status == "diverged" || status == "malformed" || status == "invalid" {
+				unhealableReplicas = append(unhealableReplicas,
+					fmt.Sprintf("%s(%s)", replica.Name, status))
+				continue
+			}
+		} else {
+			// Empty data_info "{}" - failed registration, cannot heal automatically
+			unhealableReplicas = append(unhealableReplicas,
+				fmt.Sprintf("%s(empty_data_info)", replica.Name))
+			continue
 		}
+
+		healthyReplicas = append(healthyReplicas, replica)
 	}
 
-	if syncReplica == nil || asyncReplica == nil {
-		return fmt.Errorf("could not identify sync and async replicas")
+	// If no healable replicas, consider cluster healthy for prestop (manual intervention needed anyway)
+	if len(healthyReplicas) == 0 {
+		if len(unhealableReplicas) > 0 {
+			// Log warning but allow prestop to continue - these require manual fix
+			logger := common.GetLoggerFromContext(ctx)
+			logger.Warn("PreStopHook: All replicas in unhealable state, allowing prestop to proceed",
+				"unhealable_replicas", unhealableReplicas)
+		}
+		return nil
 	}
 
-	// Check sync replica health (must be ready)
-	if !syncReplica.IsHealthy() {
-		if syncReplica.ParsedDataInfo != nil && syncReplica.ParsedDataInfo.Status != "ready" {
-			return fmt.Errorf("sync replica %s is not ready (status: %s, behind: %d, ts: %d)",
-				syncReplica.Name, syncReplica.ParsedDataInfo.Status, syncReplica.ParsedDataInfo.Behind, syncReplica.ParsedDataInfo.Timestamp)
-		}
-		return fmt.Errorf("sync replica %s is not healthy", syncReplica.Name)
-	}
+	// Check health of the remaining healable replicas
+	for _, replica := range healthyReplicas {
+		if !replica.IsHealthy() {
+			// Special case: async replica in 'replicating' state with matching timestamp
+			if replica.SyncMode == "async" &&
+			   replica.ParsedDataInfo != nil &&
+			   replica.ParsedDataInfo.Status == "replicating" &&
+			   replica.ParsedDataInfo.Behind >= 0 {
+				// Check if there's a healthy sync replica with matching timestamp
+				hasMatchingTimestamp := false
+				for _, otherReplica := range healthyReplicas {
+					if otherReplica.SyncMode == "strict_sync" &&
+					   otherReplica.IsHealthy() &&
+					   otherReplica.ParsedDataInfo != nil &&
+					   otherReplica.ParsedDataInfo.Timestamp == replica.ParsedDataInfo.Timestamp {
+						// Async is replicating but synchronized (same timestamp)
+						hasMatchingTimestamp = true
+						break
+					}
+				}
+				// Skip error if timestamps match - this is acceptable
+				if hasMatchingTimestamp {
+					continue
+				}
+			}
 
-	// Check async replica health with enhanced replicating logic
-	if !asyncReplica.IsHealthy() {
-		// If async replica is in 'replicating' state, check if timestamps match
-		if asyncReplica.ParsedDataInfo != nil &&
-		   asyncReplica.ParsedDataInfo.Status == "replicating" &&
-		   syncReplica.ParsedDataInfo != nil &&
-		   syncReplica.ParsedDataInfo.Status == "ready" &&
-		   asyncReplica.ParsedDataInfo.Timestamp == syncReplica.ParsedDataInfo.Timestamp &&
-		   asyncReplica.ParsedDataInfo.Behind >= 0 {
-			// Treat as healthy: async replica is replicating but synchronized (same timestamp)
-			return nil
+			// Replica is not healthy and not in acceptable replicating state
+			if replica.ParsedDataInfo != nil {
+				return fmt.Errorf("replica %s is not healthy (status: %s, behind: %d, ts: %d)",
+					replica.Name, replica.ParsedDataInfo.Status,
+					replica.ParsedDataInfo.Behind, replica.ParsedDataInfo.Timestamp)
+			}
+			return fmt.Errorf("replica %s is not healthy", replica.Name)
 		}
-		if asyncReplica.ParsedDataInfo != nil {
-			return fmt.Errorf("async replica %s is not healthy (status: %s, behind: %d, ts: %d)",
-				asyncReplica.Name, asyncReplica.ParsedDataInfo.Status, asyncReplica.ParsedDataInfo.Behind, asyncReplica.ParsedDataInfo.Timestamp)
-		}
-		return fmt.Errorf("async replica %s is not healthy (no replication data available)", asyncReplica.Name)
 	}
 
 	return nil

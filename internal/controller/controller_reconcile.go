@@ -84,16 +84,6 @@ func (c *MemgraphController) Run(ctx context.Context) error {
 	}
 }
 
-// shouldSkipForFailover checks if the reconciliation should be skipped due to failover check needed
-func (c *MemgraphController) shouldSkipForFailover(ctx context.Context) bool {
-	logger := common.GetLoggerFromContext(ctx)
-	if c.failoverCheckNeeded.Load() {
-		logger.Info("Failover check needed, skipping reconciliation")
-		return true
-	}
-	return false
-}
-
 func (c *MemgraphController) performReconciliationActions(ctx context.Context) error {
 	logger := common.GetLoggerFromContext(ctx)
 	start := time.Now()

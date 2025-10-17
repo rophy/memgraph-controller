@@ -747,12 +747,27 @@ func (c *MemgraphController) isHealthy(ctx context.Context) error {
 		// Skip unhealable states: diverged, malformed, or empty data_info
 		if replica.ParsedDataInfo != nil {
 			status := replica.ParsedDataInfo.Status
-			// Unhealable states that require manual intervention (WAL cleanup, DROP REPLICA, etc)
-			if status == "diverged" || status == "malformed" || status == "invalid" {
+			// Only truly unhealable states that require manual intervention
+			if status == "diverged" || status == "malformed" {
 				unhealableReplicas = append(unhealableReplicas,
 					fmt.Sprintf("%s(%s)", replica.Name, status))
 				continue
 			}
+
+			// Special case: "invalid" with behind=0 indicates stuck replication
+			// This is rare but can happen - treat as healthy to prevent prestop deadlock
+			if status == "invalid" && replica.ParsedDataInfo.Behind == 0 {
+				logger := common.GetLoggerFromContext(ctx)
+				logger.Warn("PreStopHook: Replica stuck in invalid state with behind=0, treating as healthy",
+					"replica_name", replica.Name,
+					"status", status,
+					"behind", replica.ParsedDataInfo.Behind,
+					"timestamp", replica.ParsedDataInfo.Timestamp)
+				continue // Skip this replica, don't block prestop
+			}
+
+			// "invalid" with behind != 0 is temporary during pod recreation - must wait for recovery
+			// Don't add to unhealableReplicas, let it block prestop until it recovers to "ready"
 		} else {
 			// Empty data_info "{}" - failed registration, cannot heal automatically
 			unhealableReplicas = append(unhealableReplicas,

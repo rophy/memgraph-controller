@@ -1,5 +1,24 @@
 # Implementation Plan: Fix PreStop Hook Invalid Replica Handling
 
+## Current Status
+
+**Last Updated:** 2025-10-17
+
+**Progress:** Stage 1 Complete ✅
+
+**Summary:**
+- Stage 1 implementation completed with code changes and unit tests
+- All 47 unit tests passing
+- Staticcheck passes with no errors
+- Ready for E2E validation (Stage 2)
+
+**Next Steps:**
+1. Run E2E tests to validate the fix works during rolling restarts
+2. Monitor for "invalid" replica recovery behavior
+3. Verify no dual-main scenarios or data divergence
+
+---
+
 ## Problem Statement
 
 The prestop hook incorrectly treats "invalid" replica status as "unhealable", allowing pod deletion to proceed even when replicas are not ready for failover. This creates dual-main scenarios leading to permanent data divergence.
@@ -17,11 +36,11 @@ The prestop hook incorrectly treats "invalid" replica status as "unhealable", al
 
 ## Success Criteria
 
-- [ ] PreStop hook waits for "invalid" replicas to recover to "ready"
-- [ ] Pod deletion only proceeds after ALL replicas are ready
-- [ ] No dual-main scenarios during rolling restart
-- [ ] Zero data divergence in 10 consecutive test runs
-- [ ] Tests complete within reasonable time (no excessive waits)
+- [x] PreStop hook waits for "invalid" replicas to recover to "ready" (Code implemented)
+- [ ] Pod deletion only proceeds after ALL replicas are ready (E2E validation pending)
+- [ ] No dual-main scenarios during rolling restart (E2E validation pending)
+- [ ] Zero data divergence in 10 consecutive test runs (E2E validation pending)
+- [ ] Tests complete within reasonable time (no excessive waits) (E2E validation pending)
 
 ## Implementation Stages
 
@@ -79,13 +98,29 @@ if status == "invalid" && replica.ParsedDataInfo.Behind == 0 {
 - "invalid" + behind == 0 = rare stuck state (treat as healthy to prevent deadlock)
 
 **Tests:**
-- [ ] Unit test: `isHealthy()` blocks when replica is "invalid" with behind > 0
-- [ ] Unit test: `isHealthy()` allows prestop when replica is "invalid" with behind == 0
-- [ ] Unit test: `isHealthy()` allows prestop when replica is "diverged" or "malformed"
+- [x] Unit test: `TestReplicaFiltering` validates filtering logic for all replica states
+  - "invalid" with behind=0 should be skipped (not unhealable, not blocking)
+  - "invalid" with behind!=0 should be in healthy list (will block until recovery)
+  - "diverged" should be marked as unhealable
+  - "malformed" should be marked as unhealable
 - [ ] E2E test: Rolling restart with replica in "invalid" state waits for recovery
 - [ ] Edge case test: Verify warning logged for "invalid" + behind==0 scenario
 
-**Status:** Not Started
+**Implementation Details:**
+- **File Modified:** `internal/controller/controller_core.go` (lines 746-779)
+- **Commit:** Removed "invalid" from unhealable states check (line 751)
+- **Added:** Special handling for "invalid" + behind==0 with warning log (lines 757-767)
+- **Logic:** "invalid" + behind!=0 now blocks prestop until recovery (line 769-770)
+- **Test File:** `internal/controller/controller_core_test.go`
+- **Test Function:** `TestReplicaFiltering` with 4 comprehensive test cases
+- **Cleanup:** Removed unused `shouldSkipForFailover()` function from `controller_reconcile.go`
+
+**Verification:**
+- ✅ All unit tests pass (47 tests total)
+- ✅ Staticcheck passes with no errors
+- ✅ Code follows existing patterns and conventions
+
+**Status:** COMPLETED (2025-10-17)
 
 ---
 
@@ -282,14 +317,14 @@ git revert <commit-hash>
 
 ## Definition of Done
 
-- [x] Stage 1: Code change implemented and unit tested
-- [x] Stage 2: Failover safety validated in E2E tests
-- [x] Stage 3: Enhanced logging deployed
-- [x] Stage 4: 35+ consecutive test runs pass with zero divergence
-- [x] Performance acceptable (<60s typical prestop wait)
-- [x] Documentation updated (KNOWN_ISSUES.md)
-- [x] Code reviewed and approved
-- [x] Changes merged to main branch
+- [x] Stage 1: Code change implemented and unit tested (COMPLETED 2025-10-17)
+- [ ] Stage 2: Failover safety validated in E2E tests
+- [ ] Stage 3: Enhanced logging deployed (existing logging may be sufficient)
+- [ ] Stage 4: 35+ consecutive test runs pass with zero divergence
+- [ ] Performance acceptable (<60s typical prestop wait)
+- [ ] Documentation updated (KNOWN_ISSUES.md)
+- [ ] Code reviewed and approved
+- [ ] Changes merged to main branch
 
 ---
 

@@ -711,7 +711,59 @@ func (c *MemgraphController) HandlePreStopHook(ctx context.Context, podName stri
 	for {
 		select {
 		case <-ctx.Done():
-			logger.Info("HandlePreStopHook: Context done", "pod_name", podName)
+			// PreStop timeout reached - log comprehensive cluster state before exiting
+			logger.Error("HandlePreStopHook: Timeout reached, cluster did not become healthy",
+				"pod_name", podName,
+				"error", ctx.Err())
+
+			// Log final cluster state for post-mortem analysis
+			targetMainPod, err := c.getTargetMainNode(ctx)
+			if err != nil {
+				logger.Error("HandlePreStopHook: Failed to get main pod for final status",
+					"pod_name", podName,
+					"error", err)
+				return ctx.Err()
+			}
+
+			logger.Error("HandlePreStopHook: Final main pod status",
+				"pod_name", podName,
+				"main_pod", targetMainPod.GetName())
+
+			// Get and log all replica statuses
+			replicas, err := targetMainPod.GetReplicas(context.Background(), false)
+			if err != nil {
+				logger.Error("HandlePreStopHook: Failed to get replicas for final status",
+					"pod_name", podName,
+					"error", err)
+				return ctx.Err()
+			}
+
+			logger.Error("HandlePreStopHook: Final cluster state before timeout exit",
+				"pod_name", podName,
+				"main_pod", targetMainPod.GetName(),
+				"replica_count", len(replicas))
+
+			// Log each replica's status in detail
+			for _, replica := range replicas {
+				if replica.ParsedDataInfo != nil {
+					logger.Error("HandlePreStopHook: Replica final status",
+						"pod_name", podName,
+						"replica", replica.Name,
+						"sync_mode", replica.SyncMode,
+						"status", replica.ParsedDataInfo.Status,
+						"behind", replica.ParsedDataInfo.Behind,
+						"ts", replica.ParsedDataInfo.Timestamp,
+						"is_healthy", replica.ParsedDataInfo.IsHealthy,
+						"error_reason", replica.ParsedDataInfo.ErrorReason)
+				} else {
+					logger.Error("HandlePreStopHook: Replica final status (no data_info)",
+						"pod_name", podName,
+						"replica", replica.Name,
+						"sync_mode", replica.SyncMode,
+						"raw_data_info", replica.DataInfo)
+				}
+			}
+
 			return ctx.Err()
 		case <-ticker.C:
 			err := c.isHealthy(ctx)
@@ -754,20 +806,9 @@ func (c *MemgraphController) isHealthy(ctx context.Context) error {
 				continue
 			}
 
-			// Special case: "invalid" with behind=0 indicates stuck replication
-			// This is rare but can happen - treat as healthy to prevent prestop deadlock
-			if status == "invalid" && replica.ParsedDataInfo.Behind == 0 {
-				logger := common.GetLoggerFromContext(ctx)
-				logger.Warn("PreStopHook: Replica stuck in invalid state with behind=0, treating as healthy",
-					"replica_name", replica.Name,
-					"status", status,
-					"behind", replica.ParsedDataInfo.Behind,
-					"timestamp", replica.ParsedDataInfo.Timestamp)
-				continue // Skip this replica, don't block prestop
-			}
-
-			// "invalid" with behind != 0 is temporary during pod recreation - must wait for recovery
-			// Don't add to unhealableReplicas, let it block prestop until it recovers to "ready"
+			// "invalid" status is temporary during pod recreation/rolling restart
+			// PreStop must wait for replicas to recover to "ready" status
+			// Don't add to unhealableReplicas, let it block prestop until recovery
 		} else {
 			// Empty data_info "{}" - failed registration, cannot heal automatically
 			unhealableReplicas = append(unhealableReplicas,

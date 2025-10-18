@@ -220,68 +220,88 @@ def analyze_logs_for_failover(
   }
 
 
-def verify_recent_test_client_success(required_consecutive: int = 10) -> bool:
+def verify_recent_test_client_success(required_consecutive: int = 10, timeout: int = 30) -> bool:
   """
-  Verify that the latest consecutive N write operations were ALL successful.
+  Wait for the latest consecutive N write operations to be ALL successful.
   This ensures the system is currently in a stable, healthy state.
+
+  Retries with timeout to allow test-client to recover from previous test failures.
 
   Args:
       required_consecutive: Number of latest consecutive operations that must be successful
+      timeout: Maximum wait time in seconds
 
   Returns:
-      True if the latest N operations were all successful
+      True if the latest N operations were all successful within timeout
   """
+  start_time = time.time()
   log_info(
-      f"Checking that latest {required_consecutive} consecutive writes were all successful...")
+      f"⏳ Waiting for latest {required_consecutive} consecutive writes to be successful (timeout: {timeout}s)...")
 
-  # Get recent logs
   test_client_pod = get_test_client_pod()
-  logs = get_pod_logs(test_client_pod, tail_lines=50)
-  lines = logs.strip().split('\n')
 
-  # Parse and identify write operations (both successes and failures)
-  operations = []
-  for line in reversed(lines):  # Most recent first
-    log_time, message, is_success, is_failure = parse_log_entry(line)
+  while time.time() - start_time < timeout:
+    try:
+      # Get recent logs
+      logs = get_pod_logs(test_client_pod, tail_lines=50)
+      lines = logs.strip().split('\n')
 
-    # Only consider actual write operations (success or failure)
-    if is_success or is_failure:
-      operations.append({
-          'time': log_time,
-          'success': is_success,
-          'failure': is_failure,
-          'message': message
-      })
+      # Parse and identify write operations (both successes and failures)
+      operations = []
+      for line in reversed(lines):  # Most recent first
+        log_time, message, is_success, is_failure = parse_log_entry(line)
 
-  # Check if we have enough operations
-  if len(operations) < required_consecutive:
-    log_info(
-        f"Found only {len(operations)} write operations, need {required_consecutive}")
-    return False
+        # Only consider actual write operations (success or failure)
+        if is_success or is_failure:
+          operations.append({
+              'time': log_time,
+              'success': is_success,
+              'failure': is_failure,
+              'message': message
+          })
 
-  # Check that the latest N consecutive operations were ALL successful
-  latest_operations = operations[:required_consecutive]  # Most recent N
+      # Check if we have enough operations
+      if len(operations) < required_consecutive:
+        elapsed = int(time.time() - start_time)
+        log_info(
+            f"⏳ Found only {len(operations)} write operations, need {required_consecutive} ({elapsed}s/{timeout}s)")
+        time.sleep(2)
+        continue
 
-  consecutive_successes = 0
-  for op in latest_operations:
-    if op['success']:
-      consecutive_successes += 1
-    else:
-      # Found a failure in the latest N operations
-      log_info(
-          f"Found failure in latest {required_consecutive} operations: '{op['message']}'")
-      break
+      # Check that the latest N consecutive operations were ALL successful
+      latest_operations = operations[:required_consecutive]  # Most recent N
 
-  all_successful = consecutive_successes == required_consecutive
+      consecutive_successes = 0
+      for op in latest_operations:
+        if op['success']:
+          consecutive_successes += 1
+        else:
+          # Found a failure in the latest N operations
+          break
 
-  if all_successful:
-    log_info(
-        f"✅ Latest {required_consecutive} consecutive writes were all successful")
-  else:
-    log_info(
-        f"❌ Only {consecutive_successes}/{required_consecutive} latest writes were successful")
+      all_successful = consecutive_successes == required_consecutive
 
-  return all_successful
+      if all_successful:
+        elapsed = int(time.time() - start_time)
+        log_info(
+            f"✅ Latest {required_consecutive} consecutive writes were all successful (after {elapsed}s)")
+        return True
+      else:
+        elapsed = int(time.time() - start_time)
+        log_info(
+            f"⏳ Only {consecutive_successes}/{required_consecutive} latest writes successful, "
+            f"waiting... ({elapsed}s/{timeout}s)")
+        time.sleep(2)
+
+    except Exception as e:
+      # Continue waiting even if log retrieval fails
+      elapsed = int(time.time() - start_time)
+      log_info(f"⏳ Error checking test-client logs: {e}, retrying... ({elapsed}s/{timeout}s)")
+      time.sleep(2)
+
+  # Timeout reached
+  log_info(f"❌ Test-client did not achieve {required_consecutive} consecutive successful writes within {timeout}s")
+  return False
 
 
 class TestFailoverPodDeletion:

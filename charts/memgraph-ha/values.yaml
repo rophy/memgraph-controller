@@ -87,11 +87,26 @@ memgraph:
             python3 -c "
             import os
             import requests
+            import sys
+            import time
             pod_name = os.getenv('POD_NAME')
             timeout = int(os.getenv('PRESTOP_TIMEOUT_SECONDS', '600'))
             username = os.getenv('MEMGRAPH_USER', 'memgraph')
             password = os.getenv('MEMGRAPH_PASSWORD', '')
-            requests.post('http://memgraph-controller:8080/prestop-hook/' + pod_name, timeout=timeout, auth=(username, password))
+            url = f'http://memgraph-controller:8080/prestop-hook/{pod_name}'
+            for _ in range(3):
+              try:
+                resp = requests.post(url, timeout=timeout, auth=(username, password))
+                if resp.status_code == 200:
+                  sys.exit(0)
+                else:
+                  sys.exit(1)
+              except requests.exceptions.Timeout:
+                sys.exit(1)
+              except Exception:
+                time.sleep(3)
+                continue
+            sys.exit(1)
             "
 
   # Environment variables for memgraph pods

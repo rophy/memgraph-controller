@@ -174,27 +174,57 @@ memgraph:
       tag: latest
       pullPolicy: IfNotPresent
 
-  # Init container to clean WAL files for replicas on restart
-  # This prevents divergence issues when replica restarts after failover
-  # See DATA_DIVERGENCE_TEST.md for details
+  # Init container for data cleanup
+  # Handles hard reset for diverged async replicas (priority 1)
+  # Cleans WAL files for replicas on restart (priority 2)
+  # See design/replica_hard_reset.md for details
   initContainers:
-    - name: clean-replica-wal
+    - name: data-cleanup
       image: library/busybox
       imagePullPolicy: IfNotPresent
       command: ['/bin/sh', '-c']
       args:
         - |
           echo "========================================="
-          echo "Memgraph Replica WAL Cleanup Init Container"
+          echo "Memgraph Data Cleanup Init Container"
           echo "========================================="
+          echo "Pod: $(hostname)"
+          echo "Timestamp: $(date)"
 
+          MARKER_FILE="/var/lib/memgraph/.hard-reset-requested"
           REPLICATION_META="/var/lib/memgraph/mg_data/replication"
           WAL_DIR="/var/lib/memgraph/mg_data/wal"
+
+          # === HARD RESET CHECK (Priority 1) ===
+          if [ -f "$MARKER_FILE" ]; then
+            echo ""
+            echo "🔥 HARD RESET REQUESTED - Magic marker file detected"
+            echo "Reading marker file:"
+            cat "$MARKER_FILE" || echo "Failed to read marker file"
+
+            echo ""
+            echo "🗑️  Performing FULL data cleanup..."
+
+            # Remove all Memgraph data directories
+            rm -rf /var/lib/memgraph/mg_data/* || true
+
+            # Remove marker file to prevent repeated cleanup
+            rm -f "$MARKER_FILE"
+
+            echo "✅ Hard reset complete - pod will start with clean slate"
+            echo "========================================="
+            exit 0
+          fi
+
+          # === NORMAL WAL CLEANUP (Priority 2) ===
+          echo ""
+          echo "ℹ️  No hard reset requested - checking for WAL cleanup"
 
           # Check if this is first startup (no metadata exists)
           if [ ! -d "$REPLICATION_META" ]; then
             echo "First startup detected - no replication metadata exists"
             echo "Skipping WAL cleanup"
+            echo "========================================="
             exit 0
           fi
 
@@ -216,7 +246,7 @@ memgraph:
               echo "Removing WAL files to prevent divergence..."
               rm -f "$WAL_DIR"/*
 
-              echo "WAL cleanup completed successfully"
+              echo "✅ WAL cleanup completed successfully"
               ls -lah "$WAL_DIR"
             else
               echo "No WAL files to clean"

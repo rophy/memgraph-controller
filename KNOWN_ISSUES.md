@@ -1,13 +1,13 @@
 # Known Issues
 
-## Summary (Updated 2025-10-18)
+## Summary (Updated 2025-10-19)
 
 **Key Updates**:
-- ✅ **Rolling Restart Data Divergence**: FULLY RESOLVED - 46+ consecutive E2E test runs completed successfully
+- ⚠️ **Rolling Restart Data Divergence**: MOSTLY RESOLVED - Rare divergence still occurs (very low probability)
+- 🔍 **PreStop Hook Python Script Failures**: Under investigation - suspected to be related to rare divergence incidents (see Issue #6)
 - ✅ **PreStop Hook Invalid Replica Handling**: FIXED - PreStop hook now correctly waits for "invalid" replicas to recover
-- ✅ **100% Test Success Rate**: 46+ consecutive tests with zero divergence, zero dual-main scenarios
-- 📊 **Latest Test Results**: 46+ consecutive E2E test runs passed without any data divergence (2025-10-18)
-- ✅ **Production Ready**: Fix validated and ready for merge
+- 📊 **Historical Success**: 46+ consecutive E2E test runs passed (2025-10-18), but rare failures observed in extended testing
+- ⚠️ **Current Focus**: Investigating correlation between PreStop script failures and divergence incidents
 
 ## 1. Investigation Results: Data Divergence During Rolling Restart - Wrong Root Cause Analysis
 
@@ -78,10 +78,11 @@ memgraph_ha_0 now hold unique data.
 ### Corrected Understanding
 
 **What Actually Happened:**
-1. **Dual Main Scenario**: During rolling restart, both pods acted as main simultaneously
+1. **Dual Main Scenario**: During rolling restart, both pods acted as main simultaneously - **this is EXPECTED behavior** since failover assumes main is not reachable and only promotes sync replicas
 2. **Split-Brain Protection**: Memgraph detected that pods had been main at different times
 3. **Data Integrity Protection**: Memgraph refused replication to prevent data corruption
 4. **Controller Coordination Issue**: The problem is controller/gateway coordination during rolling restart, not persistent storage
+5. **Gateway Responsibility**: It is the gateway's responsibility to reject traffic in advance to prevent writes reaching the wrong pods
 
 ### Impact of Wrong Analysis
 
@@ -115,18 +116,21 @@ memgraph_ha_0 now hold unique data.
 - **Experimental Method**: The controlled test using tests/memgraph-sandbox proved invaluable for disproving incorrect analysis
 - **Real Root Cause**: See Issue #2 below - identified as replication timing coordination problem
 
-## 2. Rolling Restart Data Divergence - FULLY RESOLVED
+## 2. Rolling Restart Data Divergence - MOSTLY RESOLVED (Rare Occurrences Still Observed)
 
-**Status**: ✅ FULLY RESOLVED - PreStop hook invalid replica handling fixed (2025-10-18)
-**Severity**: Critical (was) - Now completely eliminated
-**Investigation Date**: 2025-09-21 to 2025-10-18
-**Latest Test**: 2025-10-18 - 46+ consecutive tests PASSED with 100% success rate
+**Status**: ⚠️ MOSTLY RESOLVED - Rare divergence still occurs despite PreStop hook fix (2025-10-19)
+**Severity**: Medium - Very low probability but still present
+**Investigation Date**: 2025-09-21 to ongoing
+**Latest Test**: 2025-10-18 - 46+ consecutive tests PASSED, but rare failures observed in extended testing
+**Suspected Relation**: Issue #6 - PreStop Hook Python Script Failures may be related to remaining divergence incidents
 
 ### Description
 
-Rolling restart data divergence issue has been FULLY RESOLVED through fixing the PreStop hook's handling of "invalid" replica status. The PreStop hook was incorrectly treating "invalid" replicas as "unhealable", allowing pod deletion before replicas were ready for failover, which created dual-main scenarios and data divergence.
+Rolling restart data divergence issue has been SIGNIFICANTLY IMPROVED through fixing the PreStop hook's handling of "invalid" replica status. The PreStop hook was incorrectly treating "invalid" replicas as "unhealable", allowing pod deletion before replicas were ready for failover, which created dual-main scenarios and data divergence.
 
-**Final Solution (2025-10-18)**: Modified PreStop hook `isHealthy()` function to correctly wait for "invalid" replicas to recover, preventing premature pod deletion during rolling restarts.
+**Primary Solution (2025-10-18)**: Modified PreStop hook `isHealthy()` function to correctly wait for "invalid" replicas to recover, preventing premature pod deletion during rolling restarts.
+
+**Current Status (2025-10-19)**: While the fix eliminated most divergence incidents, rare divergence still occurs with very low probability. Investigation ongoing - suspected correlation with PreStop hook Python script failures (see Issue #6).
 
 ### Root Cause Analysis (Historical)
 
@@ -782,7 +786,132 @@ case <-ctx.Done():
 
 ### Related Issues
 
-- **Issue #2**: Rolling Restart Data Divergence - parent issue, now fully resolved
+- **Issue #2**: Rolling Restart Data Divergence - parent issue, mostly resolved but rare occurrences still observed
+- **Issue #6**: PreStop Hook Python Script Failures - may be related to remaining divergence incidents
 - **Cardinal Rule**: Replica must NEVER receive replication from multiple mains (STUDY_NOTES.md:34-60)
 - **Test Results**: Test 20 failure revealed the subtle race condition
 
+
+## 6. PreStop Hook Python Script Failures - Investigation Needed (2025-10-19)
+
+**Status**: 🔍 INVESTIGATION NEEDED - Rare failures without controller logs
+**Severity**: Medium - Suspected to be related to rare divergence incidents (Issue #2)
+**Discovery Date**: 2025-10-19
+**Test Results**: 30/30 E2E tests PASSED (100% success rate) despite PreStop failures
+**Impact**: No immediate test failures, but may contribute to rare divergence incidents
+
+### Description
+
+During 99-run reliability testing, Kubernetes `FailedPreStopHook` events were observed (approximately 5 events over 77 minutes), but these failures occur **before requests reach the controller**, making them impossible to debug through controller logs alone.
+
+**Observation Pattern**:
+- Kubernetes events show: `PreStopHook failed` (pod: memgraph-ha-1 predominantly)
+- Controller logs show: **Zero requests** from the pod at failure times
+- Python script: Fails within 2-3 seconds without reaching controller
+- Controller success rate: 132/132 successful completions (100%)
+- Test success rate: 30/30 PASSED (100%)
+
+**Critical Concern**: These PreStop failures may allow pods to be deleted without properly clearing gateway upstreams, potentially creating race conditions that lead to rare divergence incidents (Issue #2).
+
+### Investigation Timeline
+
+**Controller Performance** (successful completions):
+- Duration: 2-30 seconds per PreStop hook call
+- Success rate: 132/132 (100% of requests that reached controller)
+- No timeouts or 600s failures observed
+
+**Failure Events** (Kubernetes reports):
+```
+2025-10-19T01:26:58Z memgraph-ha-1 PreStopHook failed
+2025-10-19T01:30:12Z memgraph-ha-1 PreStopHook failed
+2025-10-19T01:32:27Z memgraph-ha-1 PreStopHook failed
+```
+
+**Key Finding**: Event timestamps match pod recreation times, NOT pod deletion times, suggesting the Python script fails during initialization/connection phase.
+
+### Root Cause Hypothesis
+
+The PreStop hook Python script (in `charts/memgraph-ha/values.yaml`) has 3 retry attempts with 3-second sleeps. Failures occur when all 3 attempts fail to reach the controller:
+
+**Possible Causes**:
+1. **DNS Resolution Failures**: Transient DNS issues for `memgraph-controller` service during pod termination
+2. **Network Errors**: Connection failures due to network partition/reconfiguration during rolling restart
+3. **Race Condition**: Python script initialization race with pod deletion signal
+4. **Import Failures**: `import requests` failing due to container filesystem state during termination
+
+**Evidence**:
+- **Fast Failures**: Script fails in 2-3 seconds (within retry window)
+- **No Controller Logs**: Requests never reach controller endpoint
+- **Specific Pod Pattern**: memgraph-ha-1 more affected (potential network topology issue)
+- **Timing Correlation**: Failures occur during pod recreation phase
+
+### Connection to Divergence (Issue #2)
+
+**Why This Matters**:
+
+When PreStop hook fails to execute properly:
+1. **Gateway upstreams NOT cleared** before pod deletion
+2. **Race condition window** - writes may reach terminating pod
+3. **Dual-main scenario** - new pod starts as MAIN while old pod still receiving writes
+4. **Data divergence** - terminating pod has data new main doesn't have
+
+**Hypothesis**: The rare divergence incidents (Issue #2) may be directly caused by these PreStop hook failures.
+
+### Investigation Needed
+
+**Critical Questions**:
+1. **Root Cause**: Why does the Python script fail to reach the controller?
+2. **DNS Timing**: Is DNS resolution failing for terminating pods?
+3. **Network State**: What network changes occur during pod termination?
+4. **Correlation**: Do PreStop failures correlate with divergence incidents?
+
+**Recommended Investigation Steps**:
+1. **Add extensive logging** to PreStop hook Python script
+2. **Monitor DNS resolution** during pod termination
+3. **Test network connectivity** from terminating pods
+4. **Correlate timestamps** between PreStop failures and divergence incidents
+5. **Consider alternative approaches**:
+   - Use pod IP instead of service DNS
+   - Implement retry with exponential backoff
+   - Add timeout handling
+   - Use different HTTP client (urllib instead of requests)
+
+### Potential Solutions
+
+**Option 1: Enhanced Retry Logic**
+- Increase retry attempts from 3 to 10
+- Add exponential backoff
+- Longer timeout per attempt
+
+**Option 2: Alternative DNS Resolution**
+- Use controller pod IP directly instead of service DNS
+- Implement DNS fallback mechanism
+- Cache controller endpoint before termination
+
+**Option 3: Network Resilience**
+- Add network connectivity checks before HTTP request
+- Implement circuit breaker pattern
+- Use localhost proxy for API calls
+
+**Option 4: Architectural Change**
+- Controller actively monitors pod deletion events
+- Proactive gateway clearing before PreStop hook
+- Redundant safety mechanism
+
+### Related Issues
+
+- **Issue #2**: Rolling Restart Data Divergence - PreStop failures may cause rare divergence
+- **Design Compliance**: This behavior may contradict design expectations for clean failover
+
+### Files Involved
+
+- `charts/memgraph-ha/charts/memgraph/values.yaml` - PreStop hook Python script
+- `internal/httpapi/server.go` - PreStop hook API endpoint
+- `internal/controller/controller_core.go` - Gateway clearing and cluster health logic
+
+### Next Steps
+
+1. **Immediate**: Add comprehensive logging to PreStop hook script to capture failure details
+2. **Analysis**: Correlate PreStop failure timestamps with any divergence incidents
+3. **Testing**: Reproduce PreStop failures in controlled environment
+4. **Fix**: Implement enhanced retry logic or alternative solution based on findings

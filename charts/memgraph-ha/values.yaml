@@ -52,6 +52,16 @@ memgraph:
     valueFrom:
       fieldRef:
         fieldPath: metadata.name
+  - name: POD_ID
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.uid
+  - name: POD_IP
+    valueFrom:
+      fieldRef:
+        fieldPath: status.podIP
+  - name: PRESTOP_TIMEOUT_SECONDS
+    value: '600'
 
   # Container probes
   container:
@@ -84,35 +94,67 @@ memgraph:
           - |
             # Call controller preStop hook API
             # Which will try to wait for the cluster to be in a stable state
-            python3 -c "
+            python3 -u -c "
             import os
             import requests
             import sys
             import time
-            pod_name = os.getenv('POD_NAME')
+            from datetime import datetime
+
+            # Setup logging
+            pod_name = os.getenv('POD_NAME', 'unknown')
+            pod_id = os.getenv('POD_ID', 'unknown')
+            pod_ip = os.getenv('POD_IP', 'unknown')
             timeout = int(os.getenv('PRESTOP_TIMEOUT_SECONDS', '600'))
             username = os.getenv('MEMGRAPH_USER', 'memgraph')
             password = os.getenv('MEMGRAPH_PASSWORD', '')
             url = f'http://memgraph-controller:8080/prestop-hook/{pod_name}'
-            for _ in range(3):
+            log_file = f'/var/log/memgraph/prestop-{pod_name}_{pod_id}_{pod_ip}.log'
+
+            try:
+              f = open(log_file, 'a')
+            except Exception as e:
+              timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+              print(f'[{timestamp}] ERROR: Failed to open log file: {e}', file=sys.stderr)
+              f = None
+
+
+            def log(msg):
+              timestamp = datetime.utcnow().strftime('%Y-%m-%dT%H:%M:%S.%fZ')
+              try:
+                f.write(f'[{timestamp}] {msg}\n')
+                f.flush()
+              except Exception as e:
+                # If logging fails, write to stderr
+                print(f'[{timestamp}] LOG ERROR: {e}', file=sys.stderr)
+                print(f'[{timestamp}] {msg}', file=sys.stderr)
+
+
+            log('START PreStop hook')
+            log(f'Pod: {pod_name}, ID: {pod_id}, IP: {pod_ip}')
+            log(f'Configuration: timeout={timeout}s, url={url}')
+            for attempt in range(1, 4):
+              log(f'Attempt {attempt}/3: Calling {url}')
               try:
                 resp = requests.post(url, timeout=timeout, auth=(username, password))
+                log(f'Attempt {attempt}/3: status={resp.status_code}')
                 if resp.status_code == 200:
+                  log('END PreStop hook (exit=0)')
                   sys.exit(0)
                 else:
+                  log('END PreStop hook (exit=1)')
                   sys.exit(1)
               except requests.exceptions.Timeout:
+                log(f'Attempt {attempt}/3: TIMEOUT after {timeout}s')
+                log('END PreStop hook (exit=1)')
                 sys.exit(1)
-              except Exception:
+              except Exception as e:
+                log(f'Attempt {attempt}/3: ERROR ({type(e).__name__}: {e})')
                 time.sleep(3)
                 continue
+            log('END PreStop hook (exit=1, all attempts exhausted)')
             sys.exit(1)
             "
-
-  # Environment variables for memgraph pods
-  env:
-    - name: PRESTOP_TIMEOUT_SECONDS
-      value: "{{ .Values.controller.env.preStopTimeoutSeconds }}"
 
   # Init container for system configuration
   sysctlInitContainer:

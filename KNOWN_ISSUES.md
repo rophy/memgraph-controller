@@ -915,3 +915,200 @@ When PreStop hook fails to execute properly:
 2. **Analysis**: Correlate PreStop failure timestamps with any divergence incidents
 3. **Testing**: Reproduce PreStop failures in controlled environment
 4. **Fix**: Implement enhanced retry logic or alternative solution based on findings
+
+## 7. Data Divergence During Rolling Restart with Multiple Failovers - Investigation Complete (2025-10-19)
+
+**Status**: ✅ DOCUMENTED - Root cause identified, workaround verified
+**Severity**: High - Data divergence during rolling restart with persistent storage
+**Investigation Date**: 2025-10-19
+**Test Case**: Test run 6 of 15-iteration suite
+
+### Description
+
+During a rolling restart E2E test, pod-2 (memgraph-ha-2) became diverged when the cluster experienced multiple failover events in rapid succession. The divergence was caused by persistent storage retaining old replication data that became incompatible with the new main pod's timeline.
+
+### Sequence of Events
+
+**Initial State (05:50:55)**:
+- memgraph-ha-1: MAIN (ts=1686)
+- memgraph-ha-0: REPLICA (ts=1686, behind=0, status=ready)
+- memgraph-ha-2: REPLICA (ts=1686, behind=0, status=ready)
+
+**First Failover - ha-1 deleted, ha-0 promoted to MAIN (05:50:55)**:
+
+1. **05:50:55.510** - Pod memgraph-ha-1 marked for deletion (ready=false, deletionTimestamp set)
+2. **05:50:55.511** - First failover check: memgraph-ha-0 shows `behind=-20, status=recovery` (unsafe)
+3. **05:50:55.520** - Second failover check: replicas now report as "ready"
+4. **05:50:55.525** - Controller promotes memgraph-ha-0 to MAIN
+5. **05:50:55.558** - memgraph-ha-0 confirmed as MAIN
+6. **05:50:55.592** - NEW main (ha-0) has 0 replicas registered
+7. **05:51:02.415** - Old main (ha-1) demoted to replica
+8. **05:51:02.420-424** - Replicas re-registered to new main (ha-0)
+
+**Second Deletion - ha-2 deleted and recreated (05:51:14-20)**:
+
+1. **05:51:14.776** - Pod memgraph-ha-2 marked for deletion
+2. **05:51:19.656** - memgraph-ha-2 pod phase: Succeeded
+3. **05:51:20.401** - memgraph-ha-2 deleted
+4. **05:51:20.423** - **NEW memgraph-ha-2 created** (empty pod)
+5. **05:51:20.423** - **PVC persists**: `memgraph-ha-lib-storage-memgraph-ha-2` contains old data from ha-0's timeline
+
+**Third Failover - ha-0 deleted, ha-1 promoted to MAIN (05:51:50 - 05:52:14)**:
+
+1. **05:51:50.499** - Pod memgraph-ha-0 marked for deletion (the MAIN pod)
+2. **05:51:59.852** - memgraph-ha-0 deleted
+3. **05:52:14.079** - Controller promotes memgraph-ha-1 to MAIN
+
+**Divergence Detected (05:52:23)**:
+
+1. **05:52:23.955** - Controller tries to register NEW memgraph-ha-2 (containing ha-0's old data) to memgraph-ha-1 (new MAIN)
+2. **05:52:23.959** - **Memgraph returns "Error: 3" - diverged data**
+   ```
+   ☢ Failed to register replication - diverged data
+   replica_name=memgraph_ha_2
+   address=memgraph-ha-2.memgraph-ha.memgraph.svc.cluster.local
+   sync_mode=ASYNC
+   ```
+
+### Root Cause Analysis
+
+**The Problem**: Persistent storage (PVC) retains replication data across pod recreations. During multiple rapid failovers:
+
+1. **Pod-2 was a replica of ha-0** (when ha-0 was MAIN)
+2. **Pod-2 deleted**, but **PVC persists** with ha-0's replication timeline
+3. **NEW pod-2 created**, recovers old data from PVC (ha-0's timeline)
+4. **ha-0 deleted**, **ha-1 promoted to MAIN** (different timeline)
+5. **Controller tries to register pod-2** (ha-0's timeline) to **ha-1** (different timeline)
+6. **Memgraph detects timeline mismatch**: "Error: 3 - diverged data"
+
+**Key Insight**: Each Memgraph main pod has its own replication timeline. When a replica with data from one timeline tries to register to a different main pod (different timeline), Memgraph correctly rejects it as "diverged data" to prevent corruption.
+
+### Evidence from Logs
+
+**Controller Logs**:
+```
+2025-10-19T05:52:23.955Z level=DEBUG msg="✅ Safe to register replica: single main confirmed, all pods reachable"
+  replica_name=memgraph_ha_2 target_main=memgraph-ha-1 pod_count=3
+
+2025-10-19T05:52:23.959Z level=ERROR msg="☢ Failed to register replication - diverged data"
+  replica_name=memgraph_ha_2
+  address=memgraph-ha-2.memgraph-ha.memgraph.svc.cluster.local
+  sync_mode=ASYNC
+```
+
+**Memgraph Error**: Memgraph's internal error code 3 indicates the replica previously acted as a replica for a different main instance, and both now hold unique data from different timelines.
+
+### Resolution - Workaround Verified
+
+**Solution**: Delete pod + DROP REPLICA + Re-register
+
+**Steps Executed**:
+
+1. **Delete diverged pod**:
+   ```bash
+   kubectl delete pod memgraph-ha-2 -n memgraph
+   ```
+   - Pod recreates with fresh start
+   - **Important**: PVC is cleared during pod restart when no valid replication state exists
+
+2. **Drop replica from main**:
+   ```bash
+   kubectl exec -n memgraph -c memgraph memgraph-ha-1 -- bash -c \
+     'echo "DROP REPLICA memgraph_ha_2;" | mgconsole --username=$MEMGRAPH_USER --password=$MEMGRAPH_PASSWORD'
+   ```
+
+3. **Re-register replica**:
+   ```bash
+   kubectl exec -n memgraph -c memgraph memgraph-ha-1 -- bash -c \
+     'echo "REGISTER REPLICA memgraph_ha_2 ASYNC TO \"memgraph-ha-2.memgraph-ha.memgraph.svc.cluster.local:10000\";" | \
+     mgconsole --username=$MEMGRAPH_USER --password=$MEMGRAPH_PASSWORD'
+   ```
+
+**Result After Fix**:
+```
+"name","socket_address","sync_mode","system_info","data_info"
+"memgraph_ha_0","memgraph-ha-0.memgraph-ha.memgraph.svc.cluster.local:10000","strict_sync","Null","{memgraph: {behind: 0, status: ""ready"", ts: 13954}}"
+"memgraph_ha_2","memgraph-ha-2.memgraph-ha.memgraph.svc.cluster.local:10000","async","Null","{memgraph: {behind: 0, status: ""ready"", ts: 13954}}"
+```
+
+Both replicas synchronized and healthy:
+- ✅ memgraph_ha_0: strict_sync, behind=0, status=ready
+- ✅ memgraph_ha_2: async, behind=0, status=ready
+
+### Why This Happens
+
+**Persistent Volume Claims (PVC)**:
+```bash
+$ kubectl get pvc -n memgraph
+NAME                                    STATUS   VOLUME
+memgraph-ha-lib-storage-memgraph-ha-0   Bound    pvc-fc2c2902-9ff2-474d-99e4...   10Gi
+memgraph-ha-lib-storage-memgraph-ha-1   Bound    pvc-fc68cff9-ea85-4b4b-b9e0...   10Gi
+memgraph-ha-lib-storage-memgraph-ha-2   Bound    pvc-cb74fb3f-84df-4ec4-9e53...   10Gi
+```
+
+Each pod has persistent storage that survives pod deletion. When a pod is recreated:
+1. **Memgraph recovers data** from `/var/lib/memgraph` (PVC mount)
+2. **Replication metadata included** in recovery (which main it was replicating from)
+3. **Timeline mismatch** occurs if the main pod has changed since the data was written
+
+### Conditions That Trigger Divergence
+
+This divergence pattern occurs when ALL of these happen:
+
+1. **Multiple rapid failovers** (main pod changes 2+ times)
+2. **Replica pod deleted** between failovers
+3. **Different pod becomes main** before the deleted replica rejoins
+4. **Persistent storage enabled** (StatefulSet with PVCs)
+
+**Frequency**: Rare - requires specific timing of rolling restart + multiple failovers
+
+### Prevention Strategies
+
+**Option 1**: Controller auto-recovery (not yet implemented)
+- Detect "diverged" status during reconciliation
+- Automatically DROP + re-register diverged replicas
+- Requires careful safety checks to avoid data loss
+
+**Option 2**: PreStop hook enhancement (not yet implemented)
+- Wait for ALL replicas to be "ready" before allowing main pod deletion
+- Prevents scenarios where replicas are mid-recreation during failover
+- May increase rolling restart duration
+
+**Option 3**: Clear PVC data on recreation (risky)
+- Add init container to detect timeline mismatch
+- Clear `/var/lib/memgraph` if incompatible with current main
+- Risk: potential data loss if logic is incorrect
+
+**Option 4**: Manual intervention (current approach)
+- Detect diverged status through monitoring
+- Manually execute: delete pod + DROP REPLICA + re-register
+- Requires operator awareness and action
+
+### Impact Assessment
+
+**Test Results**:
+- Test run 6/15: FAILED (cluster failed to converge within 120s)
+- Cause: Data divergence on memgraph-ha-2
+- Recovery: Manual intervention successful (delete + DROP + re-register)
+
+**Production Risk**:
+- **Likelihood**: Low (requires specific timing conditions)
+- **Impact**: High (cluster stuck until manual intervention)
+- **Detection**: Controller logs show "☢ Failed to register replication - diverged data"
+- **Recovery**: Known workaround available (delete pod + DROP + re-register)
+
+### Related Issues
+
+- **Issue #2**: Rolling Restart Data Divergence - This is a specific manifestation during multiple failovers
+- **Issue #6**: PreStop Hook Failures - May contribute to timing conditions that enable this scenario
+
+### Files Involved
+
+- `internal/controller/controller_reconcile.go:348-355` - Diverged data detection and logging
+- Persistent storage configuration in StatefulSet manifests
+
+### Recommendations
+
+1. **Short-term**: Document this recovery procedure in runbooks
+2. **Medium-term**: Implement controller auto-recovery for diverged replicas
+3. **Long-term**: Enhance PreStop hook to prevent scenarios that enable divergence

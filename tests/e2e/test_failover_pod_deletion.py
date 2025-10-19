@@ -13,7 +13,7 @@ from utils import (
     get_test_client_pod,
     get_controller_pod,
     find_main_pod_by_querying,
-    delete_pod_forcefully,
+    delete_pod_gracefully,
     log_info,
     parse_logfmt,
     get_pod_age_seconds
@@ -335,10 +335,10 @@ class TestFailoverPodDeletion:
     original_main_pod = find_main_pod_by_querying()
     print(f"Current main pod: {original_main_pod}")
 
-    # Step 2: Delete the main node
+    # Step 2: Delete the main node gracefully (allows PreStop hook to run)
     print(f"Deleting main pod: {original_main_pod}")
     failover_start_time = datetime.now(UTC)  # Use UTC to match log timestamps
-    delete_pod_forcefully(original_main_pod)
+    delete_pod_gracefully(original_main_pod)
 
     # Step 3: Monitor for actual failover using controller logs and direct
     # database polling

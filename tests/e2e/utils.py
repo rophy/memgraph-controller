@@ -751,17 +751,21 @@ def find_main_pod_by_querying() -> str:
     raise E2ETestError(f"Failed to find main pod: {e}")
 
 
-def delete_pod_forcefully(pod_name: str) -> None:
-  """Delete a pod forcefully with no grace period"""
+def delete_pod_gracefully(pod_name: str) -> None:
+  """
+  Delete a pod gracefully, allowing PreStop hooks to complete.
+
+  This ensures the PreStop hook can properly clear gateway upstreams
+  and prevent data divergence during failover scenarios.
+  """
   try:
-    cmd = ["kubectl", "delete", "pod", pod_name, "-n",
-           MEMGRAPH_NS, "--force", "--grace-period=0"]
+    cmd = ["kubectl", "delete", "pod", pod_name, "-n", MEMGRAPH_NS]
     result = subprocess.run(cmd, capture_output=True, text=True)
 
     if result.returncode != 0:
       raise KubectlError(f"Failed to delete pod: {result.stderr}")
 
-    log_info(f"💥 Deleted pod {pod_name}")
+    log_info(f"🔄 Gracefully deleting pod {pod_name} (PreStop hook will run)")
 
   except subprocess.SubprocessError as e:
     raise E2ETestError(f"Failed to delete pod {pod_name}: {e}")

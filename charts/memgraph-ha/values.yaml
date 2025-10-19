@@ -135,8 +135,10 @@ memgraph:
             log(f'Configuration: timeout={timeout}s, url={url}')
             for attempt in range(1, 4):
               log(f'Attempt {attempt}/3: Calling {url}')
+              call_completed = False
               try:
                 resp = requests.post(url, timeout=timeout, auth=(username, password))
+                call_completed = True
                 log(f'Attempt {attempt}/3: status={resp.status_code}')
                 if resp.status_code == 200:
                   log('END PreStop hook (exit=0)')
@@ -145,13 +147,20 @@ memgraph:
                   log('END PreStop hook (exit=1)')
                   sys.exit(1)
               except requests.exceptions.Timeout:
+                call_completed = True
                 log(f'Attempt {attempt}/3: TIMEOUT after {timeout}s')
                 log('END PreStop hook (exit=1)')
                 sys.exit(1)
               except Exception as e:
+                call_completed = True
                 log(f'Attempt {attempt}/3: ERROR ({type(e).__name__}: {e})')
                 time.sleep(3)
                 continue
+              finally:
+                if call_completed:
+                  log(f'Attempt {attempt}/3: finally block - call completed normally')
+                else:
+                  log(f'Attempt {attempt}/3: finally block - INTERRUPTED, request never completed')
             log('END PreStop hook (exit=1, all attempts exhausted)')
             sys.exit(1)
             "

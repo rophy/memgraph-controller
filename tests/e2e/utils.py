@@ -441,15 +441,27 @@ def wait_for_statefulset_ready(statefulset_name: str = "memgraph-ha",
       replicas = status.get('replicas', 0)
       ready_replicas = status.get('readyReplicas', 0)
       updated_replicas = status.get('updatedReplicas', 0)
+      current_revision = status.get('currentRevision', '')
+      update_revision = status.get('updateRevision', '')
 
-      # Check if StatefulSet is fully ready
+      # Check if StatefulSet is fully ready and rolling update is complete
+      # CRITICAL: currentRevision == updateRevision ensures ALL pods are on the new revision
+      # This prevents false positives when a rolling restart is still in progress
       if (replicas == expected_replicas and
           ready_replicas == expected_replicas and
-          updated_replicas == expected_replicas):
+          updated_replicas == expected_replicas and
+          current_revision != '' and
+          current_revision == update_revision):
         return True
 
       elapsed = int(time.time() - start_time)
-      log_info(f"⏳ Waiting for StatefulSet: {ready_replicas}/{expected_replicas} ready ({elapsed}s/{timeout}s)")
+      if current_revision != update_revision:
+        log_info(
+            f"⏳ Waiting for StatefulSet: {ready_replicas}/{expected_replicas} ready, "
+            f"rolling update in progress (current={current_revision[-8:]}, "
+            f"target={update_revision[-8:]}) ({elapsed}s/{timeout}s)")
+      else:
+        log_info(f"⏳ Waiting for StatefulSet: {ready_replicas}/{expected_replicas} ready ({elapsed}s/{timeout}s)")
 
     except Exception as e:
       log_info(f"Error checking StatefulSet: {e}")
@@ -830,7 +842,9 @@ def get_statefulset_status(name: str = "memgraph-ha") -> Dict[str, Any]:
         'updated_replicas': status.get('updatedReplicas', 0),
         'current_replicas': status.get('currentReplicas', 0),
         'generation': sts_data.get('metadata', {}).get('generation', 0),
-        'observed_generation': status.get('observedGeneration', 0)
+        'observed_generation': status.get('observedGeneration', 0),
+        'current_revision': status.get('currentRevision', ''),
+        'update_revision': status.get('updateRevision', '')
     }
 
   except (json.JSONDecodeError, subprocess.SubprocessError) as e:

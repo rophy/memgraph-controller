@@ -30,7 +30,7 @@ memgraph:
   - "--log-level=INFO"
   - "--also-log-to-stderr=true"
   - "--replication-restore-state-on-startup=true"
-  - "--storage-snapshot-on-exit=true"
+  - "--storage-snapshot-on-exit=false"
 
   # Resource configuration
   resources:

@@ -40,6 +40,12 @@ down: ## Remove all skaffold resources and PVCs
 	kubectl delete pvc --all -n memgraph
 	kubectl delete networkpolicies --all -n memgraph
 	rm -rf logs/*
+	@echo "Waiting for PVCs to be fully deleted..."
+	@while kubectl get pvc -n memgraph 2>/dev/null | grep -q memgraph-ha; do \
+		echo "PVCs still exist, waiting..."; \
+		sleep 2; \
+	done
+	@echo "✅ All PVCs deleted successfully"
 
 check: ## Run project checks and validations
 	scripts/check.sh

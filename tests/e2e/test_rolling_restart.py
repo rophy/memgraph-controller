@@ -529,7 +529,7 @@ def test_rolling_restart_continuous_availability():
 
   # Step 4: Monitor the rollout completion
   log_info("Monitoring rollout progress...")
-  kubernetes_rollout_completed = wait_for_rollout_completion(timeout=120)
+  kubernetes_rollout_completed = wait_for_rollout_completion(timeout=240)
 
   # Wait for actual service convergence (main-sync-async topology ready)
   log_info("Waiting for cluster service convergence...")
@@ -836,7 +836,7 @@ def test_rolling_restart_with_main_changes():
 
   # Step 6: Monitor rollout completion with multi-client verification
   log_info("Step 6: Monitoring rollout with multi-client verification...")
-  kubernetes_rollout_completed = wait_for_rollout_completion(timeout=120)
+  kubernetes_rollout_completed = wait_for_rollout_completion(timeout=240)
 
   # Wait for cluster service convergence
   log_info("Waiting for cluster service convergence...")

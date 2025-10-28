@@ -1,7 +1,7 @@
 memgraph:
+  image:
+    tag: 3.6.1
   replicaCount: 3
-  service:
-    enableBolt: false
   memgraphConfig:
   - "--data-directory=/var/lib/memgraph/mg_data"
   - "--log-level=INFO"
@@ -23,57 +23,6 @@ memgraph:
       failureThreshold: 20
       timeoutSeconds: 10
       periodSeconds: 30
-  initContainers:
-    - name: clean-replica-wal
-      image: busybox:latest
-      imagePullPolicy: IfNotPresent
-      command: ['/bin/sh', '-c']
-      args:
-        - |
-          echo "========================================="
-          echo "Memgraph Replica WAL Cleanup Init Container"
-          echo "========================================="
-
-          REPLICATION_META="/var/lib/memgraph/mg_data/replication"
-          WAL_DIR="/var/lib/memgraph/mg_data/wal"
-
-          # Check if this is first startup (no metadata exists)
-          if [ ! -d "$REPLICATION_META" ]; then
-            echo "First startup detected - no replication metadata exists"
-            echo "Skipping WAL cleanup"
-            exit 0
-          fi
-
-          # Check replication role from metadata
-          # grep for "replication_role" in all metadata files
-          # Use tail -1 to get the LAST (most recent) role, not the first
-          ROLE=$(grep -rao '"replication_role":"[^"]*"' "$REPLICATION_META" 2>/dev/null | tail -1 | sed 's/.*"replication_role":"\([^"]*\)".*/\1/')
-
-          echo "Detected replication role: ${ROLE:-unknown}"
-
-          # Only clean WAL if this pod was a replica
-          if [ "$ROLE" = "replica" ]; then
-            echo "Pod was REPLICA - checking for WAL files"
-
-            if [ -d "$WAL_DIR" ] && [ -n "$(ls -A $WAL_DIR 2>/dev/null)" ]; then
-              echo "WAL files found:"
-              ls -lah "$WAL_DIR"
-
-              echo "Removing WAL files to prevent divergence..."
-              rm -f "$WAL_DIR"/*
-
-              echo "WAL cleanup completed successfully"
-              ls -lah "$WAL_DIR"
-            else
-              echo "No WAL files to clean"
-            fi
-          else
-            echo "Pod was MAIN or unknown role - skipping WAL cleanup"
-          fi
-
-          echo "========================================="
-          echo "Init container finished"
-          echo "========================================="
       volumeMounts:
         - name: memgraph-sandbox-lib-storage
           mountPath: /var/lib/memgraph

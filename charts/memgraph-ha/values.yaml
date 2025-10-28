@@ -4,7 +4,7 @@
 memgraph:
   image:
     repository: memgraph/memgraph
-    tag: ""  # Uses chart appVersion
+    tag: 3.6.1
     pullPolicy: IfNotPresent
 
   replicaCount: 3
@@ -195,7 +195,7 @@ memgraph:
           REPLICATION_META="/var/lib/memgraph/mg_data/replication"
           WAL_DIR="/var/lib/memgraph/mg_data/wal"
 
-          # === HARD RESET CHECK (Priority 1) ===
+          # === HARD RESET CHECK ===
           if [ -f "$MARKER_FILE" ]; then
             echo ""
             echo "🔥 HARD RESET REQUESTED - Magic marker file detected"
@@ -214,45 +214,6 @@ memgraph:
             echo "✅ Hard reset complete - pod will start with clean slate"
             echo "========================================="
             exit 0
-          fi
-
-          # === NORMAL WAL CLEANUP (Priority 2) ===
-          echo ""
-          echo "ℹ️  No hard reset requested - checking for WAL cleanup"
-
-          # Check if this is first startup (no metadata exists)
-          if [ ! -d "$REPLICATION_META" ]; then
-            echo "First startup detected - no replication metadata exists"
-            echo "Skipping WAL cleanup"
-            echo "========================================="
-            exit 0
-          fi
-
-          # Check replication role from metadata
-          # grep for "replication_role" in all metadata files
-          # Use tail -1 to get the LAST (most recent) role, not the first
-          ROLE=$(grep -rao '"replication_role":"[^"]*"' "$REPLICATION_META" 2>/dev/null | tail -1 | sed 's/.*"replication_role":"\([^"]*\)".*/\1/')
-
-          echo "Detected replication role: ${ROLE:-unknown}"
-
-          # Only clean WAL if this pod was a replica
-          if [ "$ROLE" = "replica" ]; then
-            echo "Pod was REPLICA - checking for WAL files"
-
-            if [ -d "$WAL_DIR" ] && [ -n "$(ls -A $WAL_DIR 2>/dev/null)" ]; then
-              echo "WAL files found:"
-              ls -lah "$WAL_DIR"
-
-              echo "Removing WAL files to prevent divergence..."
-              rm -f "$WAL_DIR"/*
-
-              echo "✅ WAL cleanup completed successfully"
-              ls -lah "$WAL_DIR"
-            else
-              echo "No WAL files to clean"
-            fi
-          else
-            echo "Pod was MAIN or unknown role - skipping WAL cleanup"
           fi
 
           echo "========================================="

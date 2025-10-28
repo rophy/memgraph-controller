@@ -2,6 +2,21 @@
 
 This document describes the mechanism for performing a "hard reset" on async replica pods to recover from diverged data states.
 
+## Design Evolution: Memgraph 3.6.1 Upstream Fix (2025-10-28)
+
+**Change:** Removed "Normal WAL Cleanup" logic from initContainer
+
+**Rationale:**
+- Memgraph 3.6.1 fixes upstream WAL UUID issue ([memgraph/memgraph#3353](https://github.com/memgraph/memgraph/issues/3353))
+- **Root cause resolved:** After failover, replicas restarting with old WAL files containing outdated UUID values were incorrectly marked as "diverged"
+- **Upstream fix:** Memgraph ≥3.6.0 now correctly reconciles UUID mismatches between WAL files and current replication state during startup recovery
+- **Impact:** WAL cleanup workaround no longer necessary; initContainer now only handles hard reset for true divergence cases
+
+**Changes to InitContainer:**
+- Removed Priority 2 "Normal WAL Cleanup" logic (lines 113-144 in original design)
+- Kept Priority 1 "Hard Reset Check" logic (still needed for actual data divergence recovery)
+- Simpler, more maintainable implementation relying on upstream fix
+
 ## Problem Statement
 
 From **Issue #7 (KNOWN_ISSUES.md)**: During rolling restarts with multiple failovers, async replicas can become diverged due to persistent storage retaining replication metadata from a previous main pod's timeline. When a replica tries to register to a new main with incompatible timeline data, Memgraph returns "Error: 3 - diverged data".
@@ -56,21 +71,22 @@ Implement an **automated hard reset mechanism** using a magic file marker + init
 - Triggers initContainer cleanup logic
 - Provides audit trail for debugging
 
-### 2. InitContainer: Enhanced WAL Cleanup with Hard Reset
+### 2. InitContainer: Hard Reset Detection and Cleanup
 
-**Container Name:** `data-cleanup` (existing container, enhanced)
+**Container Name:** `data-cleanup`
 
 **Image:** `library/busybox` (lightweight, already available)
 
-**Execution Order:** Existing initContainer, no new containers added
+**Execution Order:** Runs before Memgraph container starts
 
-**Responsibilities:**
-1. **Hard Reset Logic** (NEW): Check for magic marker file and perform full cleanup if requested
-2. **WAL Cleanup Logic** (EXISTING): Clean WAL files for replicas on restart
+**Responsibility:**
+- **Hard Reset Logic**: Check for magic marker file and perform full cleanup if requested
 
-**Implementation Strategy:** Enhance existing `data-cleanup` initContainer to handle both scenarios
+**Implementation Strategy:** Simple initContainer that checks for hard reset marker and cleans data when needed
 
-**Enhanced Implementation:**
+**Note:** As of Memgraph 3.6.1, WAL cleanup workaround is no longer needed - Memgraph handles WAL UUID reconciliation internally.
+
+**Implementation:**
 ```yaml
 initContainers:
   - name: data-cleanup
@@ -86,10 +102,8 @@ initContainers:
         echo "Timestamp: $(date)"
 
         MARKER_FILE="/var/lib/memgraph/.hard-reset-requested"
-        REPLICATION_META="/var/lib/memgraph/mg_data/replication"
-        WAL_DIR="/var/lib/memgraph/mg_data/wal"
 
-        # === HARD RESET CHECK (Priority 1) ===
+        # === HARD RESET CHECK ===
         if [ -f "$MARKER_FILE" ]; then
           echo ""
           echo "🔥 HARD RESET REQUESTED - Magic marker file detected"
@@ -110,39 +124,6 @@ initContainers:
           exit 0
         fi
 
-        # === NORMAL WAL CLEANUP (Priority 2) ===
-        echo ""
-        echo "ℹ️  No hard reset requested - checking for WAL cleanup"
-
-        # Check if this is first startup (no metadata exists)
-        if [ ! -d "$REPLICATION_META" ]; then
-          echo "First startup detected - no replication metadata exists"
-          echo "Skipping WAL cleanup"
-          echo "========================================="
-          exit 0
-        fi
-
-        # Check replication role from metadata
-        ROLE=$(grep -rao '"replication_role":"[^"]*"' "$REPLICATION_META" 2>/dev/null | tail -1 | sed 's/.*"replication_role":"\([^"]*\)".*/\1/')
-        echo "Detected replication role: ${ROLE:-unknown}"
-
-        # Only clean WAL if this pod was a replica
-        if [ "$ROLE" = "replica" ]; then
-          echo "Pod was REPLICA - checking for WAL files"
-          if [ -d "$WAL_DIR" ] && [ -n "$(ls -A $WAL_DIR 2>/dev/null)" ]; then
-            echo "WAL files found:"
-            ls -lah "$WAL_DIR"
-            echo "Removing WAL files to prevent divergence..."
-            rm -f "$WAL_DIR"/*
-            echo "✅ WAL cleanup completed successfully"
-            ls -lah "$WAL_DIR"
-          else
-            echo "No WAL files to clean"
-          fi
-        else
-          echo "Pod was MAIN or unknown role - skipping WAL cleanup"
-        fi
-
         echo "========================================="
         echo "Init container finished"
         echo "========================================="
@@ -152,22 +133,15 @@ initContainers:
 ```
 
 **Logic Flow:**
-1. **Priority 1 - Hard Reset Check:**
-   - Check for magic marker file `/var/lib/memgraph/.hard-reset-requested`
-   - If found → Full cleanup of `/var/lib/memgraph/mg_data/*` + remove marker + exit
-   - This handles diverged replica recovery
+- Check for magic marker file `/var/lib/memgraph/.hard-reset-requested`
+- If found → Full cleanup of `/var/lib/memgraph/mg_data/*` + remove marker + exit
+- If not found → Exit normally (no cleanup needed)
+- Memgraph 3.6.1+ handles WAL UUID reconciliation internally
 
-2. **Priority 2 - Normal WAL Cleanup:**
-   - If no hard reset marker, proceed with existing WAL cleanup logic
-   - Check if first startup → skip
-   - Check replication role from metadata
-   - If pod was replica → clean WAL files only
-
-**Key Design Decision:** Single initContainer with priority-based logic
-- Simpler deployment (no new containers)
-- Existing WAL cleanup logic preserved
-- Hard reset takes precedence (checked first)
-- Clean exit after hard reset (doesn't continue to WAL cleanup)
+**Key Design Decision:** Simple, focused initContainer
+- Single responsibility: hard reset detection and execution
+- No WAL workarounds needed (handled by Memgraph upstream)
+- Clear, maintainable logic
 
 ### 3. Controller: Divergence Detection & Hard Reset Trigger
 
@@ -310,10 +284,9 @@ func replicaNameToPodName(replicaName string) string {
 1. Pod starts
 2. InitContainer "data-cleanup" runs
 3. Check /var/lib/memgraph/.hard-reset-requested
-4. File NOT found → Proceed to normal WAL cleanup logic
-5. If replica role detected → Clean WAL files only
-6. Memgraph container starts normally
-7. Controller registers replica (success)
+4. File NOT found → Exit normally
+5. Memgraph container starts (handles WAL UUID reconciliation internally)
+6. Controller registers replica (success)
 ```
 
 ### Hard Reset Flow (Divergence Detected)
@@ -326,11 +299,10 @@ func replicaNameToPodName(replicaName string) string {
 5. Kubernetes StatefulSet recreates the pod automatically
 6. InitContainer "data-cleanup" runs on new pod
 7. Detects magic marker file → Full data cleanup (rm -rf /var/lib/memgraph/mg_data/*)
-8. Removes marker file
-9. Exits without proceeding to WAL cleanup (data already cleaned)
-10. Memgraph container starts with clean slate
-11. Controller reconciliation registers clean replica to current main
-12. ✅ Replica operational with fresh data from current main
+8. Removes marker file and exits
+9. Memgraph container starts with clean slate
+10. Controller reconciliation registers clean replica to current main
+11. ✅ Replica operational with fresh data from current main
 ```
 
 ## Safety Guarantees
@@ -418,22 +390,22 @@ if mode == "ASYNC" {
 
 ## Implementation Plan
 
-### Stage 1: Enhance Existing InitContainer in Helm Chart
-**Goal:** Enhance existing `data-cleanup` initContainer to handle hard reset
+### Stage 1: Add Hard Reset InitContainer to Helm Chart
+**Goal:** Add `data-cleanup` initContainer to handle hard reset
 
 **Files:**
-- `charts/memgraph-ha/values.yaml` - Update initContainer args
+- `charts/memgraph-ha/values.yaml` - Add initContainer configuration
 
 **Success Criteria:**
-- Hard reset check added as Priority 1 (before WAL cleanup)
-- Logs "No hard reset requested" on normal startup
-- Existing WAL cleanup logic preserved and still works
+- Hard reset check implemented in initContainer
+- Logs show initContainer execution on pod startup
 - No impact on existing pod startup behavior
+- InitContainer exits cleanly when no marker file present
 
 **Tests:**
 - Deploy cluster and verify initContainer runs
-- Check pod logs show "No hard reset requested" message
-- Verify existing WAL cleanup still works on replica restarts
+- Check pod logs show initContainer execution
+- Verify pods start normally without marker file
 
 ### Stage 2: Implement Controller Hard Reset Trigger
 **Goal:** Add `triggerHardReset()` method to controller
@@ -594,3 +566,9 @@ This design provides a **safe, automated recovery mechanism** for diverged async
 ✅ **Observable** - Comprehensive logging and audit trail
 ✅ **Non-invasive** - Uses existing Kubernetes patterns (initContainer)
 ✅ **Solves Issue #7** - Eliminates operational burden of manual recovery
+
+**Note on Memgraph 3.6.1 Upgrade (2025-10-28):**
+- WAL cleanup workaround removed from design (no longer needed)
+- Memgraph now handles WAL UUID reconciliation internally
+- InitContainer simplified to focus only on hard reset for true divergence cases
+- More reliable solution using upstream fix instead of workaround
